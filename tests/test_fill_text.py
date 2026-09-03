@@ -157,6 +157,21 @@ def test_empty_value_leaves_one_empty_paragraph():
     assert len(box.text_frame.paragraphs) == 1 and box.text_frame.text == ""
 
 
+def test_clearing_then_refilling_keeps_run_formatting():
+    _, slide = _slide()
+    frame = slide.shapes.add_table(2, 2, Inches(1), Inches(1), Inches(4), Inches(1))
+    cell = frame.table.cell(1, 1)
+    cell.text = "styled"
+    cell.text_frame.paragraphs[0].runs[0].font.size = Pt(9)
+    cell.text_frame.paragraphs[0].runs[0].font.bold = True
+
+    set_rich_text(cell, "")
+    assert cell.text_frame.text == "" and not cell.text_frame.paragraphs[0].runs
+    set_rich_text(cell, "refilled")
+    run = cell.text_frame.paragraphs[0].runs[0]
+    assert (run.text, run.font.size, run.font.bold) == ("refilled", Pt(9), True)
+
+
 def test_replace_token_within_and_across_runs():
     _, slide = _slide()
     box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(6), Inches(1))

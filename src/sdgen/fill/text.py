@@ -93,11 +93,16 @@ def set_rich_text(target, value: str | list[Block], keep_prefix: str | None = No
         template = _pick_template(block, plain, bullet_templates)
         paragraph = _clone_paragraph(template)
         _apply_bullet(paragraph, block, _has_bullet(template), inherits_bullets)
-        _append_spans(paragraph, block.spans, _run_rpr(template))
+        rpr = _run_rpr(template)
+        _append_spans(paragraph, block.spans, rpr)
+        _keep_style_when_empty(paragraph, rpr)
         new_paragraphs.append(paragraph)
 
     if not new_paragraphs:
-        new_paragraphs.append(prefix_p if prefix_p is not None else _clone_paragraph(base))
+        if prefix_p is None:
+            prefix_p = _clone_paragraph(base)
+            _keep_style_when_empty(prefix_p, _run_rpr(base))
+        new_paragraphs.append(prefix_p)
 
     for paragraph in paragraphs:
         tx_body.remove(paragraph)
@@ -235,6 +240,18 @@ def _append_spans(p: etree._Element, spans: list[Span], rpr: etree._Element | No
         text = etree.SubElement(run, qn("a:t"))
         text.text = span.text
         _insert_run(p, run)
+
+
+def _keep_style_when_empty(p: etree._Element, rpr: etree._Element | None) -> None:
+    if rpr is None or p.find(qn("a:r")) is not None:
+        return
+    end = copy.deepcopy(rpr)
+    end.tag = qn("a:endParaRPr")
+    existing = p.find(qn("a:endParaRPr"))
+    if existing is not None:
+        p.replace(existing, end)
+    else:
+        p.append(end)
 
 
 def _insert_run(p: etree._Element, run: etree._Element) -> None:
