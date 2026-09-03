@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import click
 from sdgen.analyze import analyze_deck, format_analysis, slugify
 from sdgen.inventory import format_inventory, inspect_deck
 from sdgen.manifest import Manifest
+from sdgen.preview import preview as run_preview
 from sdgen.registry import MANIFEST_FILE, Registry, TemplateEntry
 from sdgen.tools import (
     RenderRequest,
@@ -109,6 +111,43 @@ def render(template: str, content: Path, output: Path, blank_missing: bool, temp
     click.echo(f"Wrote {result.output} ({result.slides} slides)")
     if any(i.level == "error" for i in result.issues):
         raise SystemExit(1)
+
+
+@main.command()
+@click.argument("name")
+@click.argument("deck", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--manifest", "manifest_path", type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Confirmed manifest; defaults to the analyzer's proposal.")
+@click.option("--keep-content", is_flag=True, help="Store the deck as uploaded instead of replacing fields with placeholders.")
+@TEMPLATES_OPTION
+def add(name: str, deck: Path, manifest_path: Path | None, keep_content: bool, templates: Path) -> None:
+    """Register a deck as a template."""
+    manifest = Manifest.load(manifest_path) if manifest_path else analyze_deck(inspect_deck(deck)).to_manifest(name)
+    entry = Registry(templates).add(name, deck, manifest, tokenize=not keep_content)
+    click.echo(f"Template '{entry.name}' saved with {len(entry.manifest.fields)} fields in {entry.directory}")
+
+
+@main.command()
+@click.argument("document", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--pdf", type=click.Path(dir_okay=False, path_type=Path), help="Also export a PDF to this path.")
+def preview(document: Path, pdf: Path | None) -> None:
+    """Open a generated deck in PowerPoint to check it, optionally exporting a PDF."""
+    result = run_preview(document, pdf)
+    if not result.opened:
+        click.echo(f"PowerPoint could not open {document}: {result.message}")
+        raise SystemExit(1)
+    click.echo(f"{document}: {result.slides} slides, {result.message}")
+    if result.pdf:
+        click.echo(f"PDF written to {result.pdf}")
+
+
+@main.command()
+def ui() -> None:
+    """Start the browser UI."""
+    app = Path(__file__).resolve().parents[2] / "ui" / "app.py"
+    if not app.is_file():
+        click.echo(f"UI script not found at {app}")
+        raise SystemExit(1)
+    raise SystemExit(subprocess.call([sys.executable, "-m", "streamlit", "run", str(app)]))
 
 
 def _resolve_template(template: str, templates: Path) -> TemplateEntry:

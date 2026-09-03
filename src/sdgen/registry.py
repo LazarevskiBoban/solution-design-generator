@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -11,6 +12,14 @@ from sdgen.tokenize import tokenize_deck
 
 MANIFEST_FILE = "manifest.yaml"
 TEMPLATE_FILE = "template.pptx"
+NAME_RE = re.compile(r"[^a-z0-9_-]+")
+
+
+def safe_name(name: str) -> str:
+    cleaned = NAME_RE.sub("-", name.strip().lower()).strip("-")
+    if not cleaned:
+        raise ValueError("template name must contain letters or digits")
+    return cleaned
 
 
 class TemplateEntry(BaseModel):
@@ -40,6 +49,7 @@ class Registry:
         return TemplateEntry(name=name, directory=directory, manifest=Manifest.load(manifest_path))
 
     def add(self, name: str, deck_path: str | Path, manifest: Manifest, tokenize: bool = True) -> TemplateEntry:
+        name = safe_name(name)
         directory = self.root / name
         directory.mkdir(parents=True, exist_ok=True)
         manifest = manifest.model_copy(update={"name": name, "source": TEMPLATE_FILE})

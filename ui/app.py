@@ -10,7 +10,7 @@ import streamlit as st
 from sdgen.analyze import Analysis, slugify
 from sdgen.content import Content, ImageValue, dump_markdown
 from sdgen.manifest import FieldSpec, GlobalSpec, Manifest
-from sdgen.registry import Registry
+from sdgen.registry import Registry, safe_name
 from sdgen.tools import (
     AnalyzeRequest,
     RenderRequest,
@@ -70,7 +70,7 @@ def templates_page() -> None:
 
     analysis: Analysis = st.session_state["analysis"]
     version = st.session_state["editor_version"]
-    name = st.text_input("Template name", value=slugify(Path(upload.name).stem), key=f"name:{version}")
+    name = st.text_input("Template name", value=safe_name(Path(upload.name).stem), key=f"name:{version}")
 
     with st.expander("Slides", expanded=False):
         st.dataframe(
@@ -150,8 +150,8 @@ def templates_page() -> None:
             st.error("Give the template a name.")
             return
         try:
-            manifest = _build_manifest(analysis, fields_edit, globals_edit, slugify(name), list(exclude))
-            entry = reg.add(slugify(name), st.session_state["deck_path"], manifest)
+            manifest = _build_manifest(analysis, fields_edit, globals_edit, safe_name(name), list(exclude))
+            entry = reg.add(name, st.session_state["deck_path"], manifest)
         except ValueError as exc:
             st.error(str(exc))
             return

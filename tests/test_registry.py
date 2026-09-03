@@ -26,6 +26,15 @@ def test_add_load_and_list(tmp_path, sample_deck):
     assert registry.load("demo").manifest.fields == []
 
 
+def test_names_are_sanitised(tmp_path, sample_deck):
+    registry = Registry(tmp_path / "templates")
+    entry = registry.add("NTT Solution Design (v2)", sample_deck, Manifest(name="x"))
+    assert entry.name == "ntt-solution-design-v2"
+    assert registry.names() == ["ntt-solution-design-v2"]
+    with pytest.raises(ValueError):
+        registry.add("***", sample_deck, Manifest(name="x"))
+
+
 def test_missing_template_raises(tmp_path):
     registry = Registry(tmp_path / "templates")
     with pytest.raises(FileNotFoundError):
