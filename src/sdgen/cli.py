@@ -7,6 +7,24 @@ import click
 
 from sdgen.analyze import analyze_deck, format_analysis, slugify
 from sdgen.inventory import format_inventory, inspect_deck
+from sdgen.manifest import Manifest
+from sdgen.registry import MANIFEST_FILE, Registry, TemplateEntry
+from sdgen.tools import (
+    RenderRequest,
+    SkeletonRequest,
+    ValidateRequest,
+    content_skeleton,
+    render_document,
+    validate_content,
+)
+
+TEMPLATES_OPTION = click.option(
+    "--templates",
+    default="templates",
+    show_default=True,
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Template registry folder.",
+)
 
 
 @click.group()
@@ -46,3 +64,58 @@ def analyze(deck: Path, output: Path | None, name: str | None, show_all: bool, a
         manifest = analysis.to_manifest(name or slugify(deck.stem), source=deck.name)
         manifest.save(output)
         click.echo(f"\nManifest with {len(manifest.fields)} fields written to {output}")
+
+
+@main.command()
+@click.argument("template")
+@click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path), help="Write the skeleton here instead of printing it.")
+@TEMPLATES_OPTION
+def skeleton(template: str, output: Path | None, templates: Path) -> None:
+    """Emit an empty Markdown content file for a template."""
+    entry = _resolve_template(template, templates)
+    markdown = content_skeleton(SkeletonRequest(manifest=entry.manifest)).markdown
+    if output:
+        output.write_text(markdown, encoding="utf-8")
+        click.echo(f"Skeleton with {len(entry.manifest.fields)} fields written to {output}")
+    else:
+        click.echo(markdown)
+
+
+@main.command()
+@click.argument("template")
+@click.argument("content", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("-o", "--output", required=True, type=click.Path(dir_okay=False, path_type=Path), help="Output document path.")
+@click.option("--blank-missing", is_flag=True, help="Clear fields that have no value instead of keeping template text.")
+@TEMPLATES_OPTION
+def render(template: str, content: Path, output: Path, blank_missing: bool, templates: Path) -> None:
+    """Fill a template with a Markdown content file."""
+    entry = _resolve_template(template, templates)
+    validation = validate_content(
+        ValidateRequest(manifest=entry.manifest, markdown=content.read_text(encoding="utf-8"), base_dir=str(content.parent))
+    )
+    for warning in validation.warnings:
+        click.echo(f"warning: {warning}")
+    result = render_document(
+        RenderRequest(
+            template=str(entry.template_path),
+            manifest=entry.manifest,
+            content=validation.content,
+            output=str(output),
+            blank_missing=blank_missing,
+        )
+    )
+    for issue in result.issues:
+        click.echo(str(issue))
+    click.echo(f"Wrote {result.output} ({result.slides} slides)")
+    if any(i.level == "error" for i in result.issues):
+        raise SystemExit(1)
+
+
+def _resolve_template(template: str, templates: Path) -> TemplateEntry:
+    path = Path(template)
+    if path.is_dir() and (path / MANIFEST_FILE).is_file():
+        return Registry(path.parent).load(path.name)
+    if path.is_file() and path.suffix.lower() in (".yaml", ".yml"):
+        manifest = Manifest.load(path)
+        return TemplateEntry(name=manifest.name, directory=path.parent, manifest=manifest)
+    return Registry(templates).load(template)

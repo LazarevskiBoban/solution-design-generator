@@ -1,0 +1,85 @@
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+from sdgen.analyze import Analysis, analyze_deck, slugify
+from sdgen.content import Content, load_markdown, skeleton_markdown, validate_content as _validate
+from sdgen.inventory import DeckInfo, inspect_deck
+from sdgen.manifest import Manifest
+from sdgen.render import RenderIssue, render
+
+
+class InspectRequest(BaseModel):
+    deck: str
+
+
+class InspectResponse(BaseModel):
+    deck: DeckInfo
+
+
+def inspect_template(request: InspectRequest) -> InspectResponse:
+    return InspectResponse(deck=inspect_deck(request.deck))
+
+
+class AnalyzeRequest(BaseModel):
+    deck: str
+    name: str | None = None
+
+
+class AnalyzeResponse(BaseModel):
+    analysis: Analysis
+    manifest: Manifest
+
+
+def analyze_template(request: AnalyzeRequest) -> AnalyzeResponse:
+    deck = inspect_deck(request.deck)
+    analysis = analyze_deck(deck)
+    name = request.name or slugify(deck.path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1].rsplit(".", 1)[0])
+    return AnalyzeResponse(analysis=analysis, manifest=analysis.to_manifest(name, source=deck.path))
+
+
+class SkeletonRequest(BaseModel):
+    manifest: Manifest
+
+
+class SkeletonResponse(BaseModel):
+    markdown: str
+
+
+def content_skeleton(request: SkeletonRequest) -> SkeletonResponse:
+    return SkeletonResponse(markdown=skeleton_markdown(request.manifest))
+
+
+class ValidateRequest(BaseModel):
+    manifest: Manifest
+    markdown: str
+    base_dir: str | None = None
+
+
+class ValidateResponse(BaseModel):
+    content: Content
+    warnings: list[str] = Field(default_factory=list)
+
+
+def validate_content(request: ValidateRequest) -> ValidateResponse:
+    content = load_markdown(request.markdown, request.manifest, base_dir=request.base_dir)
+    return ValidateResponse(content=content, warnings=_validate(content, request.manifest))
+
+
+class RenderRequest(BaseModel):
+    template: str
+    manifest: Manifest
+    content: Content
+    output: str
+    blank_missing: bool = False
+
+
+class RenderResponse(BaseModel):
+    output: str
+    slides: int
+    issues: list[RenderIssue] = Field(default_factory=list)
+
+
+def render_document(request: RenderRequest) -> RenderResponse:
+    result = render(request.template, request.manifest, request.content, request.output, request.blank_missing)
+    return RenderResponse(output=result.output, slides=result.slides, issues=result.issues)
