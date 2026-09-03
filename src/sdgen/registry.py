@@ -3,9 +3,11 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from pptx import Presentation
 from pydantic import BaseModel
 
 from sdgen.manifest import Manifest
+from sdgen.tokenize import tokenize_deck
 
 MANIFEST_FILE = "manifest.yaml"
 TEMPLATE_FILE = "template.pptx"
@@ -37,11 +39,16 @@ class Registry:
             raise FileNotFoundError(f"template '{name}' not found under {self.root}")
         return TemplateEntry(name=name, directory=directory, manifest=Manifest.load(manifest_path))
 
-    def add(self, name: str, deck_path: str | Path, manifest: Manifest) -> TemplateEntry:
+    def add(self, name: str, deck_path: str | Path, manifest: Manifest, tokenize: bool = True) -> TemplateEntry:
         directory = self.root / name
         directory.mkdir(parents=True, exist_ok=True)
         manifest = manifest.model_copy(update={"name": name, "source": TEMPLATE_FILE})
-        shutil.copyfile(deck_path, directory / TEMPLATE_FILE)
+        if tokenize:
+            prs = Presentation(str(deck_path))
+            manifest = tokenize_deck(prs, manifest)
+            prs.save(str(directory / TEMPLATE_FILE))
+        else:
+            shutil.copyfile(deck_path, directory / TEMPLATE_FILE)
         manifest.save(directory / MANIFEST_FILE)
         return TemplateEntry(name=name, directory=directory, manifest=manifest)
 
