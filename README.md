@@ -17,5 +17,7 @@ pip install -e .[ui,dev,preview]
 ```
 sdgen inspect deck.pptx            # slides, shapes, tables and text of a deck
 sdgen inspect deck.pptx --json     # same as JSON
+sdgen analyze deck.pptx            # propose fillable fields (add --all to see unticked ones)
+sdgen analyze deck.pptx -o manifest.yaml --name my-template
 pytest                             # run the test suite
 ```

@@ -26,11 +26,15 @@ def sample_deck(tmp_path: Path) -> Path:
 
     box = slide.shapes.add_textbox(Inches(1), Inches(2), Inches(4), Inches(1.5))
     box.name = "Business Need Box"
-    box.text_frame.text = "Business Need: Something long enough to be a field."
+    box.text_frame.text = "Business Need: Something long enough to be treated as a real content section."
     second = box.text_frame.add_paragraph()
     second.text = "Second paragraph."
     second.runs[0].font.bold = True
     second.runs[0].font.size = Pt(12)
+
+    label = slide.shapes.add_textbox(Inches(6), Inches(1.6), Inches(2), Inches(0.3))
+    label.name = "Scope Label"
+    label.text_frame.text = "Scope"
 
     frame = slide.shapes.add_table(3, 2, Inches(6), Inches(2), Inches(4), Inches(1.5))
     frame.name = "Scope Table"
