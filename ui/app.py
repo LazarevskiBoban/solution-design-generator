@@ -19,7 +19,7 @@ from sdgen.mapping.extract import extract_fields
 from sdgen.mapping.model import MappingEntry, MappingSet, SourceSpec, TargetSpec
 from sdgen.mapping.workbook import write_workbook
 from sdgen.registry import Registry, safe_name
-from sdgen.tools import AnalyzeRequest, RenderRequest, analyze_template, render_document
+from sdgen.tools import AnalyzeRequest, RenderRequest, analyze_template, continuation_slides, render_document
 from sdgen.writer import draft_content
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -378,7 +378,16 @@ def design_page() -> None:
         store.save(design)
         out_dir = Path(tempfile.mkdtemp(prefix="sdgen-out-"))
         output = out_dir / f"{slugify(subject) or name}.pptx"
-        response = render_document(RenderRequest(template=str(entry.template_path), manifest=manifest, content=final, output=str(output), missing=missing))
+        response = render_document(
+            RenderRequest(
+                template=str(entry.template_path),
+                manifest=manifest,
+                content=final,
+                output=str(output),
+                missing=missing,
+                continue_on=continuation_slides(blueprint),
+            )
+        )
         st.session_state[f"{state_key}:output"] = (output.name, output.read_bytes(), [str(i) for i in response.issues], response.slides)
 
     stored = st.session_state.get(f"{state_key}:output")

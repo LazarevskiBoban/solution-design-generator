@@ -76,6 +76,16 @@ def test_mock_draft_fills_every_writable_field(sample_deck, tmp_path):
     assert "## business_need" in result.markdown
 
 
+def test_mock_keeps_cover_subtitle_short():
+    from sdgen.llm import mock_draft
+
+    context = {
+        "brief": {"subject": "CAMT.053 Integration", "about": "Long. Text. With. Many. Sentences."},
+        "sections": [{"section": "cover", "title": "Cover", "kind": "cover", "ask": "", "fields": [{"key": "subtitle", "kind": "bullets"}]}],
+    }
+    assert "## subtitle\n[Draft] CAMT.053 Integration" in mock_draft(context)
+
+
 def test_cli_draft_writes_content(sample_deck, tmp_path):
     entry = _template(sample_deck, tmp_path)
     brief_path = tmp_path / "brief.md"

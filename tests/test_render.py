@@ -103,6 +103,20 @@ def test_overflow_continues_on_cloned_slides(sample_deck, tmp_path):
     assert any("continued on" in str(i) for i in result.issues)
 
 
+def test_continuation_is_limited_to_listed_slides(sample_deck, tmp_path):
+    manifest = _fixture_manifest(sample_deck)
+    manifest.slides.exclude = []
+    manifest.field("first_point").bindings[0].max_chars = 40
+    content = Content(fields={"first_point": "\n".join(f"- point number {i} with some words" for i in range(1, 7))})
+
+    limited = render(sample_deck, manifest, content, tmp_path / "limited.pptx", continue_on=[])
+    assert limited.slides == 2
+    assert any("about 40 fit" in str(i) for i in limited.issues)
+
+    allowed = render(sample_deck, manifest, content, tmp_path / "allowed.pptx", continue_on=[1])
+    assert allowed.slides > 2
+
+
 def test_bad_bindings_produce_errors_not_crashes(sample_deck, tmp_path):
     manifest = Manifest(
         name="broken",

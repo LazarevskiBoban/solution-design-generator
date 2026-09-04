@@ -58,7 +58,7 @@ def mock_draft(context: dict) -> str:
                 lines.append("| " + " | ".join(columns) + " |")
                 lines.append("|" + "---|" * len(columns))
                 lines.extend("| " + " | ".join(row) + " |" for row in rows)
-            elif kind == "bullets":
+            elif kind == "bullets" and section.get("kind") != "cover":
                 lines.extend(f"- [Draft] {s}" for s in (_sentences(source)[:4] or ["[TBC]"]))
             else:
                 lines.append(f"[Draft] {source or '[TBC]'}")
@@ -67,6 +67,8 @@ def mock_draft(context: dict) -> str:
 
 
 def _pick_source(section: dict, brief: dict) -> str:
+    if section.get("kind") == "cover":
+        return str(brief.get("subject", "") or "").strip()
     words = " ".join([section.get("title", ""), section.get("ask", "")] + [f.get("label", "") for f in section.get("fields", [])]).lower()
     order: list[str]
     if "mapping" in words:

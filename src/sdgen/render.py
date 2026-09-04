@@ -51,11 +51,14 @@ def render(
     content: Content,
     output: str | Path,
     missing: MissingMode = "placeholder",
+    continue_on: set[int] | list[int] | None = None,
 ) -> RenderResult:
     prs = Presentation(str(template))
     slides = list(prs.slides)
     issues: list[RenderIssue] = []
     prototypes = set(manifest.slides.prototypes.values())
+    if continue_on is not None:
+        prototypes |= set(continue_on)
 
     for spec in manifest.globals:
         value = content.globals.get(spec.key, "")
@@ -87,7 +90,8 @@ def render(
                 issues.append(RenderIssue(level="error", field=spec.key, slide=binding.slide, message=f"shape {binding.shape.id} ({binding.shape.name}) not found"))
                 continue
             try:
-                _apply(prs, slide, shape, spec, binding, value, issues, binding.slide in prototypes)
+                allow = binding.slide in prototypes or (continue_on is None and shape.is_placeholder)
+                _apply(prs, slide, shape, spec, binding, value, issues, allow)
             except Exception as exc:  # keep rendering the rest of the document
                 issues.append(RenderIssue(level="error", field=spec.key, slide=binding.slide, message=str(exc)))
 
@@ -150,7 +154,7 @@ def _apply(prs, slide, shape, spec: FieldSpec, binding: Binding, value: Any, iss
     blocks = parse_blocks(text)
     chunks = [blocks]
     if binding.max_chars and len(text) > binding.max_chars:
-        if prototype or shape.is_placeholder:
+        if prototype:
             chunks = _split_blocks(blocks, binding.max_chars)
             issues.append(RenderIssue(level="info", field=spec.key, slide=binding.slide, message=f"continued on {len(chunks) - 1} extra slide(s)"))
         else:

@@ -23,6 +23,7 @@ from sdgen.tools import (
     SkeletonRequest,
     ValidateRequest,
     content_skeleton,
+    continuation_slides,
     render_document,
     validate_content,
 )
@@ -173,6 +174,7 @@ def render(template: str, content: Path, output: Path, missing: str, templates: 
             content=validation.content,
             output=str(output),
             missing=missing,
+            continue_on=continuation_slides(entry.blueprint),
         )
     )
     for issue in result.issues:

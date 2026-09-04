@@ -92,6 +92,7 @@ class RenderRequest(BaseModel):
     content: Content
     output: str
     missing: MissingMode = "placeholder"
+    continue_on: list[int] | None = None
 
 
 class RenderResponse(BaseModel):
@@ -100,6 +101,12 @@ class RenderResponse(BaseModel):
     issues: list[RenderIssue] = Field(default_factory=list)
 
 
+def continuation_slides(blueprint: Blueprint | None) -> list[int] | None:
+    if blueprint is None:
+        return None
+    return [s.slide for s in blueprint.sections if s.kind == "text"]
+
+
 def render_document(request: RenderRequest) -> RenderResponse:
-    result = render(request.template, request.manifest, request.content, request.output, request.missing)
+    result = render(request.template, request.manifest, request.content, request.output, request.missing, request.continue_on)
     return RenderResponse(output=result.output, slides=result.slides, issues=result.issues)
