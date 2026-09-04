@@ -218,3 +218,26 @@ def test_titles_replace_slide_titles_keeping_the_subject(sample_deck, tmp_path):
     result = render(sample_deck, manifest, Content(globals={"subject": "Carrier Invoices"}), out, titles={1: "Overview", 9: "Nothing"})
     assert not result.errors
     assert Presentation(str(out)).slides[0].shapes.title.text == "Overview: Carrier Invoices"
+
+
+def test_extra_slides_are_cloned_from_a_prototype(sample_deck, tmp_path):
+    from sdgen.render import ExtraSlide
+
+    manifest = _fixture_manifest(sample_deck)
+    manifest.slides.exclude = []
+    spec = manifest.field("scope").model_copy(update={"key": "extra_acc", "label": "Acceptance Criteria"})
+    extra = ExtraSlide(key="extra_acc", title="Acceptance Criteria", spec=spec, value=[{"Function": "Test", "Countries": "ZA"}], before=2)
+    out = tmp_path / "extras.pptx"
+    result = render(sample_deck, manifest, Content(globals={"subject": "Carrier Invoices"}, fields={"scope": [{"Function": "Finance", "Countries": "ZA"}]}), out, extras=[extra])
+    assert not result.errors
+    assert result.slides == 3 and result.slide_map == [1, 1, 2] and result.slide_keys == ["", "extra_acc", ""]
+    prs = Presentation(str(out))
+    added = prs.slides[1]
+    assert added.shapes.title.text == "Acceptance Criteria: Carrier Invoices"
+    table = next(s for s in added.shapes if s.has_table).table
+    assert [[c.text for c in r.cells] for r in table.rows] == [["Function", "Countries"], ["Test", "ZA"]]
+    original = next(s for s in prs.slides[0].shapes if s.has_table).table
+    assert [c.text for c in original.rows[1].cells] == ["Finance", "ZA"]
+
+    tail = render(sample_deck, manifest, Content(), tmp_path / "tail.pptx", extras=[extra.model_copy(update={"before": 0, "value": None})])
+    assert tail.slide_keys == ["", "", "extra_acc"] and any("placeholder shown" in str(i) for i in tail.issues)

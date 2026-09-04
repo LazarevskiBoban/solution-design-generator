@@ -8,10 +8,11 @@ import yaml
 from pydantic import BaseModel, Field
 
 from sdgen.analyze import slugify
-from sdgen.blueprint import Blueprint
+from sdgen.blueprint import Blueprint, Section
 from sdgen.brief import Brief, dump_brief
 from sdgen.llm import LLMClient
-from sdgen.manifest import Manifest
+from sdgen.manifest import FieldSpec, Manifest
+from sdgen.render import ExtraSlide
 
 Source = Literal["draft", "keep", "blank", "diagram", "mechanical"]
 SOURCES = ("draft", "keep", "blank", "diagram", "mechanical")
@@ -184,6 +185,8 @@ def merge_plan(base: SectionPlan, data: dict, blueprint: Blueprint, images: set[
         if not title:
             continue
         key = slugify(str(item.get("key") or title))
+        if not key.startswith("extra_"):
+            key = f"extra_{key}"
         kind = "table" if str(item.get("kind") or "text") == "table" else "text"
         columns = [str(c).strip() for c in (item.get("columns") or []) if str(c).strip()] if kind == "table" else []
         if kind == "table" and not columns:
@@ -225,6 +228,79 @@ def apply_plan(plan: SectionPlan, design, blueprint: Blueprint) -> None:
     design.modes = {d.key: d.source for d in plan.decisions if d.use and d.source in ("keep", "blank") and d.key in sections and sections[d.key].fields}
     design.titles = {d.key: d.title.strip() for d in plan.decisions if d.use and d.title.strip() and d.key in sections}
     design.plan = plan
+
+
+def active_extras(plan: SectionPlan | None) -> list[ExtraSection]:
+    return [e for e in (plan.extras if plan else []) if e.include]
+
+
+def extended_manifest(manifest: Manifest, blueprint: Blueprint, extras: list[ExtraSection]) -> Manifest:
+    """The manifest plus one field per extra slide, bound to its prototype's shape."""
+    fields = list(manifest.fields)
+    known = {f.key for f in fields}
+    for extra in extras:
+        spec = _prototype_spec(manifest, blueprint, extra)
+        if spec is None or extra.key in known:
+            continue
+        binding = spec.bindings[0].model_copy(update={"keep_last_row_if": None})
+        fields.append(
+            FieldSpec(
+                key=extra.key,
+                label=extra.title,
+                kind="table" if extra.kind == "table" else "bullets",
+                columns=list(extra.columns),
+                guidance=extra.reason,
+                bindings=[binding],
+            )
+        )
+        known.add(extra.key)
+    return manifest.model_copy(update={"fields": fields})
+
+
+def extended_blueprint(blueprint: Blueprint, extras: list[ExtraSection]) -> Blueprint:
+    """The outline plus one section per extra slide, placed before its target section."""
+    sections = list(blueprint.sections)
+    for extra in extras:
+        proto = _prototype_section(blueprint, extra)
+        if proto is None or any(s.key == extra.key for s in sections):
+            continue
+        ask = ("table: " + ", ".join(extra.columns)) if extra.columns else "text"
+        section = Section(key=extra.key, title=extra.title, kind="table" if extra.kind == "table" else "text", slide=proto.slide, fields=[extra.key], ask=ask)
+        position = next((i for i, s in enumerate(sections) if s.key == extra.before), len(sections))
+        sections.insert(position, section)
+    return blueprint.model_copy(update={"sections": sections})
+
+
+def extra_slides(plan: SectionPlan | None, manifest: Manifest, blueprint: Blueprint, fields: dict, hidden: list[str] | None = None) -> list[ExtraSlide]:
+    """Render input for the included extras; `manifest` is the extended manifest."""
+    slides = []
+    sections = {s.key: s for s in blueprint.sections}
+    for extra in active_extras(plan):
+        spec = manifest.field(extra.key)
+        if spec is None or extra.key in (hidden or []):
+            continue
+        before = sections[extra.before].slide if extra.before in sections else 0
+        slides.append(ExtraSlide(key=extra.key, title=extra.title, spec=spec, value=fields.get(extra.key), before=before))
+    return slides
+
+
+def _prototype_section(blueprint: Blueprint, extra: ExtraSection) -> Section | None:
+    if extra.prototype:
+        section = blueprint.section(extra.prototype)
+        if section is not None:
+            return section
+    wanted = "table" if extra.kind == "table" else "text"
+    return next((s for s in blueprint.sections if s.kind == wanted and s.fields), None)
+
+
+def _prototype_spec(manifest: Manifest, blueprint: Blueprint, extra: ExtraSection) -> FieldSpec | None:
+    proto = _prototype_section(blueprint, extra)
+    if proto is None:
+        return None
+    specs = [f for f in (manifest.field(k) for k in proto.fields) if f is not None and f.kind != "image" and f.bindings]
+    wanted = "table" if extra.kind == "table" else "text"
+    match = next((f for f in specs if (f.kind == "table") == (wanted == "table")), None)
+    return match or (specs[0] if specs else None)
 
 
 def _prompt(brief: Brief, blueprint: Blueprint, manifest: Manifest, images: set[str]) -> str:

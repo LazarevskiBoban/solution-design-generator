@@ -73,8 +73,14 @@ def draft_content(
     original: Content | None = None,
     repair: bool = True,
     skip_sections: set[str] | None = None,
+    extras: list | None = None,
 ) -> DraftResult:
     llm = llm or get_llm()
+    if extras:
+        from sdgen.plan import extended_blueprint, extended_manifest
+
+        manifest = extended_manifest(manifest, blueprint, extras)
+        blueprint = extended_blueprint(blueprint, extras)
     fixed = mechanical_fills(brief, blueprint, manifest, original)
     sections = writable_sections(blueprint, manifest, exclude=set(fixed.fields), skip_sections=skip_sections)
     content = Content(fields=dict(fixed.fields))

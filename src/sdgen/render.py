@@ -35,11 +35,22 @@ class RenderIssue(BaseModel):
         return f"{self.level}{where}{who} {self.message}"
 
 
+class ExtraSlide(BaseModel):
+    """A slide that does not exist in the template: a clone of a prototype slide with one filled field."""
+
+    key: str
+    title: str
+    spec: FieldSpec  # bound to the prototype slide and the shape to fill
+    value: Any = None
+    before: int = 0  # template slide number to insert in front of; 0 appends at the end
+
+
 class RenderResult(BaseModel):
     output: str
     slides: int
     issues: list[RenderIssue] = Field(default_factory=list)
     slide_map: list[int] = Field(default_factory=list)  # template slide number behind each output slide
+    slide_keys: list[str] = Field(default_factory=list)  # extra-slide key per output slide, empty for template slides
 
     @property
     def errors(self) -> list[RenderIssue]:
@@ -57,6 +68,7 @@ def render(
     hidden: list[int] | set[int] | None = None,
     order: list[int] | None = None,
     titles: dict[int, str] | None = None,
+    extras: list[ExtraSlide] | None = None,
 ) -> RenderResult:
     prs = Presentation(str(template))
     slides = list(prs.slides)
@@ -124,6 +136,8 @@ def render(
             except Exception as exc:  # keep rendering the rest of the document
                 issues.append(RenderIssue(level="error", field=spec.key, slide=binding.slide, message=str(exc)))
 
+    extra_ids = _add_extras(prs, slides, extras or [], subject, issues)
+
     for index in sorted(set(manifest.slides.exclude) | hidden_slides, reverse=True):
         if 1 <= index <= len(slides):
             remove_slide(prs, slides[index - 1])
@@ -131,7 +145,47 @@ def render(
             issues.append(RenderIssue(slide=index, message="excluded slide does not exist"))
 
     prs.save(str(output))
-    return RenderResult(output=str(output), slides=len(prs.slides), issues=issues, slide_map=_slide_map(prs, numbers))
+    return RenderResult(
+        output=str(output),
+        slides=len(prs.slides),
+        issues=issues,
+        slide_map=_slide_map(prs, numbers),
+        slide_keys=[extra_ids.get(slide.slide_id, "") for slide in prs.slides],
+    )
+
+
+def _add_extras(prs, slides: list, extras: list[ExtraSlide], subject: str, issues: list[RenderIssue]) -> dict[int, str]:
+    ids: dict[int, str] = {}
+    for extra in extras:
+        binding = extra.spec.bindings[0] if extra.spec.bindings else None
+        if binding is None or not 1 <= binding.slide <= len(slides):
+            issues.append(RenderIssue(level="error", field=extra.key, message="extra slide has no prototype slide"))
+            continue
+        clone = clone_slide(prs, slides[binding.slide - 1])
+        ids[clone.slide_id] = extra.key
+        title_shape = clone.shapes.title
+        if title_shape is not None:
+            current = title_shape.text_frame.text
+            set_rich_text(title_shape, f"{extra.title}: {subject}" if subject and subject in current else extra.title)
+        shape = find_shape(clone, binding.shape.id)
+        if shape is None:
+            issues.append(RenderIssue(level="error", field=extra.key, message=f"shape {binding.shape.id} not found on the prototype slide"))
+        else:
+            value = extra.value
+            if value in (None, "", []):
+                value = [[PLACEHOLDER_ROW]] if extra.spec.kind == "table" else placeholder_text(extra.title)
+                issues.append(RenderIssue(level="info", field=extra.key, message="no value; placeholder shown"))
+            try:
+                _apply(prs, clone, shape, extra.spec, binding, value, issues, False)
+            except Exception as exc:
+                issues.append(RenderIssue(level="error", field=extra.key, message=str(exc)))
+        target = slides[extra.before - 1] if 1 <= extra.before <= len(slides) else None
+        if target is not None:
+            others = [s.slide_id for s in prs.slides if s.slide_id != clone.slide_id]
+            move_slide(prs, clone, others.index(target.slide_id))
+        else:
+            move_slide(prs, clone, len(prs.slides) - 1)
+    return ids
 
 
 def _reorder(prs, slides: list, order: list[int] | None) -> None:

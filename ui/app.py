@@ -20,7 +20,7 @@ from sdgen.manifest import FieldSpec, GlobalSpec, Manifest
 from sdgen.mapping.extract import extract_fields
 from sdgen.mapping.model import MappingEntry, MappingSet, SourceSpec, TargetSpec
 from sdgen.mapping.workbook import write_workbook
-from sdgen.plan import SOURCES, SectionDecision, SectionPlan, apply_plan, plan_sections
+from sdgen.plan import SOURCES, SectionDecision, SectionPlan, active_extras, apply_plan, extended_blueprint, extended_manifest, extra_slides, plan_sections
 from sdgen.preview import export_slide_images
 from sdgen.registry import Registry, safe_name
 from sdgen.tools import AnalyzeRequest, RenderRequest, analyze_template, continuation_slides, render_document
@@ -328,6 +328,10 @@ def design_page() -> None:
         st.session_state[state_key] = store.load(name) if name in existing else Design(name=name, template=template)
         st.session_state[f"{state_key}:v"] = 0
     design: Design = st.session_state[state_key]
+    extras = active_extras(design.plan)
+    if extras:
+        entry = entry.model_copy(update={"manifest": extended_manifest(entry.manifest, entry.blueprint, extras), "blueprint": extended_blueprint(entry.blueprint, extras)})
+        manifest, blueprint = entry.manifest, entry.blueprint
     version = st.session_state[f"{state_key}:v"]
     prefix = f"{state_key}:{version}:"
     snapshot = design.model_dump_json()
@@ -525,11 +529,13 @@ def design_page() -> None:
             logging.getLogger("sdgen.ui").warning("slide preview without pictures: %s", exc)
             notes.insert(0, f"Slide pictures are not available: {exc}. The board shows the slide texts instead.")
             pictures = [None] * len(response.slide_map)
-        by_slide = {s.slide: s for s in blueprint.sections}
+        by_slide = {s.slide: s for s in blueprint.sections if not s.key.startswith("extra_")}
+        by_key = {s.key: s for s in blueprint.sections}
+        keys = response.slide_keys or [""] * len(response.slide_map)
         current, _ = _render_fields(design, entry)
         entries = []
-        for number, png in zip(response.slide_map, pictures):
-            section = by_slide.get(number)
+        for number, slide_key, png in zip(response.slide_map, keys, pictures):
+            section = by_key.get(slide_key) if slide_key else by_slide.get(number)
             entries.append(
                 {
                     "section": section.key if section else f"slide-{number}",
@@ -787,9 +793,12 @@ def _refresh_section_pictures(state_key: str, entry, design: Design, store: Desi
     blueprint = entry.blueprint
     missing = st.session_state.get(f"{state_key}:missing", "placeholder")
     output, response = _render_design(entry, store, design, design.brief.subject, design.name, missing)
-    by_slide = {s.slide: s for s in blueprint.sections}
+    by_slide = {s.slide: s for s in blueprint.sections if not s.key.startswith("extra_")}
+    by_key = {s.key: s for s in blueprint.sections}
+    keys = response.slide_keys or [""] * len(response.slide_map)
     section = next(s for s in blueprint.sections if s.key == key)
-    targets = [i for i, number in enumerate(response.slide_map, 1) if number == section.slide]
+    is_extra = key in {e.key for e in active_extras(design.plan)}
+    targets = [i for i, (number, k) in enumerate(zip(response.slide_map, keys), 1) if (k == key if is_extra else (not k and number == section.slide))]
     entries, notes = st.session_state[f"{state_key}:board"]
     pictures: dict[int, bytes] = {}
     try:
@@ -802,8 +811,8 @@ def _refresh_section_pictures(state_key: str, entry, design: Design, store: Desi
     current, _ = _render_fields(design, entry)
     cached = [e for e in entries if e["section"] != key]
     rebuilt: list[dict] = []
-    for position, number in enumerate(response.slide_map, 1):
-        slide_section = by_slide.get(number)
+    for position, (number, k) in enumerate(zip(response.slide_map, keys), 1):
+        slide_section = by_key.get(k) if k else by_slide.get(number)
         slide_key = slide_section.key if slide_section else f"slide-{number}"
         if slide_key == key:
             rebuilt.append({"section": key, "title": design.titles.get(key, section.title), "png": pictures.get(position), "text": _slide_text(section, current)})
@@ -1059,18 +1068,22 @@ def _show_draft_warnings(warnings: list[str]) -> None:
 def _render_design(entry, store: DesignStore, design: Design, subject: str, name: str, missing: str):
     manifest, blueprint = entry.manifest, entry.blueprint
     fields, field_modes = _render_fields(design, entry)
-    images = {k: v for k, v in store.content(design, manifest).fields.items() if manifest.field(k) and manifest.field(k).kind == "image"}
+    extra_keys = {e.key for e in active_extras(design.plan)}
+    slides_extra = extra_slides(design.plan, manifest, blueprint, fields, design.hidden)
+    base_manifest = manifest.model_copy(update={"fields": [f for f in manifest.fields if f.key not in extra_keys]})
+    fields = {k: v for k, v in fields.items() if k not in extra_keys}
+    images = {k: v for k, v in store.content(design, base_manifest).fields.items() if base_manifest.field(k) and base_manifest.field(k).kind == "image"}
     final = Content(globals=_globals(subject), fields={**fields, **images})
-    sections = {s.key: s for s in blueprint.sections}
+    sections = {s.key: s for s in blueprint.sections if s.key not in extra_keys}
     hidden_slides = [sections[k].slide for k in design.hidden if k in sections]
-    slide_order = [sections[k].slide for k in _section_order(design, blueprint)] if design.order else []
+    slide_order = [sections[k].slide for k in _section_order(design, blueprint) if k in sections] if design.order else []
     titles = {sections[k].slide: t for k, t in design.titles.items() if k in sections and t.strip()}
     out_dir = Path(tempfile.mkdtemp(prefix="sdgen-out-"))
     output = out_dir / f"{slugify(subject) or name}.pptx"
     response = render_document(
         RenderRequest(
             template=str(entry.template_path),
-            manifest=manifest,
+            manifest=base_manifest,
             content=final,
             output=str(output),
             missing=missing,
@@ -1079,6 +1092,7 @@ def _render_design(entry, store: DesignStore, design: Design, subject: str, name
             hidden_slides=hidden_slides,
             slide_order=slide_order,
             titles=titles,
+            extras=slides_extra,
         )
     )
     return output, response

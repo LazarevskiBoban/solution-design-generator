@@ -7,7 +7,7 @@ from sdgen.blueprint import Blueprint, derive_blueprint
 from sdgen.content import Content, load_markdown, skeleton_markdown, validate_content as _validate
 from sdgen.inventory import DeckInfo, inspect_deck
 from sdgen.manifest import Manifest
-from sdgen.render import MissingMode, RenderIssue, render
+from sdgen.render import ExtraSlide, MissingMode, RenderIssue, render
 
 
 class InspectRequest(BaseModel):
@@ -97,6 +97,7 @@ class RenderRequest(BaseModel):
     hidden_slides: list[int] = Field(default_factory=list)
     slide_order: list[int] = Field(default_factory=list)
     titles: dict[int, str] = Field(default_factory=dict)
+    extras: list[ExtraSlide] = Field(default_factory=list)
 
 
 class RenderResponse(BaseModel):
@@ -104,6 +105,7 @@ class RenderResponse(BaseModel):
     slides: int
     issues: list[RenderIssue] = Field(default_factory=list)
     slide_map: list[int] = Field(default_factory=list)
+    slide_keys: list[str] = Field(default_factory=list)
 
 
 def continuation_slides(blueprint: Blueprint | None) -> list[int] | None:
@@ -124,5 +126,6 @@ def render_document(request: RenderRequest) -> RenderResponse:
         hidden=request.hidden_slides,
         order=request.slide_order,
         titles=request.titles,
+        extras=request.extras,
     )
-    return RenderResponse(output=result.output, slides=result.slides, issues=result.issues, slide_map=result.slide_map)
+    return RenderResponse(output=result.output, slides=result.slides, issues=result.issues, slide_map=result.slide_map, slide_keys=result.slide_keys)

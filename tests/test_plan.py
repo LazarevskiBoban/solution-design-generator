@@ -65,9 +65,22 @@ def test_plan_sections_merges_the_model_answer_and_applies(sample_deck, tmp_path
     assert plan.decision(first.key).title == "Overview for Lockbox" and plan.decision(second.key).use is False
     assert [d.key for d in plan.decisions] == [first.key, second.key]
     extra = plan.extras[0]
-    assert extra.key == "acceptance" and extra.kind == "table" and extra.columns == ["Ref", "Scenario", "Expected result", "Evidence"]
+    assert extra.key == "extra_acceptance" and extra.kind == "table" and extra.columns == ["Ref", "Scenario", "Expected result", "Evidence"]
     assert extra.prototype == first.key and extra.before == ""
     assert plan.flows == []  # the first section is not a diagram
+
+    from sdgen.plan import extended_blueprint, extended_manifest, extra_slides
+
+    wide = extended_manifest(entry.manifest, entry.blueprint, plan.extras)
+    spec = wide.field("extra_acceptance")
+    assert spec.kind == "table" and spec.columns == extra.columns and spec.bindings[0].slide == 1
+    assert spec.bindings[0].shape == entry.manifest.field("scope").bindings[0].shape
+    outline = extended_blueprint(entry.blueprint, plan.extras)
+    assert [s.key for s in outline.sections] == [first.key, second.key, "extra_acceptance"]
+    assert outline.section("extra_acceptance").kind == "table" and outline.section("extra_acceptance").slide == 1
+    slides = extra_slides(plan, wide, outline, {"extra_acceptance": [{"Ref": "1"}]})
+    assert len(slides) == 1 and slides[0].value == [{"Ref": "1"}] and slides[0].before == 0
+    assert extra_slides(plan, wide, outline, {}, hidden=["extra_acceptance"]) == []
 
     design = Design(name="d", template="demo")
     apply_plan(plan, design, entry.blueprint)

@@ -383,3 +383,15 @@ def test_redraft_section_returns_only_that_section(sample_deck, tmp_path):
     fields = redraft_section(BRIEF, entry.blueprint, entry.manifest, entry.blueprint.sections[0].key, "make it shorter", current, llm)
     assert set(fields) == {"business_need", "scope", "first_point"} and fields["business_need"] == "Shorter need."
     assert "make it shorter" in llm.prompts[0] and "Old text" in llm.prompts[0]
+
+
+def test_draft_content_writes_extra_sections(sample_deck, tmp_path):
+    from sdgen.plan import ExtraSection
+
+    entry = _template(sample_deck, tmp_path)
+    first = entry.blueprint.sections[0]
+    extras = [ExtraSection(key="extra_acceptance", title="Acceptance Criteria", kind="table", columns=["Ref", "Scenario"], prototype=first.key)]
+    result = draft_content(BRIEF, entry.blueprint, entry.manifest, MockLLM(), extras=extras)
+    rows = result.content.fields["extra_acceptance"]
+    assert isinstance(rows, list) and rows and set(rows[0]) == {"Ref", "Scenario"}
+    assert "## extra_acceptance" in result.markdown
