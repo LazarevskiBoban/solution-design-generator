@@ -11,7 +11,7 @@ import streamlit as st
 
 from sdgen.analyze import Analysis, slugify
 from sdgen.blueprint import Blueprint, derive_blueprint
-from sdgen.brief import BRIEF_FIELDS, DEVELOPER_FIELDS, Brief, fact_questions
+from sdgen.brief import BRIEF_FIELDS, DEVELOPER_FIELDS, FACTS_BY_KEY, Brief, fact_questions
 from sdgen.content import Content, dump_markdown, load_markdown
 from sdgen.design import Design, DesignStore
 from sdgen.inventory import DeckInfo
@@ -23,7 +23,7 @@ from sdgen.mapping.workbook import write_workbook
 from sdgen.preview import export_slide_images
 from sdgen.registry import Registry, safe_name
 from sdgen.tools import AnalyzeRequest, RenderRequest, analyze_template, continuation_slides, render_document
-from sdgen.writer import draft_content, writable_sections
+from sdgen.writer import draft_content, extract_facts, writable_sections
 
 ROOT = Path(__file__).resolve().parent.parent
 KINDS = ["text", "bullets", "table", "image"]
@@ -57,7 +57,14 @@ def provider_settings() -> tuple[str, dict[str, str]]:
                 key=_init("llm_endpoint", _secret("AZURE_OPENAI_ENDPOINT")),
                 help="Foundry > Keys and endpoints > Azure OpenAI endpoint, like https://<resource>.openai.azure.com/ (not the project endpoint).",
             )
-            settings["model"] = st.text_input("Deployment name", key=_init("llm_deployment", _secret("AZURE_OPENAI_DEPLOYMENT")), help="The name of the model deployment in Foundry.")
+            raw = st.text_input(
+                "Deployments",
+                key=_init("llm_deployment", _secret("AZURE_OPENAI_DEPLOYMENT")),
+                help="Deployment names from Foundry, comma separated; the first is the default. For example gpt-4.1, gpt-5, gpt-4o-mini.",
+            )
+            deployments = [d.strip() for d in raw.split(",") if d.strip()]
+            settings["model"] = deployments[0] if deployments else ""
+            settings["deployments"] = ",".join(deployments)
             settings["api_key"] = st.text_input("API key", type="password", key=_init("llm_azure_key", _secret("AZURE_OPENAI_API_KEY")))
             settings["api_version"] = st.text_input("API version", key=_init("llm_api_version", _secret("AZURE_OPENAI_API_VERSION") or DEFAULT_AZURE_API_VERSION))
         elif provider == "openai":
@@ -324,6 +331,8 @@ def design_page() -> None:
     prefix = f"{state_key}:{version}:"
     snapshot = design.model_dump_json()
     provider, settings = st.session_state.get("llm", ("mock", {}))
+    settings = dict(settings)
+    deployments = [d for d in settings.get("deployments", "").split(",") if d]
     model = settings.get("model", "")
 
     with st.expander("1. Brief", expanded=design.brief.is_empty):
@@ -357,10 +366,32 @@ def design_page() -> None:
             facts={k: v.strip() for k, v in facts.items() if v.strip()},
             **texts,
         )
+        if questions:
+            if st.button("Pre-fill facts from the notes", key=f"{state_key}:prefill", help="The model copies facts it finds word for word in the text boxes above into the empty fact fields."):
+                try:
+                    llm = get_llm(provider, **settings)
+                    with st.spinner("Reading the notes."):
+                        found = extract_facts(design.brief, questions, llm)
+                except (LLMNotConfigured, LLMError) as exc:
+                    st.error(str(exc))
+                else:
+                    added = {k: v for k, v in found.items() if not design.brief.facts.get(k, "").strip()}
+                    design.brief.facts.update(added)
+                    store.save(design)
+                    labels = ", ".join(FACTS_BY_KEY[k].label for k in added if k in FACTS_BY_KEY)
+                    st.session_state[f"{state_key}:facts_note"] = f"Filled {len(added)} fact(s) from the notes: {labels}." if added else "No new facts found in the notes."
+                    st.session_state[f"{state_key}:v"] = version + 1
+                    st.rerun()
+            if st.session_state.get(f"{state_key}:facts_note"):
+                st.info(st.session_state[f"{state_key}:facts_note"])
 
-        col_draft, col_info = st.columns([1, 3], vertical_alignment="center")
+        col_draft, col_model, col_info = st.columns([1, 1, 2], vertical_alignment="center")
         with col_draft:
             draft_clicked = st.button("Draft sections with AI", type="primary", key=f"{state_key}:draft")
+        with col_model:
+            if len(deployments) > 1:
+                settings["model"] = st.selectbox("Draft with", deployments, key=f"{state_key}:deployment", label_visibility="collapsed")
+                model = settings["model"]
         with col_info:
             st.caption(f"Provider: {provider}" + (f" ({model})" if model else "") + ". Change it under AI provider in the sidebar. Changes are saved automatically.")
         if draft_clicked:
@@ -369,7 +400,7 @@ def design_page() -> None:
                 if design.mapping is not None and not design.brief.mapping_summary.strip():
                     design.brief.mapping_summary = _mapping_note(design)
                 with st.spinner(f"Drafting sections with {provider}. This can take a minute."):
-                    result = draft_content(design.brief, blueprint, manifest, llm)
+                    result = draft_content(design.brief, blueprint, manifest, llm, original=entry.original)
             except (LLMNotConfigured, LLMError) as exc:
                 st.error(str(exc))
             else:
@@ -380,8 +411,8 @@ def design_page() -> None:
                     design.llm = result.llm
                     store.save(design)
                     total = sum(len(s["fields"]) for s in writable_sections(blueprint, manifest))
-                    shown = f"{result.llm} ({model})" if model else result.llm
-                    st.session_state[f"{state_key}:draft_done"] = f"Drafted {len(result.content.fields)} of {total} fields with {shown}. Review them in step 3, then generate."
+                    extra = f", {len(result.mechanical)} filled from facts and template" if result.mechanical else ""
+                    st.session_state[f"{state_key}:draft_done"] = f"Drafted {len(result.content.fields)} of {total} fields with {result.llm}{extra}. Review them in step 3, then generate."
                     st.session_state[f"{state_key}:draft_warnings"] = result.warnings
                     st.session_state[f"{state_key}:v"] = version + 1
                     st.rerun()
@@ -483,7 +514,7 @@ def design_page() -> None:
             try:
                 llm = get_llm(provider, **settings)
                 with st.spinner(f"Drafting the sections with {provider} before generating. This can take a minute."):
-                    result = draft_content(design.brief, blueprint, manifest, llm)
+                    result = draft_content(design.brief, blueprint, manifest, llm, original=entry.original)
             except (LLMNotConfigured, LLMError) as exc:
                 st.error(str(exc))
                 st.stop()

@@ -6,25 +6,54 @@ import re
 from pydantic import BaseModel, Field
 
 from sdgen.blueprint import Blueprint
-from sdgen.brief import Brief, dump_brief
+from sdgen.brief import Brief, FactQuestion, dump_brief
 from sdgen.content import Content, dump_markdown, load_markdown, validate_content
 from sdgen.llm import LLMClient, get_llm
 from sdgen.manifest import Manifest
+from sdgen.mechanical import mechanical_fills
 
 SKIP_KINDS = {"static", "divider"}
-EXAMPLE_CHARS = 700
+EXAMPLE_CHARS = 400
 FENCE_RE = re.compile(r"^```(?:markdown|md)?\s*\n(.*?)\n```\s*$", re.DOTALL)
+NUMBER_RE = re.compile(r"\d[\d,.]*\s?%?")
+INTEGRATION_RE = re.compile(r"integration|architecture|mapping|flow|interface|api|duplicate|file|format", re.IGNORECASE)
+QUALITY_RE = re.compile(r"deviation|success|criteria|report|analytic|effort|decision|acceptance|operation|test|risk", re.IGNORECASE)
 
-SYSTEM_PROMPT = """You are a senior SAP integration solution architect writing a solution-design document.
-Write only from the brief. Never invent systems, interfaces, numbers, names or dates.
-Where the brief lacks information, write [TBC] followed by a short question in brackets.
+SYSTEM_PROMPT = """You are a senior SAP integration solution architect writing a solution-design document
+that developers will build and test from.
+Write only from the brief and the facts. Names, dates, numbers, identifiers and system names
+come only from the facts or verbatim from the brief; where such a detail is missing write
+[TBC: short question] instead of inventing it.
 You receive an answer skeleton. Return it filled in: keep every "## " heading exactly as written
 and in the same order, replace each <!-- hint --> with the content, and add nothing else: no other
 headings, no commentary, no code fence.
 Under a heading: one paragraph per line; bullet lines start with "- " and are indented two spaces
 per level; use **bold** sparingly; do not repeat the field label at the start of the content.
+Each field states a character target: write between 70 and 100 percent of it, using the
+structure shown for the field. Fields marked as a few words get at most four words.
 A table keeps its header row and gets one row per entry, at least one row, with exactly the
-listed columns. Stay within the character budget of each field."""
+listed columns. Never write the same content into two fields."""
+
+ROUTING = {
+    "overview": [
+        "Business need follows the structure of the earlier document (problem, expected outcome, status) and uses the volumes from the facts.",
+        "Solution overview labels each system keep, change or new, taken from the systems fact.",
+        "Landscape fields list platforms and systems, not process steps.",
+        "Scope rows use the counterparts, countries and company codes from the facts. If the facts name no counterparts, write one row with [TBC: names] and never use example company names.",
+    ],
+    "integration": [
+        "Integration overview steps: one row per hop of the approach, numbered in flow order.",
+        "Architecture notes name the concrete protocols, endpoints, checks and error paths from the approach and the operations text.",
+        "Where a slide asks for links, use the APIs and references lines.",
+        "Mapping or file format fields describe the formats and schemas in scope from the references and the investigation details.",
+    ],
+    "quality": [
+        "Deviations list only true departures from the SAP standard (custom code, non-standard process); candidates come from the investigation details and the approach. If there is none, write one row saying that the standard is followed.",
+        "Success criteria and measures: one row per measurable target from the facts and the acceptance criteria; no invented percentages.",
+        "Decisions and open questions come from the decisions log and the investigation details, numbered.",
+        "Operations and error handling come from the operations text.",
+    ],
+}
 
 
 class DraftResult(BaseModel):
@@ -32,34 +61,131 @@ class DraftResult(BaseModel):
     content: Content
     warnings: list[str] = Field(default_factory=list)
     llm: str = ""
+    calls: int = 0
+    mechanical: list[str] = Field(default_factory=list)
 
 
-def draft_content(brief: Brief, blueprint: Blueprint, manifest: Manifest, llm: LLMClient | None = None) -> DraftResult:
+def draft_content(
+    brief: Brief,
+    blueprint: Blueprint,
+    manifest: Manifest,
+    llm: LLMClient | None = None,
+    original: Content | None = None,
+    repair: bool = True,
+) -> DraftResult:
     llm = llm or get_llm()
-    system, user = build_prompt(brief, blueprint, manifest, include_context=bool(getattr(llm, "wants_context", False)))
-    reply = llm.complete(system, user)
-    content = load_markdown(_unfence(reply), manifest)
+    fixed = mechanical_fills(brief, blueprint, manifest, original)
+    sections = writable_sections(blueprint, manifest, exclude=set(fixed.fields))
+    content = Content(fields=dict(fixed.fields))
+    calls = 0
+    for group, members in group_sections(sections):
+        system, user = build_prompt(brief, blueprint, manifest, include_context=_wants_context(llm), sections=members, group=group)
+        drafted = _parse(llm.complete(system, user), manifest)
+        calls += 1
+        content.fields.update(drafted.fields)
+        content.unknown.extend(drafted.unknown)
+        if repair:
+            missing = _missing_fields(members, content, manifest)
+            if missing:
+                repaired_sections = _restrict(members, missing)
+                system, user = build_prompt(
+                    brief,
+                    blueprint,
+                    manifest,
+                    include_context=_wants_context(llm),
+                    sections=repaired_sections,
+                    group=group,
+                    note="A previous answer left these fields empty or malformed. Fill exactly these fields.",
+                )
+                repaired = _parse(llm.complete(system, user), manifest)
+                calls += 1
+                content.fields.update({k: v for k, v in repaired.fields.items() if k in missing})
     strip_label_prefixes(content, manifest)
-    if brief.subject.strip() and not content.globals.get("subject"):
+    if brief.subject.strip():
         content.globals["subject"] = brief.subject.strip()
     warnings = [w for w in validate_content(content, manifest) if "image" not in w]
-    return DraftResult(markdown=dump_markdown(content, manifest), content=content, warnings=warnings, llm=llm.name)
+    warnings += number_warnings(content, brief, manifest)
+    return DraftResult(
+        markdown=dump_markdown(content, manifest),
+        content=content,
+        warnings=warnings,
+        llm=_label(llm),
+        calls=calls,
+        mechanical=fixed.notes,
+    )
 
 
-def build_prompt(brief: Brief, blueprint: Blueprint, manifest: Manifest, include_context: bool = False) -> tuple[str, str]:
-    sections = writable_sections(blueprint, manifest)
-    lines = ["# Task", "Fill in the answer skeleton at the end of this message, using the outline and the brief.", "", "# Outline"]
+def redraft_section(
+    brief: Brief,
+    blueprint: Blueprint,
+    manifest: Manifest,
+    section_key: str,
+    instruction: str,
+    current: Content,
+    llm: LLMClient,
+) -> dict:
+    """Writes one section again with an instruction; returns only that section's fields."""
+    sections = [s for s in writable_sections(blueprint, manifest) if s["section"] == section_key]
+    if not sections:
+        return {}
+    keys = [f["key"] for f in sections[0]["fields"]]
+    existing = "\n".join(f"## {k}\n{_as_text(current.fields.get(k))}" for k in keys if current.fields.get(k) not in (None, "", []))
+    note = "Rewrite this section. Instruction from the reviewer: " + instruction.strip()
+    if existing:
+        note += "\nCurrent draft of the section:\n" + existing
+    system, user = build_prompt(brief, blueprint, manifest, include_context=_wants_context(llm), sections=sections, group=_group_of(sections[0]), note=note)
+    drafted = _parse(llm.complete(system, user), manifest)
+    strip_label_prefixes(drafted, manifest)
+    return {k: v for k, v in drafted.fields.items() if k in keys}
+
+
+def extract_facts(brief: Brief, questions: list[FactQuestion], llm: LLMClient) -> dict[str, str]:
+    """Facts the model can read verbatim from the brief's prose; unknown facts are left out."""
+    if not questions:
+        return {}
+    schema = {
+        "type": "object",
+        "properties": {q.spec.key: {"type": "string", "description": q.spec.guidance} for q in questions},
+        "additionalProperties": False,
+    }
+    system = (
+        "You extract facts from a solution-design brief. Return a JSON object whose keys are the fact keys given. "
+        "Include a key only when the brief states the fact explicitly; copy values verbatim, do not guess or infer. "
+        "Multi-line facts use one line per item in the format described."
+    )
+    user = "# Fact keys\n" + "\n".join(f"- {q.spec.key}: {q.spec.label}. {q.spec.guidance}" for q in questions) + "\n\n# Brief\n" + dump_brief(brief)
+    found = llm.complete_json(system, user, schema, name="facts")
+    wanted = {q.spec.key for q in questions}
+    return {k: str(v).strip() for k, v in found.items() if k in wanted and str(v).strip()}
+
+
+def build_prompt(
+    brief: Brief,
+    blueprint: Blueprint,
+    manifest: Manifest,
+    include_context: bool = False,
+    sections: list[dict] | None = None,
+    group: str | None = None,
+    note: str | None = None,
+) -> tuple[str, str]:
+    sections = writable_sections(blueprint, manifest) if sections is None else sections
+    lines = ["# Task", "Fill in the answer skeleton at the end of this message, using the outline, the brief and the facts."]
+    if note:
+        lines += ["", note]
+    lines += ["", "# Outline"]
     for section in sections:
         lines.append(f"## {section['title']} ({section['kind']})")
         if section["ask"]:
             lines.append(f"What this section asks for: {section['ask']}")
         lines.append("Fields: " + ", ".join(f["key"] for f in section["fields"]))
         if section["example"]:
-            lines.append("Example from an earlier document (tone and depth only, do not reuse its facts):")
-            lines.append('"""')
-            lines.append(_clip(section["example"], EXAMPLE_CHARS))
-            lines.append('"""')
+            lines.append("Earlier document, for structure and depth only (its facts belong to another project):")
+            lines.append(example_outline(section["example"]))
         lines.append("")
+    routing = ROUTING.get(group or "", [])
+    if routing:
+        lines += ["# How to use the brief", *[f"- {r}" for r in routing], ""]
+    lines += ["# Facts (the only source for names, dates, numbers and identifiers)", brief.facts_text() or "(no facts given: write [TBC: question] where one is needed)", ""]
     lines += ["# Brief", dump_brief(brief), "# Answer skeleton", answer_skeleton(brief, sections)]
     if include_context:
         context = {
@@ -76,10 +202,10 @@ def answer_skeleton(brief: Brief, sections: list[dict]) -> str:
         lines.append(f"<!-- Section: {section['title']} -->")
         for field in section["fields"]:
             hint = f"{field['label']}: {field['kind']}"
-            if field["max_chars"]:
-                hint += f", about {field['max_chars']} characters"
             if field["token"]:
                 hint += ", a few words only, it replaces a short placeholder"
+            elif field["max_chars"]:
+                hint += f", target {field['max_chars']} characters (write 70 to 100 percent of it)"
             if field["guidance"]:
                 hint += f". {field['guidance']}"
             lines.append(f"## {field['key']}")
@@ -91,13 +217,38 @@ def answer_skeleton(brief: Brief, sections: list[dict]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def writable_sections(blueprint: Blueprint, manifest: Manifest) -> list[dict]:
+def example_outline(example: str) -> str:
+    """The labels and sub-headings of the earlier text, then a short excerpt."""
+    headings: list[str] = []
+    for raw in example.splitlines():
+        line = " ".join(raw.split())
+        if not line:
+            continue
+        label, sep, rest = line.partition(":")
+        if sep and 0 < len(label) <= 40 and not label[0].isdigit():
+            headings.append(label.strip())
+        elif len(line) <= 40 and not line.endswith(".") and not line.startswith(("-", "|")) and "|" not in line:
+            headings.append(line)
+    seen: list[str] = []
+    for heading in headings:
+        if heading not in seen:
+            seen.append(heading)
+    text = " ".join(example.split())
+    excerpt = text if len(text) <= EXAMPLE_CHARS else text[:EXAMPLE_CHARS].rsplit(" ", 1)[0] + " …"
+    parts = []
+    if seen:
+        parts.append("Structure: " + "; ".join(seen[:12]))
+    parts.append('Excerpt: """' + excerpt + '"""')
+    return "\n".join(parts)
+
+
+def writable_sections(blueprint: Blueprint, manifest: Manifest, exclude: set[str] | None = None) -> list[dict]:
     result = []
     for section in blueprint.sections:
         if section.kind in SKIP_KINDS:
             continue
         fields = [manifest.field(k) for k in section.fields]
-        fields = [f for f in fields if f is not None and f.kind != "image"]
+        fields = [f for f in fields if f is not None and f.kind != "image" and f.key not in (exclude or set())]
         if not fields:
             continue
         result.append(
@@ -124,6 +275,39 @@ def writable_sections(blueprint: Blueprint, manifest: Manifest) -> list[dict]:
     return result
 
 
+def group_sections(sections: list[dict]) -> list[tuple[str, list[dict]]]:
+    groups: dict[str, list[dict]] = {"overview": [], "integration": [], "quality": []}
+    for section in sections:
+        groups[_group_of(section)].append(section)
+    return [(name, members) for name, members in groups.items() if members]
+
+
+def number_warnings(content: Content, brief: Brief, manifest: Manifest) -> list[str]:
+    known = " ".join([dump_brief(brief), brief.facts_text()])
+    warnings = []
+    for key, value in content.fields.items():
+        spec = manifest.field(key)
+        if spec is None:
+            continue
+        if isinstance(value, list) and value and isinstance(value[0], dict):
+            text = " ".join(str(cell) for row in value for cell in row.values())
+        elif isinstance(value, str):
+            text = value
+        else:
+            continue
+        strange = []
+        for match in NUMBER_RE.findall(text):
+            token = match.strip().rstrip(",.")
+            digits = token.rstrip("%").strip().rstrip(",.")
+            if not digits or len(digits.replace(",", "").replace(".", "")) < 2 or token in known or digits in known:
+                continue
+            if token not in strange:
+                strange.append(token)
+        if strange:
+            warnings.append(f"field '{key}' ({spec.label}) uses numbers not found in the brief: {', '.join(strange[:5])}")
+    return warnings
+
+
 def strip_label_prefixes(content: Content, manifest: Manifest) -> None:
     # Models tend to start a value with "Label:"; the template already shows the label.
     for key, value in content.fields.items():
@@ -136,13 +320,74 @@ def strip_label_prefixes(content: Content, manifest: Manifest) -> None:
             content.fields[key] = rest.lstrip(" ")
 
 
-def _clip(text: str, limit: int) -> str:
-    text = text.strip()
-    if len(text) <= limit:
-        return text
-    return text[:limit].rsplit(" ", 1)[0].rstrip() + " …"
+def _group_of(section: dict) -> str:
+    text = f"{section['title']} {section['kind']}"
+    if section["kind"] in ("cover",):
+        return "overview"
+    if QUALITY_RE.search(text) or section["kind"] == "references":
+        return "quality"
+    if INTEGRATION_RE.search(text) or section["kind"] in ("diagram", "mapping"):
+        return "integration"
+    return "overview"
+
+
+def _missing_fields(sections: list[dict], content: Content, manifest: Manifest) -> set[str]:
+    missing = set()
+    for section in sections:
+        for field in section["fields"]:
+            value = content.fields.get(field["key"])
+            if value in (None, "", []):
+                missing.add(field["key"])
+            elif field["kind"] == "table" and isinstance(value, list) and field["columns"]:
+                known = {c.strip().lower() for c in field["columns"]}
+                if any(str(k).strip().lower() not in known for row in value for k in row):
+                    missing.add(field["key"])
+    return missing
+
+
+def _restrict(sections: list[dict], keys: set[str]) -> list[dict]:
+    result = []
+    for section in sections:
+        fields = [f for f in section["fields"] if f["key"] in keys]
+        if fields:
+            result.append({**section, "fields": fields})
+    return result
+
+
+def _parse(reply: str, manifest: Manifest) -> Content:
+    return load_markdown(_unfence(reply), manifest)
+
+
+def _wants_context(llm: LLMClient) -> bool:
+    return bool(getattr(llm, "wants_context", False))
+
+
+def _label(llm: LLMClient) -> str:
+    return str(getattr(llm, "label", llm.name))
+
+
+def _as_text(value) -> str:
+    if isinstance(value, list):
+        return "\n".join(" | ".join(str(c) for c in row.values()) for row in value if isinstance(row, dict))
+    return str(value or "")
 
 
 def _unfence(reply: str) -> str:
     match = FENCE_RE.match(reply.strip())
     return match.group(1) if match else reply
+
+
+__all__ = [
+    "DraftResult",
+    "SYSTEM_PROMPT",
+    "answer_skeleton",
+    "build_prompt",
+    "draft_content",
+    "example_outline",
+    "extract_facts",
+    "group_sections",
+    "number_warnings",
+    "redraft_section",
+    "strip_label_prefixes",
+    "writable_sections",
+]

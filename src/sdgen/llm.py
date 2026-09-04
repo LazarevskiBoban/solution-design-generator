@@ -9,14 +9,20 @@ CONTEXT_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 PROVIDERS = ("mock", "azure", "openai", "anthropic")
 MAX_OUTPUT_TOKENS = 16000
-DEFAULT_AZURE_API_VERSION = "2024-10-21"
+REASONING_OUTPUT_TOKENS = 32000
+DEFAULT_AZURE_API_VERSION = "2025-04-01-preview"
 DEFAULT_OPENAI_MODEL = "gpt-5"
+REASONING_MODEL_RE = re.compile(r"^(gpt-5|o\d)", re.IGNORECASE)
+JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+MOCK_JSON: dict[str, dict] = {"facts": {}}
 
 
 class LLMClient(Protocol):
     name: str
 
     def complete(self, system: str, user: str) -> str: ...
+
+    def complete_json(self, system: str, user: str, schema: dict, name: str = "result") -> dict: ...
 
 
 class LLMNotConfigured(RuntimeError):
@@ -29,6 +35,7 @@ class LLMError(RuntimeError):
 
 class MockLLM:
     name = "mock"
+    label = "mock"
     wants_context = True
 
     def complete(self, system: str, user: str) -> str:
@@ -36,30 +43,93 @@ class MockLLM:
         context = json.loads(match.group(1)) if match else {}
         return mock_draft(context)
 
+    def complete_json(self, system: str, user: str, schema: dict, name: str = "result") -> dict:
+        return dict(MOCK_JSON.get(name, {}))
+
 
 class OpenAILLM:
     """Chat-completions adapter; the client is either an OpenAI or an AzureOpenAI client."""
 
-    def __init__(self, client: Any, model: str, name: str = "openai") -> None:
+    def __init__(self, client: Any, model: str, name: str = "openai", effort: str = "low") -> None:
         self.name = name
         self.model = model
+        self.effort = effort
         self._client = client
+
+    @property
+    def label(self) -> str:
+        return f"{self.name}:{self.model}"
+
+    @property
+    def reasoning(self) -> bool:
+        return bool(REASONING_MODEL_RE.match(self.model))
+
+    def with_effort(self, effort: str) -> OpenAILLM:
+        return OpenAILLM(self._client, self.model, self.name, effort)
 
     def complete(self, system: str, user: str) -> str:
         try:
-            response = self._client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-                max_completion_tokens=MAX_OUTPUT_TOKENS,
-            )
+            return self._request(system, user)
         except Exception as exc:
             raise _translate(exc, self.model) from exc
+
+    def complete_json(self, system: str, user: str, schema: dict, name: str = "result") -> dict:
+        # Newest first: schema-constrained output, JSON mode, then plain text parsed by hand.
+        attempts = [
+            {"response_format": {"type": "json_schema", "json_schema": {"name": name, "schema": schema}}},
+            {"response_format": {"type": "json_object"}},
+            {},
+        ]
+        hint = f"\nReturn only a JSON object that matches this schema:\n{json.dumps(schema)}"
+        failure: Exception | None = None
+        for index, extra in enumerate(attempts):
+            try:
+                text = self._request(system if index == 0 else system + hint, user, **extra)
+            except Exception as exc:
+                if _is_bad_request(exc) and index < len(attempts) - 1:
+                    failure = exc
+                    continue
+                raise _translate(exc, self.model) from exc
+            try:
+                return parse_json(text)
+            except ValueError as exc:
+                failure = exc
+        raise LLMError(f"'{self.model}' did not return valid JSON: {failure}")
+
+    def _request(self, system: str, user: str, **extra: Any) -> str:
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "max_completion_tokens": REASONING_OUTPUT_TOKENS if self.reasoning else MAX_OUTPUT_TOKENS,
+        }
+        if self.reasoning:
+            kwargs["reasoning_effort"] = self.effort
+        kwargs.update(extra)
+        response = self._client.chat.completions.create(**kwargs)
         choice = response.choices[0]
         if choice.finish_reason == "length":
             raise LLMError(f"'{self.model}' stopped at the output limit, so the draft is incomplete; shorten the brief or the outline")
         if choice.finish_reason == "content_filter":
             raise LLMError(f"'{self.model}' declined the request (content filter)")
         return choice.message.content or ""
+
+
+def parse_json(text: str) -> dict:
+    body = text.strip()
+    fence = re.match(r"^```(?:json)?\s*\n(.*?)\n```\s*$", body, re.DOTALL)
+    if fence:
+        body = fence.group(1)
+    match = JSON_OBJECT_RE.search(body)
+    if not match:
+        raise ValueError("no JSON object in the reply")
+    data = json.loads(match.group(0))
+    if not isinstance(data, dict):
+        raise ValueError("the reply is not a JSON object")
+    return data
+
+
+def _is_bad_request(exc: Exception) -> bool:
+    return type(exc).__name__ == "BadRequestError"
 
 
 def get_llm(name: str | None = None, **settings: str | None) -> LLMClient:
@@ -118,6 +188,8 @@ def _setting(value: str | None, env: str) -> str:
 
 
 def _translate(exc: Exception, model: str) -> Exception:
+    if isinstance(exc, (LLMError, LLMNotConfigured)):
+        return exc
     try:
         import openai
     except ImportError:

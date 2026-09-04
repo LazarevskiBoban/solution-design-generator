@@ -8,10 +8,12 @@ from sdgen.blueprint import derive_blueprint
 from sdgen.brief import Brief, brief_skeleton, dump_brief, load_brief
 from sdgen.cli import main
 from sdgen.inventory import inspect_deck
-from sdgen.llm import DEFAULT_AZURE_API_VERSION, MAX_OUTPUT_TOKENS, LLMError, LLMNotConfigured, MockLLM, OpenAILLM, get_llm
-from sdgen.manifest import GlobalSpec
+from sdgen.blueprint import Blueprint, Section
+from sdgen.content import Content
+from sdgen.llm import DEFAULT_AZURE_API_VERSION, MAX_OUTPUT_TOKENS, LLMError, LLMNotConfigured, MockLLM, OpenAILLM, get_llm, parse_json
+from sdgen.manifest import Binding, FieldSpec, GlobalSpec, Manifest, ShapeRef
 from sdgen.registry import Registry
-from sdgen.writer import build_prompt, draft_content, writable_sections
+from sdgen.writer import build_prompt, draft_content, example_outline, extract_facts, redraft_section, writable_sections
 
 BRIEF = Brief(
     subject="Bank Statement (CAMT.053) Integration",
@@ -90,11 +92,38 @@ def _fake_client(reply: str, finish: str = "stop"):
 def test_openai_adapter_sends_prompts_and_returns_text():
     client, completions = _fake_client("## a\nhello\n")
     llm = OpenAILLM(client, "gpt-test", name="azure")
-    assert llm.name == "azure" and llm.complete("sys", "usr") == "## a\nhello\n"
+    assert llm.name == "azure" and llm.label == "azure:gpt-test" and llm.complete("sys", "usr") == "## a\nhello\n"
     call = completions.calls[0]
     assert call["model"] == "gpt-test"
     assert call["messages"] == [{"role": "system", "content": "sys"}, {"role": "user", "content": "usr"}]
-    assert call["max_completion_tokens"] == MAX_OUTPUT_TOKENS
+    assert call["max_completion_tokens"] == MAX_OUTPUT_TOKENS and "reasoning_effort" not in call
+
+
+def test_complete_json_falls_back_from_schema_to_json_mode():
+    class BadRequestError(Exception):
+        pass
+
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        kind = kwargs.get("response_format", {}).get("type")
+        if kind == "json_schema":
+            raise BadRequestError("response_format not supported")
+        text = '{"version": "1.0"}' if kind == "json_object" else '```json\n{"version": "1.0"}\n```'
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text), finish_reason="stop")])
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    llm = OpenAILLM(client, "gpt-5", name="azure")
+    assert llm.complete_json("s", "u", {"type": "object"}, name="facts") == {"version": "1.0"}
+    assert [c.get("response_format", {}).get("type") for c in calls] == ["json_schema", "json_object"]
+    assert calls[0]["reasoning_effort"] == "low" and calls[0]["max_completion_tokens"] == 32000
+    assert "matches this schema" in calls[1]["messages"][0]["content"]
+    assert llm.with_effort("medium").effort == "medium" and llm.with_effort("medium").model == "gpt-5"
+    assert parse_json('```json\n{"a": 1}\n```') == {"a": 1}
+    with pytest.raises(ValueError):
+        parse_json("no json here")
+    assert MockLLM().complete_json("s", "u", {}, name="facts") == {}
 
 
 def test_openai_adapter_reports_truncation_and_failures():
@@ -140,8 +169,8 @@ def test_draft_content_parses_a_fenced_provider_reply(sample_deck, tmp_path):
     reply = "```markdown\n---\nsubject: Bank Statement\n---\n<!-- Section: Executive Overview -->\n## business_need (Business Need)\nBusiness need: Banks deliver statements daily.\n\n## `Scope`\n| Function | Countries |\n|---|---|\n| Finance | ZA |\n\n## first_point\n- one\n```"
     client, _ = _fake_client(reply)
     result = draft_content(BRIEF, entry.blueprint, entry.manifest, OpenAILLM(client, "m", name="azure"))
-    assert result.llm == "azure" and result.warnings == []
-    assert result.content.globals["subject"] == "Bank Statement"
+    assert result.llm == "azure:m" and result.warnings == [] and result.calls == 1
+    assert result.content.globals["subject"] == BRIEF.subject
     assert result.content.fields["business_need"] == "Banks deliver statements daily."
     assert result.content.fields["scope"] == [{"Function": "Finance", "Countries": "ZA"}]
     assert result.content.fields["first_point"] == "- one"
@@ -154,7 +183,7 @@ def test_prompt_lists_sections_fields_and_brief(sample_deck, tmp_path):
     keys = {f["key"] for f in sections[0]["fields"]}
     assert keys == {"business_need", "scope", "first_point"}
     system, user = build_prompt(BRIEF, entry.blueprint, entry.manifest)
-    assert "Never invent" in system and "skeleton" in system
+    assert "instead of inventing" in system and "skeleton" in system and "70 and 100 percent" in system
     assert "## Executive Overview (" in user
     fields_line = next(line for line in user.splitlines() if line.startswith("Fields: "))
     assert set(fields_line[8:].split(", ")) == keys
@@ -229,3 +258,128 @@ def test_cli_draft_writes_content(sample_deck, tmp_path):
     assert "[Draft]" in out.read_text(encoding="utf-8")
     skeleton = CliRunner().invoke(main, ["brief"])
     assert skeleton.exit_code == 0 and "## approach" in skeleton.output
+
+
+class _ScriptedLLM:
+    name = "fake"
+    label = "fake:x"
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.prompts = []
+
+    def complete(self, system, user):
+        self.prompts.append(user)
+        return self.replies.pop(0)
+
+    def complete_json(self, system, user, schema, name="result"):
+        return {}
+
+
+def test_draft_repairs_missing_fields_and_flags_numbers(sample_deck, tmp_path):
+    entry = _template(sample_deck, tmp_path)
+    first = "---\nsubject: X\n---\n## business_need\nBanks deliver statements daily and 80% arrive before noon.\n## scope\n| Function | Countries |\n|---|---|\n| Finance | ZA |\n"
+    second = "## first_point\n- one\n"
+    llm = _ScriptedLLM([first, second])
+    result = draft_content(BRIEF, entry.blueprint, entry.manifest, llm)
+    assert result.calls == 2 and result.llm == "fake:x"
+    assert result.content.fields["first_point"] == "- one"
+    assert "left these fields empty" in llm.prompts[1] and "## first_point" in llm.prompts[1] and "## business_need" not in llm.prompts[1]
+    assert any("80%" in w and "business_need" in w for w in result.warnings)
+    assert "# Facts" in llm.prompts[0] and "# How to use the brief" in llm.prompts[0] and "target 2450" not in llm.prompts[0]
+    assert "write 70 to 100 percent" in llm.prompts[0]
+
+
+def test_example_outline_keeps_structure():
+    text = "Business Need: Problem: something long. Expected Outcomes: more text.\nStatus\nScope: Function | Countries\nFinance | ZA"
+    outline = example_outline(text)
+    assert outline.startswith("Structure: Business Need; Status; Scope") and 'Excerpt: """' in outline
+
+
+def test_mechanical_fills_from_facts_and_template():
+    from sdgen.mechanical import mechanical_fills
+
+    manifest = Manifest(
+        name="m",
+        fields=[
+            FieldSpec(key="refs", label="Referenced Content", kind="table", columns=["Content Description", "URL or Source", "Purpose"], bindings=[Binding(slide=3, shape=ShapeRef(id=1))]),
+            FieldSpec(key="versions", label="Document Version Control", kind="table", columns=["Version", "Date", "Author", "Contributors", "Change description"], bindings=[Binding(slide=2, shape=ShapeRef(id=1))]),
+            FieldSpec(key="effort", label="Effort Estimation", kind="table", columns=["Gap Reference", "Deliverable", "Role", "Month-1", "Month-2", "Month-n", "Total Effort (hours)"], bindings=[Binding(slide=4, shape=ShapeRef(id=1), keep_last_row_if="Total")]),
+            FieldSpec(key="link", label="internal hyperlink to solution design", bindings=[Binding(slide=5, shape=ShapeRef(id=1), mode="token", token="<link>")]),
+            FieldSpec(key="subtitle", label="SubTitle", kind="bullets", bindings=[Binding(slide=1, shape=ShapeRef(id=1))]),
+            FieldSpec(key="principles", label="Principles", kind="table", columns=["A"], bindings=[Binding(slide=6, shape=ShapeRef(id=1))]),
+            FieldSpec(key="need", label="Business Need", bindings=[Binding(slide=5, shape=ShapeRef(id=2))]),
+        ],
+    )
+    blueprint = Blueprint(
+        name="m",
+        sections=[
+            Section(key="cover", title="Cover", kind="cover", slide=1, fields=["subtitle"]),
+            Section(key="versions", title="Document Version Control", kind="table", slide=2, fields=["versions"]),
+            Section(key="refs", title="Referenced Content", kind="references", slide=3, fields=["refs"]),
+            Section(key="effort", title="Effort Estimation", kind="table", slide=4, fields=["effort"]),
+            Section(key="overview", title="Executive Overview", kind="composite", slide=5, fields=["link", "need"]),
+            Section(key="principles", title="Guiding Principles", kind="static", slide=6, fields=["principles"]),
+        ],
+    )
+    facts = {
+        "version": "1.0",
+        "author": "Ana",
+        "contributors": "Ben; Cy",
+        "effort": "Architect | Design | 20 | 10 | 5\nDeveloper | Build | | 40 | 20",
+        "design_doc_url": "https://x/y",
+        "design_start": "1 May 2026",
+        "design_end": "30 June 2026",
+    }
+    brief = BRIEF.model_copy(update={"facts": facts})
+    result = mechanical_fills(brief, blueprint, manifest, Content(fields={"principles": [{"A": "Fit to standard"}]}))
+    assert [r["Content Description"] for r in result.fields["refs"]] == ["Bank Statement API", "CAMT.053 guide"]
+    assert result.fields["refs"][0]["URL or Source"] == "https://api.sap.com/api/bankstatement"
+    row = result.fields["versions"][0]
+    assert row["Version"] == "1.0" and row["Author"] == "Ana" and row["Contributors"] == "Ben; Cy" and row["Change description"] == "Initial draft"
+    effort = result.fields["effort"]
+    assert effort[0]["Gap Reference"] == "1" and effort[0]["Role"] == "Architect" and effort[0]["Total Effort (hours)"] == "35"
+    assert effort[1]["Month-1"] == "" and effort[1]["Month-2"] == "40" and effort[1]["Month-n"] == "20" and effort[1]["Total Effort (hours)"] == "60"
+    assert result.fields["link"] == "https://x/y"
+    assert result.fields["subtitle"] == "Bank Statement (CAMT.053) Integration\nDate: 1 May 2026 – 30 June 2026\nVersion: 1.0"
+    assert result.fields["principles"] == [{"A": "Fit to standard"}]
+    assert "need" not in result.fields
+    assert any(n.startswith("Referenced Content: from APIs") for n in result.notes)
+
+    bare = mechanical_fills(BRIEF, blueprint, manifest, None)
+    assert bare.fields["versions"][0]["Author"] == "[TBC]" and "effort" not in bare.fields
+    assert bare.fields["subtitle"] == BRIEF.subject
+
+    from sdgen.writer import number_warnings
+
+    flagged = number_warnings(Content(fields={"effort": [{"Role": "Dev", "Month-1": "40"}], "need": "CAMT.053 files, 3 banks."}), BRIEF, manifest)
+    assert len(flagged) == 1 and "'effort'" in flagged[0] and "40" in flagged[0]
+
+
+def test_extract_facts_keeps_only_known_non_empty_keys(sample_deck, tmp_path):
+    from sdgen.brief import fact_questions
+
+    entry = _template(sample_deck, tmp_path)
+    questions = fact_questions(entry.blueprint, entry.manifest)
+
+    class JsonLLM:
+        name = "j"
+
+        def complete(self, system, user):
+            return ""
+
+        def complete_json(self, system, user, schema, name="result"):
+            assert name == "facts" and "countries" in schema["properties"] and "Banks deliver" in user
+            return {"countries": "ZA", "unknown": "x", "volumes": ""}
+
+    assert extract_facts(BRIEF, questions, JsonLLM()) == {"countries": "ZA"}
+    assert extract_facts(BRIEF, questions, MockLLM()) == {}
+
+
+def test_redraft_section_returns_only_that_section(sample_deck, tmp_path):
+    entry = _template(sample_deck, tmp_path)
+    llm = _ScriptedLLM(["## business_need\nShorter need.\n## scope\n| Function | Countries |\n|---|---|\n| Finance | ZA |\n## first_point\n- x\n## other\ntext\n"])
+    current = Content(fields={"business_need": "Old text"})
+    fields = redraft_section(BRIEF, entry.blueprint, entry.manifest, entry.blueprint.sections[0].key, "make it shorter", current, llm)
+    assert set(fields) == {"business_need", "scope", "first_point"} and fields["business_need"] == "Shorter need."
+    assert "make it shorter" in llm.prompts[0] and "Old text" in llm.prompts[0]

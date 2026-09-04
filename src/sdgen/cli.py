@@ -123,7 +123,7 @@ def draft(template: str, brief_file: Path, output: Path, llm_name: str | None, m
         raise SystemExit(1)
     try:
         llm = get_llm(llm_name, model=model)
-        result = draft_content(load_brief(brief_file.read_text(encoding="utf-8")), entry.blueprint, entry.manifest, llm)
+        result = draft_content(load_brief(brief_file.read_text(encoding="utf-8")), entry.blueprint, entry.manifest, llm, original=entry.original)
     except (LLMNotConfigured, LLMError) as exc:
         click.echo(str(exc))
         raise SystemExit(1)
