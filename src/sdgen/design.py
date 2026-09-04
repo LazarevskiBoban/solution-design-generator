@@ -20,6 +20,7 @@ BRIEF_FILE = "brief.md"
 CONTENT_FILE = "content.md"
 MAPPING_FILE = "mappings.yaml"
 PLAN_FILE = "plan.yaml"
+DRAFT_FILE = "draft.md"
 FLOWS_DIR = "flows"
 IMAGES_DIR = "images"
 MAPPING_DIR = "mapping"
@@ -37,6 +38,7 @@ class Design(BaseModel):
     order: list[str] = Field(default_factory=list)
     titles: dict[str, str] = Field(default_factory=dict)
     plan: SectionPlan | None = None
+    last_draft: str = ""  # the draft as the model returned it, to tell edited sections apart
     llm: str = ""
     updated: str = ""
 
@@ -89,6 +91,7 @@ class DesignStore:
             mapping=MappingSet.load(mapping_path) if mapping_path.is_file() else None,
             plan=SectionPlan.load(plan_path) if plan_path.is_file() else None,
             titles={str(k): str(v) for k, v in (data.get("titles") or {}).items()},
+            last_draft=(folder / DRAFT_FILE).read_text(encoding="utf-8") if (folder / DRAFT_FILE).is_file() else "",
             modes={str(k): str(v) for k, v in (data.get("modes") or {}).items()},
             hidden=[str(k) for k in (data.get("hidden") or [])],
             order=[str(k) for k in (data.get("order") or [])],
@@ -117,6 +120,8 @@ class DesignStore:
             design.mapping.save(folder / MAPPING_FILE)
         if design.plan is not None:
             design.plan.save(folder / PLAN_FILE)
+        if design.last_draft:
+            (folder / DRAFT_FILE).write_text(design.last_draft, encoding="utf-8")
         return folder
 
     def image_dir(self, name: str) -> Path:

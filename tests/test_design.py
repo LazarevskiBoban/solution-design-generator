@@ -104,3 +104,11 @@ def test_flows_are_saved_next_to_the_design(tmp_path):
     assert store.flows(design) == {"level_2": spec}
     store.delete_flow(design, "level_2")
     assert store.flows(design) == {} and not (folder / "level_2.mmd").exists()
+
+
+def test_last_draft_is_persisted(tmp_path):
+    store = DesignStore(tmp_path / "designs")
+    design = Design(name="lockbox", template="demo", last_draft="## business_need\nModel text\n")
+    store.save(design)
+    assert (tmp_path / "designs" / "lockbox" / "draft.md").read_text(encoding="utf-8") == "## business_need\nModel text\n"
+    assert store.load("lockbox").last_draft == design.last_draft

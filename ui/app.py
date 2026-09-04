@@ -25,7 +25,7 @@ from sdgen.plan import SOURCES, FlowRequest, SectionDecision, SectionPlan, activ
 from sdgen.preview import export_slide_images
 from sdgen.registry import Registry, safe_name
 from sdgen.tools import AnalyzeRequest, RenderRequest, analyze_template, continuation_slides, render_document
-from sdgen.writer import draft_content, extract_facts, writable_sections
+from sdgen.writer import draft_content, extract_facts, redraft_section, writable_sections
 
 ROOT = Path(__file__).resolve().parent.parent
 KINDS = ["text", "bullets", "table", "image"]
@@ -413,7 +413,11 @@ def design_page() -> None:
                 if not result.content.fields:
                     st.error("The reply did not use the expected section headings, so nothing was filled. Try again or choose another model.")
                 else:
-                    design.content_markdown = result.markdown
+                    current = load_markdown(design.content_markdown, manifest) if design.content_markdown.strip() else Content()
+                    last = load_markdown(design.last_draft, manifest) if design.last_draft.strip() else Content()
+                    merged = _merge_draft(current.fields, last.fields, result.content.fields)
+                    design.content_markdown = dump_markdown(Content(globals=_globals(subject), fields=merged), manifest)
+                    design.last_draft = result.markdown
                     design.llm = result.llm
                     store.save(design)
                     total = sum(len(s["fields"]) for s in writable_sections(blueprint, manifest))
@@ -588,6 +592,7 @@ def design_page() -> None:
                 st.stop()
             merged = {**result.content.fields, **content.fields}
             design.content_markdown = dump_markdown(Content(globals=_globals(subject), fields=merged), manifest)
+            design.last_draft = result.markdown
             design.llm = result.llm
             drafted_now = True
             st.session_state[f"{state_key}:draft_done"] = f"Drafted {len(result.content.fields)} fields with {result.llm} while generating. Text you typed yourself was kept."
@@ -797,6 +802,24 @@ def _slide_viewer(state_key: str, entry) -> None:
                 st.session_state[f"{state_key}:stale"] = stale | {section.key}
                 st.session_state[f"{state_key}:v"] = version + 1
                 st.rerun(scope="fragment")
+            instruction = st.text_input("Redraft with an instruction", key=f"{state_key}:vw:instruction:{section.key}", placeholder="for example: shorter, name the three banks, add the retry rule")
+            if st.button("Redraft this section", key=f"{state_key}:vw:redraft:{section.key}", disabled=not instruction.strip()):
+                try:
+                    llm = _current_llm(state_key)
+                    with st.spinner("Rewriting the section."):
+                        fields_new = redraft_section(design.brief, blueprint, manifest, section.key, instruction, content, llm)
+                except (LLMNotConfigured, LLMError) as exc:
+                    st.error(str(exc))
+                else:
+                    if not fields_new:
+                        st.error("The reply did not use the expected headings; nothing changed.")
+                    else:
+                        content.fields.update(fields_new)
+                        design.content_markdown = dump_markdown(Content(globals=_globals(design.brief.subject), fields=content.fields), manifest)
+                        store.save(design)
+                        st.session_state[f"{state_key}:stale"] = stale | {section.key}
+                        st.session_state[f"{state_key}:v"] = version + 1
+                        st.rerun(scope="fragment")
 
 
 def _jump_to_section(state_key: str, entries: list[dict], design: Design, blueprint: Blueprint, key: str) -> None:
@@ -1131,6 +1154,25 @@ def _render_design(entry, store: DesignStore, design: Design, subject: str, name
         )
     )
     return output, response
+
+
+def _current_llm(state_key: str):
+    provider, settings = st.session_state.get("llm", ("mock", {}))
+    settings = dict(settings)
+    chosen = st.session_state.get(f"{state_key}:deployment")
+    if chosen:
+        settings["model"] = chosen
+    return get_llm(provider, **settings)
+
+
+def _merge_draft(current: dict, last: dict, fresh: dict) -> dict:
+    """A new draft replaces only fields the user has not edited since the previous draft."""
+    merged = dict(current)
+    for key, value in fresh.items():
+        existing = current.get(key)
+        if existing in (None, "", []) or existing == last.get(key):
+            merged[key] = value
+    return merged
 
 
 def _draw_flows_for(state_key: str, design: Design, store: DesignStore, sections: list, requests: dict, provider: str, settings: dict) -> None:

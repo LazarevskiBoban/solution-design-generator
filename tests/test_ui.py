@@ -110,6 +110,9 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     ui._move_section(board_design, blueprint, keys[-1], -1)
     assert board_design.order[0] == keys[-1]
 
+    merged = ui._merge_draft({"a": "edited", "b": "old", "c": ""}, {"a": "old", "b": "old"}, {"a": "new", "b": "new", "c": "new", "d": "new"})
+    assert merged == {"a": "edited", "b": "new", "c": "new", "d": "new"}
+
     fresh = ui.Design(name="y", template="demo")
     entries = [{"section": keys[0], "title": "A", "png": None, "text": ""}]
     assert [e["section"] for e in ui._visible_entries(entries, fresh, blueprint)] == keys
