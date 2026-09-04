@@ -74,6 +74,7 @@ def render(
     extras: list[ExtraSlide] | None = None,
     flows: dict[str, FlowSpec] | None = None,
     spill: bool = False,
+    clear_shapes: list[tuple[int, int]] | None = None,
 ) -> RenderResult:
     prs = Presentation(str(template))
     slides = list(prs.slides)
@@ -104,6 +105,17 @@ def render(
             continue
         current = shape.text_frame.text
         set_rich_text(shape, f"{title.strip()}: {subject}" if subject and subject in current else title.strip())
+
+    # Cleared before anything is filled or copied, so continuation copies inherit the cleared state.
+    for number, shape_id in clear_shapes or []:
+        if not 1 <= number <= len(slides):
+            continue
+        target = find_shape(slides[number - 1], shape_id)
+        if target is None or not getattr(target, "has_text_frame", False):
+            issues.append(RenderIssue(slide=number, message=f"text to clear not found (shape {shape_id})"))
+            continue
+        set_rich_text(target, "")
+        issues.append(RenderIssue(level="info", slide=number, message=f"template text cleared (shape {shape_id})"))
 
     drawn = _draw_flows(slides, manifest, content, flows or {}, hidden_slides, issues)
     pending: dict[int, dict] = {}
@@ -168,6 +180,13 @@ def render(
     )
 
 
+def _set_header(shape, columns: list[str]) -> None:
+    """Renames the header row of a cloned table so an extra slide shows its own columns."""
+    cells = list(shape.table.rows[0].cells)
+    for index, cell in enumerate(cells):
+        set_rich_text(cell, columns[index] if index < len(columns) else "")
+
+
 def _draw_flows(slides: list, manifest: Manifest, content: Content, flows: dict[str, FlowSpec], hidden: set[int], issues: list[RenderIssue]) -> set[str]:
     """Draws each flow into its image slot unless an uploaded image fills that slot."""
     drawn: set[str] = set()
@@ -215,6 +234,8 @@ def _add_extras(prs, slides: list, extras: list[ExtraSlide], subject: str, issue
                 value = [[PLACEHOLDER_ROW]] if extra.spec.kind == "table" else placeholder_text(extra.title)
                 issues.append(RenderIssue(level="info", field=extra.key, message="no value; placeholder shown"))
             try:
+                if extra.spec.kind == "table" and extra.spec.columns and getattr(shape, "has_table", False):
+                    _set_header(shape, extra.spec.columns)
                 _apply(prs, clone, shape, extra.spec, binding, value, issues, False)
             except Exception as exc:
                 issues.append(RenderIssue(level="error", field=extra.key, message=str(exc)))

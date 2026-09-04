@@ -98,3 +98,45 @@ def test_mock_plan_is_the_default(sample_deck, tmp_path):
     plan = plan_sections(BRIEF, entry.blueprint, entry.manifest, MockLLM())
     assert plan.model == "mock" and [d.key for d in plan.decisions] == [s.key for s in entry.blueprint.sections]
     assert SectionPlan.model_validate(plan.model_dump()) == plan
+
+
+def test_leftover_texts_and_clear_decisions(sample_deck, tmp_path):
+    from sdgen.plan import leftover_texts
+
+    entry = _template(sample_deck, tmp_path)
+    leftovers = leftover_texts(entry.template_path, entry.manifest, entry.blueprint)
+    texts = [item.text for item in leftovers]
+    assert "Scope" in texts and "ISPIC" in texts and "BTP" in texts
+    assert not any("Something long enough" in t for t in texts) and all(item.slide == 1 for item in leftovers)
+
+    scope = next(item for item in leftovers if item.text == "Scope")
+    llm = _JsonLLM({"decisions": [], "clear": [{"slide": 1, "shape": scope.shape, "reason": "earlier project"}, {"slide": 9, "shape": 99}, {"slide": "x", "shape": 1}]})
+    plan = plan_sections(BRIEF, entry.blueprint, entry.manifest, llm, leftovers=leftovers)
+    assert [(c.slide, c.shape, c.text, c.reason) for c in plan.clear] == [(1, scope.shape, "Scope", "earlier project")]
+    assert f"- 1 | {scope.shape} | Scope" in llm.prompts[0][1]
+    assert plan_sections(BRIEF, entry.blueprint, entry.manifest, MockLLM(), leftovers=leftovers).clear == []
+
+
+def test_extras_avoid_the_version_control_slide_as_prototype(sample_deck, tmp_path):
+    from sdgen.blueprint import Blueprint, Section
+    from sdgen.manifest import Binding, FieldSpec, Manifest, ShapeRef
+    from sdgen.plan import _prototype
+
+    manifest = Manifest(
+        name="m",
+        fields=[
+            FieldSpec(key="versions", label="Document Version Control", kind="table", columns=["Version", "Date", "Author", "Contributors", "Change"], bindings=[Binding(slide=2, shape=ShapeRef(id=1))]),
+            FieldSpec(key="criteria", label="Success Criteria", kind="table", columns=["Ref", "Success Criteria", "Adoption Measure", "Notes"], bindings=[Binding(slide=9, shape=ShapeRef(id=1))]),
+            FieldSpec(key="effort", label="Effort", kind="table", columns=["Ref", "Platform", "Deliverable", "Role", "M1", "M2", "Mn", "Total"], bindings=[Binding(slide=26, shape=ShapeRef(id=1))]),
+        ],
+    )
+    blueprint = Blueprint(
+        name="m",
+        sections=[
+            Section(key="versions", title="Document Version Control", kind="table", slide=2, fields=["versions"]),
+            Section(key="criteria", title="Success Criteria", kind="table", slide=9, fields=["criteria"]),
+            Section(key="effort", title="Effort Estimation", kind="table", slide=26, fields=["effort"]),
+        ],
+    )
+    assert _prototype(blueprint, "table", ["Ref", "Scenario", "Expected result", "Evidence"], manifest) == "criteria"
+    assert _prototype(blueprint, "table", ["Ref", "Item", "Owner", "Status", "Due", "Notes", "Risk", "Link"], manifest) == "effort"

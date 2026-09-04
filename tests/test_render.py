@@ -236,6 +236,11 @@ def test_extra_slides_are_cloned_from_a_prototype(sample_deck, tmp_path):
     assert added.shapes.title.text == "Acceptance Criteria: Carrier Invoices"
     table = next(s for s in added.shapes if s.has_table).table
     assert [[c.text for c in r.cells] for r in table.rows] == [["Function", "Countries"], ["Test", "ZA"]]
+
+    renamed = extra.model_copy(update={"spec": spec.model_copy(update={"columns": ["Ref", "Scenario"]}), "value": [{"Ref": "1", "Scenario": "Happy path"}]})
+    render(sample_deck, manifest, Content(globals={"subject": "X"}), tmp_path / "renamed.pptx", extras=[renamed])
+    header = next(s for s in Presentation(str(tmp_path / "renamed.pptx")).slides[1].shapes if s.has_table).table
+    assert [[c.text for c in r.cells] for r in header.rows] == [["Ref", "Scenario"], ["1", "Happy path"]]
     original = next(s for s in prs.slides[0].shapes if s.has_table).table
     assert [c.text for c in original.rows[1].cells] == ["Finance", "ZA"]
 
@@ -291,3 +296,12 @@ def test_composite_box_spills_onto_a_copy_with_other_boxes_blank(sample_deck, tm
     original = prs.slides[0]
     assert [c.text for c in next(s for s in original.shapes if s.has_table).table.rows[1].cells] == ["Finance", "ZA"]
     assert _shape_text(original, "Business Need Box") == "Business Need: Paragraph number 1 with enough words to matter."
+
+
+def test_clear_shapes_empties_template_text_before_copies(sample_deck, tmp_path):
+    manifest = _fixture_manifest(sample_deck)
+    label_id = next(s.shape_id for s in Presentation(str(sample_deck)).slides[0].shapes if s.name == "Scope Label")
+    out = tmp_path / "clear.pptx"
+    result = render(sample_deck, manifest, Content(fields={"business_need": "Need"}), out, clear_shapes=[(1, label_id), (1, 9999)])
+    assert not result.errors and any("template text cleared" in str(i) for i in result.issues) and any("not found" in str(i) for i in result.issues)
+    assert _shape_text(Presentation(str(out)).slides[0], "Scope Label") == ""

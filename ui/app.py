@@ -21,7 +21,7 @@ from sdgen.mapping.extract import extract_fields
 from sdgen.mapping.model import MappingEntry, MappingSet, SourceSpec, TargetSpec
 from sdgen.mapping.workbook import write_workbook
 from sdgen.flow import plan_flows, to_mermaid
-from sdgen.plan import SOURCES, FlowRequest, SectionDecision, SectionPlan, active_extras, apply_plan, extended_blueprint, extended_manifest, extra_slides, plan_sections
+from sdgen.plan import SOURCES, FlowRequest, SectionDecision, SectionPlan, active_extras, apply_plan, extended_blueprint, extended_manifest, extra_slides, leftover_texts, plan_sections
 from sdgen.preview import export_slide_images
 from sdgen.registry import Registry, safe_name
 from sdgen.tools import AnalyzeRequest, RenderRequest, analyze_template, continuation_slides, render_document
@@ -391,24 +391,6 @@ def design_page() -> None:
             if st.session_state.get(f"{state_key}:facts_note"):
                 st.info(st.session_state[f"{state_key}:facts_note"])
 
-        st.markdown("**Write the slides**")
-        st.caption("This sends the brief and the facts to the model and fills every slide section (about a minute). Nothing appears under Review sections until it has run; Generate runs it on its own when nothing has been written yet.")
-        col_draft, col_model, col_info = st.columns([1, 1, 2], vertical_alignment="center")
-        with col_draft:
-            draft_clicked = st.button("Write the slides from the brief", type="primary", key=f"{state_key}:draft", help="Fills every section from the brief and the facts. Sections you edited after the previous run are kept.")
-        with col_model:
-            if len(deployments) > 1:
-                settings["model"] = st.selectbox("Draft with", deployments, key=f"{state_key}:deployment", label_visibility="collapsed", help="The deployment that writes the slides.")
-                model = settings["model"]
-        with col_info:
-            st.caption(f"Provider: {provider}" + (f" ({model})" if model else "") + ". Change it under AI provider in the sidebar. Changes are saved automatically.")
-        if draft_clicked:
-            _run_draft(state_key, entry, design, store, subject, version, provider, settings)
-        if st.session_state.get(f"{state_key}:draft_done"):
-            st.success(st.session_state[f"{state_key}:draft_done"])
-        _show_draft_warnings(st.session_state.get(f"{state_key}:draft_warnings", []))
-        if design.llm == "mock" and design.content_markdown:
-            st.info("This draft comes from the mock provider and only echoes your brief into each section. Configure a real provider to get written sections.")
 
     with st.expander(_plan_title(design), expanded=design.plan is None and not design.brief.is_empty):
         st.caption("The model decides which slides apply to this design, proposes titles for slides named after another project, extra slides for the developer content and the diagrams to draw. Confirm to apply it: hidden slides, kept slides and titles follow the plan.")
@@ -417,7 +399,8 @@ def design_page() -> None:
                 llm = get_llm(provider, **settings)
                 planner = llm.with_effort("medium") if hasattr(llm, "with_effort") else llm
                 with st.spinner("Planning the sections."):
-                    proposed = plan_sections(design.brief, blueprint, manifest, planner, images={k for k, v in design.images.items() if v})
+                    leftovers = leftover_texts(entry.template_path, entry.manifest, entry.blueprint)
+                    proposed = plan_sections(design.brief, blueprint, manifest, planner, images={k for k, v in design.images.items() if v}, leftovers=leftovers)
             except (LLMNotConfigured, LLMError) as exc:
                 st.error(str(exc))
             else:
@@ -443,6 +426,26 @@ def design_page() -> None:
                     st.session_state.pop(f"{state_key}:proposed_plan", None)
                     st.rerun()
 
+    st.subheader("3. Write the slides")
+    st.markdown("**Write the slides**")
+    st.caption("This sends the brief and the facts to the model and fills every slide section (about a minute). Run it after the section plan. Nothing appears under Review sections until it has run; Generate runs it on its own when nothing has been written yet.")
+    col_draft, col_model, col_info = st.columns([1, 1, 2], vertical_alignment="center")
+    with col_draft:
+        draft_clicked = st.button("Write the slides from the brief", type="primary", key=f"{state_key}:draft", help="Fills every section from the brief and the facts. Sections you edited after the previous run are kept.")
+    with col_model:
+        if len(deployments) > 1:
+            settings["model"] = st.selectbox("Draft with", deployments, key=f"{state_key}:deployment", label_visibility="collapsed", help="The deployment that writes the slides.")
+            model = settings["model"]
+    with col_info:
+        st.caption(f"Provider: {provider}" + (f" ({model})" if model else "") + ". Change it under AI provider in the sidebar. Changes are saved automatically.")
+    if draft_clicked:
+        _run_draft(state_key, entry, design, store, subject, version, provider, settings)
+    if st.session_state.get(f"{state_key}:draft_done"):
+        st.success(st.session_state[f"{state_key}:draft_done"])
+    _show_draft_warnings(st.session_state.get(f"{state_key}:draft_warnings", []))
+    if design.llm == "mock" and design.content_markdown:
+        st.info("This draft comes from the mock provider and only echoes your brief into each section. Configure a real provider to get written sections.")
+
     diagram_fields = [
         (section, manifest.field(k))
         for section in blueprint.sections
@@ -454,7 +457,7 @@ def design_page() -> None:
         flows = store.flows(design)
         uploaded = sum(len(design.images.get(spec.key, [])) for _, spec in diagram_fields)
         drawn = sum(1 for section, _ in diagram_fields if section.key in flows)
-        with st.expander(f"3. Diagrams: {uploaded} image(s) uploaded, {drawn} drawn from the brief, {len(diagram_fields)} slots", expanded=False):
+        with st.expander(f"4. Diagrams: {uploaded} image(s) uploaded, {drawn} drawn from the brief, {len(diagram_fields)} slots", expanded=False):
             st.caption("Draw from brief asks the model for the flow (systems, steps, arrows) and draws it as editable shapes on the slide; the Mermaid text is saved for draw.io. An uploaded image always wins over a drawing.")
             requests = {f.section: f for f in (design.plan.flows if design.plan else [])}
             pending = [section for section, spec in diagram_fields if section.key not in flows and not design.images.get(spec.key) and section.key not in design.hidden]
@@ -492,7 +495,7 @@ def design_page() -> None:
                         if st.button("Draw from brief", key=f"{state_key}:draw:{section.key}"):
                             _draw_flows_for(state_key, design, store, [section], requests, provider, settings)
 
-    st.subheader("4. Review sections")
+    st.subheader("5. Review sections")
     with st.expander("Import a content file (.md)", expanded=False):
         imported = st.file_uploader("Content file", type=["md", "markdown", "txt"], key=f"{prefix}import", label_visibility="collapsed")
         if imported is not None and st.session_state.get(f"{state_key}:import_token") != f"{imported.name}:{imported.size}":
@@ -518,7 +521,7 @@ def design_page() -> None:
     else:
         st.caption("This template has no sections to write.")
 
-    st.subheader("5. Generate")
+    st.subheader("6. Generate")
     col_missing, col_preview, col_generate = st.columns([1, 1, 1], vertical_alignment="bottom")
     with col_missing:
         missing = st.selectbox(
@@ -1131,6 +1134,7 @@ def _render_design(entry, store: DesignStore, design: Design, subject: str, name
             titles=titles,
             extras=slides_extra,
             flows=flows,
+            clear_shapes=[(c.slide, c.shape) for c in (design.plan.clear if design.plan else []) if c.include],
         )
     )
     return output, response
@@ -1159,10 +1163,41 @@ def _run_draft(state_key: str, entry, design: Design, store: DesignStore, subjec
     store.save(design)
     total = sum(len(s["fields"]) for s in writable_sections(blueprint, manifest))
     extra = f", {len(result.mechanical)} filled from facts and template" if result.mechanical else ""
-    st.session_state[f"{state_key}:draft_done"] = f"Drafted {len(result.content.fields)} of {total} fields with {result.llm}{extra}. Review them in step 4, then generate."
+    drawn = _draw_planned_flows(design, store, llm)
+    if drawn:
+        extra += f", {drawn} diagram(s) drawn from the brief"
+    st.session_state[f"{state_key}:draft_done"] = f"Drafted {len(result.content.fields)} of {total} fields with {result.llm}{extra}. Review them in step 5, then generate."
     st.session_state[f"{state_key}:draft_warnings"] = result.warnings
     st.session_state[f"{state_key}:v"] = version + 1
     st.rerun()
+
+
+def _draw_planned_flows(design: Design, store: DesignStore, llm) -> int:
+    """Draws the diagrams the plan lists and that have neither a drawing nor an uploaded image yet."""
+    if design.plan is None or not design.plan.flows:
+        return 0
+    existing = store.flows(design)
+    sections = {s.key: s for s in Registry(os.environ.get("SDGEN_TEMPLATES", str(ROOT / "templates"))).load(design.template).blueprint.sections}
+    pending = []
+    for request in design.plan.flows:
+        section = sections.get(request.section)
+        if section is None or request.section in existing or request.section in design.hidden:
+            continue
+        if any(design.images.get(k) for k in section.fields):
+            continue
+        pending.append(request)
+    if not pending:
+        return 0
+    try:
+        planner = llm.with_effort("medium") if hasattr(llm, "with_effort") else llm
+        with st.spinner(f"Drawing {len(pending)} diagram(s) from the brief."):
+            specs = plan_flows(design.brief, pending, planner)
+    except (LLMNotConfigured, LLMError) as exc:
+        st.warning(f"Diagrams were not drawn: {exc}")
+        return 0
+    for key, spec in specs.items():
+        store.save_flow(design, key, spec)
+    return len(specs)
 
 
 def _current_llm(state_key: str):
@@ -1266,7 +1301,14 @@ def _plan_editor(plan: SectionPlan, blueprint: Blueprint, key: str) -> SectionPl
         st.markdown("**Diagrams to draw from the brief**")
         for flow in plan.flows:
             st.caption(f"{flow.title or flow.section}: {flow.purpose}" if flow.purpose else flow.title or flow.section)
-    return plan.model_copy(update={"decisions": decisions, "extras": extras})
+    clear = []
+    if plan.clear:
+        st.markdown("**Template text to clear** (wording from the earlier project that no field replaces)")
+        for item in plan.clear:
+            label = f"Slide {item.slide}: {item.text[:90]}" + (f" ({item.reason})" if item.reason else "")
+            include = st.checkbox(label, value=item.include, key=f"{key}:clear:{item.slide}:{item.shape}")
+            clear.append(item.model_copy(update={"include": include}))
+    return plan.model_copy(update={"decisions": decisions, "extras": extras, "clear": clear})
 
 
 def _confirm_delete(key: str, label: str, question: str, on_confirm) -> None:
