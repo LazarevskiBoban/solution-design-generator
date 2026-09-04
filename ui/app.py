@@ -9,39 +9,42 @@ import streamlit as st
 
 from sdgen.analyze import Analysis, slugify
 from sdgen.blueprint import Blueprint, derive_blueprint
-from sdgen.content import Content, ImageValue, dump_markdown
+from sdgen.brief import BRIEF_FIELDS, Brief
+from sdgen.content import Content, dump_markdown, load_markdown
+from sdgen.design import Design, DesignStore
 from sdgen.inventory import DeckInfo
+from sdgen.llm import LLMNotConfigured, get_llm
 from sdgen.manifest import FieldSpec, GlobalSpec, Manifest
 from sdgen.registry import Registry, safe_name
-from sdgen.tools import (
-    AnalyzeRequest,
-    RenderRequest,
-    SkeletonRequest,
-    ValidateRequest,
-    analyze_template,
-    content_skeleton,
-    render_document,
-    validate_content,
-)
+from sdgen.tools import AnalyzeRequest, RenderRequest, analyze_template, render_document
+from sdgen.writer import draft_content
 
 ROOT = Path(__file__).resolve().parent.parent
 KINDS = ["text", "bullets", "table", "image"]
 SECTION_KINDS = ["cover", "static", "divider", "text", "table", "composite", "diagram", "mapping", "references"]
 PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+NEW_DESIGN = "New design"
 
 
 def registry() -> Registry:
     return Registry(os.environ.get("SDGEN_TEMPLATES", str(ROOT / "templates")))
 
 
+def design_store() -> DesignStore:
+    return DesignStore(os.environ.get("SDGEN_DESIGNS", str(ROOT / "designs")))
+
+
 def main() -> None:
     st.set_page_config(page_title="sdgen", layout="wide")
     names = registry().names()
-    page = st.sidebar.radio("Page", ["Generate", "Templates"], index=0 if names else 1)
+    page = st.sidebar.radio("Page", [NEW_DESIGN, "Templates"], index=0 if names else 1)
     if page == "Templates":
         templates_page()
     else:
-        generate_page()
+        design_page()
+
+
+# ----------------------------------------------------------------------------- templates
 
 
 def templates_page() -> None:
@@ -85,10 +88,7 @@ def templates_page() -> None:
     st.subheader("Sections")
     st.caption("One row per slide. Rename a section, change its kind, edit what it asks for, or untick it to leave it out of every document.")
     outline_df = pd.DataFrame(
-        [
-            {"use": True, "slide": s.slide, "title": s.title, "kind": s.kind, "ask": s.ask, "optional": s.optional}
-            for s in blueprint.sections
-        ],
+        [{"use": True, "slide": s.slide, "title": s.title, "kind": s.kind, "ask": s.ask, "optional": s.optional} for s in blueprint.sections],
         columns=["use", "slide", "title", "kind", "ask", "optional"],
     )
     outline_edit = st.data_editor(
@@ -108,18 +108,15 @@ def templates_page() -> None:
         },
     )
 
-    advanced = st.expander("Advanced: fields and replacements", expanded=False)
-    with advanced:
-        st.caption("The shape-level detail behind the sections. Usually no change is needed.")
     kinds = {s.index: s.kind for s in analysis.slides}
     excluded_by_note = [i for i in analysis.exclude if i in kinds]
-
-    with advanced:
+    with st.expander("Advanced: fields and replacements", expanded=False):
+        st.caption("The shape-level detail behind the sections. Usually no change is needed.")
         st.markdown("**Global replacements**")
         globals_df = pd.DataFrame(
-        [{"use": True, "key": g.key, "label": g.label, "replaces": g.replaces} for g in analysis.globals],
-        columns=["use", "key", "label", "replaces"],
-    )
+            [{"use": True, "key": g.key, "label": g.label, "replaces": g.replaces} for g in analysis.globals],
+            columns=["use", "key", "label", "replaces"],
+        )
         globals_edit = st.data_editor(
             globals_df,
             num_rows="dynamic",
@@ -133,25 +130,24 @@ def templates_page() -> None:
                 "replaces": st.column_config.TextColumn("Text to replace"),
             },
         )
-
         st.markdown("**Fields**")
         fields_df = pd.DataFrame(
-        [
-            {
-                "use": c.include,
-                "slide": c.slide,
-                "kind": c.kind,
-                "key": c.key,
-                "label": c.label,
-                "keep_prefix": c.keep_prefix or "",
-                "max_chars": c.max_chars,
-                "preview": c.preview or c.reason,
-                "shape": c.shape_name,
-            }
-            for c in analysis.candidates
-        ],
-        columns=["use", "slide", "kind", "key", "label", "keep_prefix", "max_chars", "preview", "shape"],
-    )
+            [
+                {
+                    "use": c.include,
+                    "slide": c.slide,
+                    "kind": c.kind,
+                    "key": c.key,
+                    "label": c.label,
+                    "keep_prefix": c.keep_prefix or "",
+                    "max_chars": c.max_chars,
+                    "preview": c.preview or c.reason,
+                    "shape": c.shape_name,
+                }
+                for c in analysis.candidates
+            ],
+            columns=["use", "slide", "kind", "key", "label", "keep_prefix", "max_chars", "preview", "shape"],
+        )
         fields_edit = st.data_editor(
             fields_df,
             hide_index=True,
@@ -186,7 +182,25 @@ def templates_page() -> None:
         except ValueError as exc:
             st.error(str(exc))
             return
-        st.success(f"Template '{entry.name}' saved with {len(final.sections)} sections. It is now available on the Generate page.")
+        st.success(f"Template '{entry.name}' saved with {len(final.sections)} sections. Start a design on the '{NEW_DESIGN}' page.")
+
+
+def _build_manifest(analysis: Analysis, fields_df: pd.DataFrame, globals_df: pd.DataFrame, name: str, exclude: list[int]) -> Manifest:
+    candidates = [c.model_copy() for c in analysis.candidates]
+    for cand, row in zip(candidates, fields_df.itertuples(index=False)):
+        cand.include = bool(row.use)
+        cand.kind = row.kind if row.kind in KINDS else cand.kind
+        cand.key = slugify(_text(row.key)) if _text(row.key) else cand.key
+        cand.label = _text(row.label) or cand.label
+        cand.keep_prefix = _text(row.keep_prefix) or None
+        cand.max_chars = None if pd.isna(row.max_chars) else int(row.max_chars)
+    globals_ = []
+    for row in globals_df.itertuples(index=False):
+        if not bool(row.use) or not _text(row.replaces) or not _text(row.key):
+            continue
+        globals_.append(GlobalSpec(key=slugify(_text(row.key)), label=_text(row.label), replaces=_text(row.replaces)))
+    edited = Analysis(globals=globals_, candidates=candidates, slides=analysis.slides, exclude=exclude)
+    return edited.to_manifest(name)
 
 
 def _apply_outline_edits(blueprint: Blueprint, outline_df: pd.DataFrame) -> Blueprint:
@@ -209,154 +223,187 @@ def _apply_outline_edits(blueprint: Blueprint, outline_df: pd.DataFrame) -> Blue
     return blueprint.model_copy(update={"sections": sections})
 
 
-def _build_manifest(analysis: Analysis, fields_df: pd.DataFrame, globals_df: pd.DataFrame, name: str, exclude: list[int]) -> Manifest:
-    candidates = [c.model_copy() for c in analysis.candidates]
-    for cand, row in zip(candidates, fields_df.itertuples(index=False)):
-        cand.include = bool(row.use)
-        cand.kind = row.kind if row.kind in KINDS else cand.kind
-        cand.key = slugify(_text(row.key)) if _text(row.key) else cand.key
-        cand.label = _text(row.label) or cand.label
-        cand.keep_prefix = _text(row.keep_prefix) or None
-        cand.max_chars = None if pd.isna(row.max_chars) else int(row.max_chars)
-    globals_ = []
-    for row in globals_df.itertuples(index=False):
-        if not bool(row.use) or not _text(row.replaces) or not _text(row.key):
-            continue
-        globals_.append(GlobalSpec(key=slugify(_text(row.key)), label=_text(row.label), replaces=_text(row.replaces)))
-    edited = Analysis(globals=globals_, candidates=candidates, slides=analysis.slides, exclude=exclude)
-    return edited.to_manifest(name)
+# ----------------------------------------------------------------------------- design
 
 
-def generate_page() -> None:
-    st.header("Generate")
+def design_page() -> None:
+    st.header(NEW_DESIGN)
     reg = registry()
     names = reg.names()
     if not names:
         st.info("No templates yet. Add one on the Templates page.")
         return
-    name = st.selectbox("Template", names, key="template_choice")
-    entry = reg.load(name)
-    manifest = entry.manifest
-    prefix = f"{name}:"
+    template = st.selectbox("Template", names, key="design_template")
+    entry = reg.load(template)
+    if entry.blueprint is None:
+        st.error("This template has no outline. Re-add it on the Templates page.")
+        return
+    manifest, blueprint = entry.manifest, entry.blueprint
+    store = design_store()
+    existing = store.names(template)
 
-    left, right = st.columns(2)
-    with left:
-        st.download_button(
-            "Download empty content file (.md)",
-            data=content_skeleton(SkeletonRequest(manifest=manifest)).markdown,
-            file_name=f"{name}-content.md",
-            help="Fill this in any editor or paste it into a chat, then import it here.",
-        )
-    with right:
-        imported = st.file_uploader("Import a content file (.md)", type=["md", "markdown", "txt"], key=f"{prefix}import")
-    if imported is not None:
-        token = f"{imported.name}:{imported.size}"
-        if st.session_state.get(f"{prefix}import_token") != token:
-            response = validate_content(ValidateRequest(manifest=manifest, markdown=imported.getvalue().decode("utf-8")))
-            version = st.session_state.get(f"{prefix}version", 0) + 1
-            _load_into_state(prefix, version, manifest, response.content)
-            st.session_state[f"{prefix}version"] = version
-            st.session_state[f"{prefix}import_token"] = token
-            st.session_state[f"{prefix}import_warnings"] = response.warnings
+    choice = st.selectbox("Design", [NEW_DESIGN] + existing, key=f"design_choice:{template}")
+    if choice == NEW_DESIGN:
+        raw = st.text_input("Design name", key=f"design_name:{template}", placeholder="for example camt053-bank-statements")
+        if not raw.strip():
+            st.info("Give the design a name to start.")
+            return
+        name = safe_name(raw)
+    else:
+        name = choice
+
+    state_key = f"design:{template}:{name}"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = store.load(name) if name in existing else Design(name=name, template=template)
+        st.session_state[f"{state_key}:v"] = 0
+    design: Design = st.session_state[state_key]
+    version = st.session_state[f"{state_key}:v"]
+    prefix = f"{state_key}:{version}:"
+
+    st.subheader("1. Brief")
+    subject = st.text_input("Integration name (used in slide titles)", key=_init(f"{prefix}b:subject", design.brief.subject))
+    texts = {}
+    for key, label, guidance in BRIEF_FIELDS:
+        texts[key] = st.text_area(label, key=_init(f"{prefix}b:{key}", getattr(design.brief, key)), help=guidance, height=110)
+    design.brief = Brief(subject=subject.strip(), diagrams=design.brief.diagrams, **texts)
+
+    col_save, col_draft, col_info = st.columns([1, 1, 2])
+    with col_save:
+        if st.button("Save brief", key=f"{state_key}:save_brief"):
+            store.save(design)
+            st.success("Brief saved.")
+    with col_draft:
+        draft_clicked = st.button("Draft sections with AI", type="primary", key=f"{state_key}:draft")
+    with col_info:
+        st.caption(f"Provider: {os.environ.get('SDGEN_LLM', 'mock')} (set SDGEN_LLM to change)")
+    if draft_clicked:
+        try:
+            llm = get_llm()
+        except LLMNotConfigured as exc:
+            st.error(str(exc))
+        else:
+            result = draft_content(design.brief, blueprint, manifest, llm)
+            design.content_markdown = result.markdown
+            design.llm = result.llm
+            store.save(design)
+            st.session_state[f"{state_key}:draft_warnings"] = result.warnings
+            st.session_state[f"{state_key}:v"] = version + 1
             st.rerun()
-    for warning in st.session_state.get(f"{prefix}import_warnings", []):
+    for warning in st.session_state.get(f"{state_key}:draft_warnings", []):
         st.warning(warning)
+    if design.llm == "mock" and design.content_markdown:
+        st.info("This draft comes from the mock provider and only echoes your brief into each section. Configure a real provider to get written sections.")
 
-    version = st.session_state.get(f"{prefix}version", 0)
-    globals_: dict[str, str] = {}
-    if manifest.globals:
-        st.subheader("Document")
-        for spec in manifest.globals:
-            value = st.text_input(spec.label or spec.key, key=f"{prefix}{version}:g:{spec.key}", help=spec.guidance)
-            if value.strip():
-                globals_[spec.key] = value.strip()
+    diagram_fields = [
+        (section, manifest.field(k))
+        for section in blueprint.sections
+        if section.kind == "diagram"
+        for k in section.fields
+        if manifest.field(k) is not None and manifest.field(k).kind == "image"
+    ]
+    if diagram_fields:
+        st.subheader("2. Diagrams")
+        for section, spec in diagram_fields:
+            files = st.file_uploader(section.title, type=["png", "jpg", "jpeg"], accept_multiple_files=True, key=f"{prefix}img:{spec.key}")
+            for file in files or []:
+                store.add_image(design, spec.key, file.name, file.getvalue())
+            current = design.images.get(spec.key, [])
+            if current:
+                st.caption("Images: " + ", ".join(current))
+                if st.button("Remove images", key=f"{state_key}:clear:{spec.key}"):
+                    design.images[spec.key] = []
+                    store.save(design)
+                    st.rerun()
 
-    images_dir = st.session_state.setdefault("images_dir", tempfile.mkdtemp(prefix="sdgen-images-"))
-    fields: dict = {}
-    for slide_no, specs in _by_slide(manifest).items():
-        st.subheader(f"Slide {slide_no}")
-        for spec in specs:
-            value = _field_widget(spec, f"{prefix}{version}:f:{spec.key}", images_dir)
-            if value is not None:
-                fields[spec.key] = value
-    content = Content(globals=globals_, fields=fields)
-
-    st.divider()
-    col_export, col_blank, col_generate = st.columns([1, 1, 2])
+    st.subheader("3. Review sections")
+    imported = st.file_uploader("Import a content file (.md)", type=["md", "markdown", "txt"], key=f"{prefix}import")
+    if imported is not None and st.session_state.get(f"{state_key}:import_token") != f"{imported.name}:{imported.size}":
+        design.content_markdown = imported.getvalue().decode("utf-8")
+        store.save(design)
+        st.session_state[f"{state_key}:import_token"] = f"{imported.name}:{imported.size}"
+        st.session_state[f"{state_key}:v"] = version + 1
+        st.rerun()
+    if not design.content_markdown.strip():
+        st.info("Draft the sections with AI, import a content file, or fill the sections below by hand.")
+    content = load_markdown(design.content_markdown, manifest) if design.content_markdown.strip() else Content()
+    edited: dict = {}
+    for section in blueprint.sections:
+        if section.kind in ("static", "divider"):
+            continue
+        fields = [manifest.field(k) for k in section.fields]
+        fields = [f for f in fields if f is not None and f.kind != "image"]
+        if not fields:
+            continue
+        with st.expander(section.title, expanded=bool(design.content_markdown.strip())):
+            if section.ask:
+                st.caption(section.ask)
+            for spec in fields:
+                value = _review_widget(spec, f"{prefix}f:{spec.key}", content.fields.get(spec.key))
+                if value is not None:
+                    edited[spec.key] = value
+    col_save_c, col_export = st.columns(2)
+    with col_save_c:
+        if st.button("Save sections", key=f"{state_key}:save_content"):
+            design.content_markdown = dump_markdown(Content(globals=_globals(subject), fields=edited), manifest)
+            store.save(design)
+            st.success("Sections saved.")
     with col_export:
-        st.download_button("Export content (.md)", data=dump_markdown(content, manifest), file_name=f"{name}-content.md")
-    with col_blank:
+        st.download_button("Export content (.md)", data=dump_markdown(Content(globals=_globals(subject), fields=edited), manifest), file_name=f"{name}-content.md", key=f"{state_key}:export")
+
+    st.subheader("4. Generate")
+    col_missing, col_generate = st.columns([1, 2])
+    with col_missing:
         missing = st.selectbox(
             "Unfilled sections",
             ["placeholder", "keep", "blank"],
             format_func={"placeholder": "show a placeholder", "keep": "keep template text", "blank": "leave blank"}.get,
-            key=f"{prefix}missing",
+            key=f"{state_key}:missing",
         )
     with col_generate:
-        generate = st.button("Generate document", type="primary", key=f"{prefix}generate")
-
+        generate = st.button("Generate document", type="primary", key=f"{state_key}:generate")
     if generate:
+        images = {k: v for k, v in store.content(design, manifest).fields.items() if manifest.field(k) and manifest.field(k).kind == "image"}
+        final = Content(globals=_globals(subject), fields={**edited, **images})
+        design.content_markdown = dump_markdown(Content(globals=_globals(subject), fields=edited), manifest)
+        store.save(design)
         out_dir = Path(tempfile.mkdtemp(prefix="sdgen-out-"))
-        stem = slugify(globals_.get(next(iter(globals_), ""), "") or name)
-        output = out_dir / f"{stem}.pptx"
-        response = render_document(
-            RenderRequest(template=str(entry.template_path), manifest=manifest, content=content, output=str(output), missing=missing)
-        )
-        st.session_state[f"{prefix}output"] = (output.name, output.read_bytes(), [str(i) for i in response.issues], response.slides)
+        output = out_dir / f"{slugify(subject) or name}.pptx"
+        response = render_document(RenderRequest(template=str(entry.template_path), manifest=manifest, content=final, output=str(output), missing=missing))
+        st.session_state[f"{state_key}:output"] = (output.name, output.read_bytes(), [str(i) for i in response.issues], response.slides)
 
-    stored = st.session_state.get(f"{prefix}output")
+    stored = st.session_state.get(f"{state_key}:output")
     if stored:
         file_name, data, issues, slides = stored
         for issue in issues:
             (st.error if issue.startswith("error") else st.info if issue.startswith("info") else st.warning)(issue)
         st.success(f"Generated {file_name} with {slides} slides.")
-        st.download_button("Download document", data=data, file_name=file_name, mime=PPTX_MIME, key=f"{prefix}download")
+        st.download_button("Download document", data=data, file_name=file_name, mime=PPTX_MIME, key=f"{state_key}:download")
 
 
-def _field_widget(spec: FieldSpec, key: str, images_dir: str):
-    if spec.kind in ("text", "bullets"):
-        budget = max((b.max_chars or 0) for b in spec.bindings) if spec.bindings else 0
-        value = st.text_area(spec.label, key=key, help=spec.guidance, height=170 if spec.kind == "bullets" else 120)
-        if budget:
-            st.caption(f"{len(value)} of about {budget} characters")
-        return value if value.strip() else None
+def _review_widget(spec: FieldSpec, key: str, value):
     if spec.kind == "table":
         columns = spec.columns or ["value"]
-        initial = st.session_state.get(f"{key}:rows") or []
-        frame = pd.DataFrame(initial, columns=columns)
+        rows = value if isinstance(value, list) else []
+        frame = pd.DataFrame(rows, columns=columns)
         edited = st.data_editor(frame, num_rows="dynamic", hide_index=True, width="stretch", key=key)
         rows = [{c: _text(v) for c, v in row.items()} for row in edited.to_dict("records")]
         rows = [r for r in rows if any(r.values())]
         return rows or None
-    file = st.file_uploader(spec.label, type=["png", "jpg", "jpeg"], key=key, help=spec.guidance)
-    if file is not None:
-        path = Path(images_dir) / file.name
-        path.write_bytes(file.getbuffer())
-        return ImageValue(path=str(path))
-    imported = st.session_state.get(f"{key}:image")
-    return ImageValue(path=imported) if imported else None
+    budget = max((b.max_chars or 0) for b in spec.bindings) if spec.bindings else 0
+    text = st.text_area(spec.label, key=_init(key, value if isinstance(value, str) else ""), help=spec.guidance, height=150 if spec.kind == "bullets" else 120)
+    if budget:
+        st.caption(f"{len(text)} of about {budget} characters")
+    return text if text.strip() else None
 
 
-def _load_into_state(prefix: str, version: int, manifest: Manifest, content: Content) -> None:
-    for spec in manifest.globals:
-        st.session_state[f"{prefix}{version}:g:{spec.key}"] = content.globals.get(spec.key, "")
-    for spec in manifest.fields:
-        key = f"{prefix}{version}:f:{spec.key}"
-        value = content.fields.get(spec.key)
-        if spec.kind in ("text", "bullets"):
-            st.session_state[key] = value if isinstance(value, str) else ""
-        elif spec.kind == "table":
-            st.session_state[f"{key}:rows"] = value if isinstance(value, list) else []
-        elif isinstance(value, ImageValue):
-            st.session_state[f"{key}:image"] = value.path
+def _globals(subject: str) -> dict[str, str]:
+    return {"subject": subject.strip()} if subject.strip() else {}
 
 
-def _by_slide(manifest: Manifest) -> dict[int, list[FieldSpec]]:
-    grouped: dict[int, list[FieldSpec]] = {}
-    for spec in manifest.fields:
-        first = min((b.slide for b in spec.bindings), default=0)
-        grouped.setdefault(first, []).append(spec)
-    return dict(sorted(grouped.items()))
+def _init(key: str, value) -> str:
+    if key not in st.session_state:
+        st.session_state[key] = value
+    return key
 
 
 def _text(value) -> str:

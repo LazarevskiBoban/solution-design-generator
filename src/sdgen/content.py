@@ -65,6 +65,11 @@ def load_markdown(text: str, manifest: Manifest | None = None, base_dir: str | P
     return content
 
 
+def parse_markdown_sections(text: str) -> tuple[dict, list[tuple[str, str]]]:
+    front, body = _split_front_matter(text)
+    return front, _sections(body)
+
+
 def load_markdown_file(path: str | Path, manifest: Manifest | None = None) -> Content:
     path = Path(path)
     return load_markdown(path.read_text(encoding="utf-8"), manifest, base_dir=path.parent)
@@ -218,8 +223,11 @@ def _parse_value(kind: str, section: str, base_dir: str | Path | None) -> FieldV
     return section
 
 
-def _strip_comments(section: str) -> str:
+def strip_comments(section: str) -> str:
     return re.sub(r"<!--.*?-->", "", section, flags=re.DOTALL).strip("\n")
+
+
+_strip_comments = strip_comments
 
 
 def _format_value(value: FieldValue, spec: FieldSpec | None) -> str:

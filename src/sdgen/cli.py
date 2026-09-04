@@ -8,7 +8,10 @@ import click
 
 from sdgen.analyze import analyze_deck, format_analysis, slugify
 from sdgen.blueprint import derive_blueprint, format_outline
+from sdgen.brief import brief_skeleton, load_brief
 from sdgen.inventory import format_inventory, inspect_deck
+from sdgen.llm import LLMNotConfigured, get_llm
+from sdgen.writer import draft_content
 from sdgen.manifest import Manifest
 from sdgen.preview import preview as run_preview
 from sdgen.registry import MANIFEST_FILE, Registry, TemplateEntry
@@ -87,6 +90,42 @@ def outline(target: str, templates: Path) -> None:
             raise SystemExit(1)
         blueprint = entry.blueprint
     click.echo(format_outline(blueprint))
+
+
+@main.command()
+@click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path), help="Write the brief skeleton here instead of printing it.")
+def brief(output: Path | None) -> None:
+    """Emit an empty brief file (what the writer needs from you)."""
+    text = brief_skeleton()
+    if output:
+        output.write_text(text, encoding="utf-8")
+        click.echo(f"Brief skeleton written to {output}")
+    else:
+        click.echo(text)
+
+
+@main.command()
+@click.argument("template")
+@click.argument("brief_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("-o", "--output", required=True, type=click.Path(dir_okay=False, path_type=Path), help="Content file to write.")
+@click.option("--llm", "llm_name", default=None, help="Provider: mock (default, or SDGEN_LLM).")
+@TEMPLATES_OPTION
+def draft(template: str, brief_file: Path, output: Path, llm_name: str | None, templates: Path) -> None:
+    """Write the sections of a template from a brief."""
+    entry = _resolve_template(template, templates)
+    if entry.blueprint is None:
+        click.echo(f"template '{entry.name}' has no outline; re-add it to create one")
+        raise SystemExit(1)
+    try:
+        llm = get_llm(llm_name)
+    except LLMNotConfigured as exc:
+        click.echo(str(exc))
+        raise SystemExit(1)
+    result = draft_content(load_brief(brief_file.read_text(encoding="utf-8")), entry.blueprint, entry.manifest, llm)
+    output.write_text(result.markdown, encoding="utf-8")
+    for warning in result.warnings:
+        click.echo(f"warning: {warning}")
+    click.echo(f"Draft from '{result.llm}' with {len(result.content.fields)} sections written to {output}")
 
 
 @main.command()
