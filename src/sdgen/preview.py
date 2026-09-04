@@ -49,12 +49,18 @@ def preview(pptx_path: str | Path, pdf_path: str | Path | None = None) -> Previe
             app.Quit()
 
 
-def export_slide_images(pptx_path: str | Path, out_dir: str | Path, width: int = 1280, attempts: int = 2) -> list[Path]:
-    """Exports one PNG per slide through PowerPoint; raises RuntimeError when that is not possible."""
+def export_slide_images(
+    pptx_path: str | Path,
+    out_dir: str | Path,
+    width: int = 1280,
+    attempts: int = 2,
+    only: list[int] | None = None,
+) -> list[Path]:
+    """Exports one PNG per slide (or per slide number in `only`) through PowerPoint; raises RuntimeError when that is not possible."""
     # PowerPoint rejects automation calls while it shows a dialog, so a second attempt often succeeds.
     for attempt in range(1, attempts + 1):
         try:
-            return _export_slide_images(pptx_path, out_dir, width)
+            return _export_slide_images(pptx_path, out_dir, width, only)
         except RuntimeError:
             if attempt == attempts:
                 raise
@@ -62,7 +68,7 @@ def export_slide_images(pptx_path: str | Path, out_dir: str | Path, width: int =
     return []
 
 
-def _export_slide_images(pptx_path: str | Path, out_dir: str | Path, width: int) -> list[Path]:
+def _export_slide_images(pptx_path: str | Path, out_dir: str | Path, width: int, only: list[int] | None = None) -> list[Path]:
     try:
         import win32com.client  # type: ignore
     except ImportError as exc:
@@ -83,7 +89,8 @@ def _export_slide_images(pptx_path: str | Path, out_dir: str | Path, width: int)
         presentation = app.Presentations.Open(str(path), ReadOnly=True, Untitled=False, WithWindow=False)
         height = int(width * presentation.PageSetup.SlideHeight / presentation.PageSetup.SlideWidth)
         files = []
-        for index in range(1, presentation.Slides.Count + 1):
+        wanted = [n for n in (only or []) if 1 <= n <= presentation.Slides.Count] if only is not None else range(1, presentation.Slides.Count + 1)
+        for index in wanted:
             target = target_dir / f"slide-{index:02d}.png"
             presentation.Slides.Item(index).Export(str(target), "PNG", width, height)
             files.append(target)

@@ -37,6 +37,8 @@ def test_export_slide_images_writes_one_png_per_slide(sample_deck, tmp_path):
     files = export_slide_images(sample_deck, tmp_path / "png", width=640)
     assert [f.name for f in files] == ["slide-01.png", "slide-02.png"]
     assert all(f.stat().st_size > 0 for f in files)
+    second = export_slide_images(sample_deck, tmp_path / "one", width=320, only=[2])
+    assert [f.name for f in second] == ["slide-02.png"]
 
 
 def test_export_slide_images_raises_on_unreadable_file(tmp_path):

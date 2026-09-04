@@ -100,6 +100,12 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     ui._move_section(board_design, blueprint, keys[-1], -1)
     assert board_design.order[0] == keys[-1]
 
+    fresh = ui.Design(name="y", template="demo")
+    entries = [{"section": keys[0], "title": "A", "png": None, "text": ""}]
+    assert [e["section"] for e in ui._visible_entries(entries, fresh, blueprint)] == keys
+    fresh.hidden = [keys[1]]
+    assert [e["section"] for e in ui._visible_entries(entries, fresh, blueprint)] == [keys[0]]
+
     ui._delete_design(DesignStore(tmp_path / "designs"), "demo", "camt-053")
     assert not (tmp_path / "designs" / "camt-053").exists()
     ui._remove_template(Registry(registry_with_demo), "demo")
