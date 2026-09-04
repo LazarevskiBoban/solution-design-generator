@@ -11,6 +11,9 @@ from sdgen.blueprint import derive_blueprint, format_outline
 from sdgen.brief import brief_skeleton, load_brief
 from sdgen.inventory import format_inventory, inspect_deck
 from sdgen.llm import LLMNotConfigured, get_llm
+from sdgen.mapping.extract import extract_fields
+from sdgen.mapping.model import MappingSet, SourceSpec, TargetSpec
+from sdgen.mapping.workbook import write_workbook
 from sdgen.writer import draft_content
 from sdgen.manifest import Manifest
 from sdgen.preview import preview as run_preview
@@ -217,6 +220,59 @@ def ui() -> None:
         click.echo(f"UI script not found at {app}")
         raise SystemExit(1)
     raise SystemExit(subprocess.call([sys.executable, "-m", "streamlit", "run", str(app)]))
+
+
+@main.group()
+def mapping() -> None:
+    """Field extraction and mapping workbooks."""
+
+
+@mapping.command("extract")
+@click.argument("file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--kind", type=click.Choice(["auto", "xml", "json", "csv", "xsd", "edmx"]), default="auto", show_default=True)
+def mapping_extract(file: Path, kind: str) -> None:
+    """List the fields found in a sample file or schema."""
+    detected, fields = extract_fields(file, kind)
+    click.echo(f"{file.name}: {detected}, {len(fields)} fields")
+    for f in fields:
+        flags = []
+        if f.required:
+            flags.append("required")
+        if f.repeating:
+            flags.append("repeating")
+        detail = " ".join(x for x in (f.type, f"x{f.occurs}" if f.occurs > 1 else "", " ".join(flags)) if x)
+        example = f"  e.g. {f.example[:40]}" if f.example else ""
+        click.echo(f"  {f.path}  [{detail}]{example}")
+
+
+@mapping.command("new")
+@click.argument("name")
+@click.option("--target", "target_file", required=True, type=click.Path(exists=True, dir_okay=False, path_type=Path), help="Target API definition or sample payload.")
+@click.option("--source", "sources", multiple=True, help="Source sample as name=file; repeat for several sources.")
+@click.option("-o", "--output", required=True, type=click.Path(dir_okay=False, path_type=Path), help="mappings.yaml to write.")
+def mapping_new(name: str, target_file: Path, sources: tuple[str, ...], output: Path) -> None:
+    """Create a mapping set from a target definition and source samples."""
+    kind, fields = extract_fields(target_file)
+    mapping_set = MappingSet(name=name, target=TargetSpec(name=target_file.stem, file=target_file.name, kind=kind, fields=fields))
+    for item in sources:
+        source_name, _, source_file = item.partition("=")
+        if not source_file:
+            source_name, source_file = Path(item).stem, item
+        source_kind, source_fields = extract_fields(Path(source_file))
+        mapping_set.sources.append(SourceSpec(name=source_name, file=Path(source_file).name, kind=source_kind, fields=source_fields))
+    mapping_set.save(output)
+    click.echo(f"Mapping '{name}' with {len(fields)} target fields and {len(mapping_set.sources)} source(s) written to {output}")
+
+
+@mapping.command("workbook")
+@click.argument("mappings", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("-o", "--output", required=True, type=click.Path(dir_okay=False, path_type=Path), help="Excel file to write.")
+def mapping_workbook(mappings: Path, output: Path) -> None:
+    """Write the Excel mapping workbook for a mapping set."""
+    mapping_set = MappingSet.load(mappings)
+    write_workbook(mapping_set, output)
+    click.echo(mapping_set.summary_text())
+    click.echo(f"Workbook written to {output}")
 
 
 def _resolve_template(template: str, templates: Path) -> TemplateEntry:
