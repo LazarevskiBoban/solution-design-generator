@@ -192,3 +192,21 @@ def test_field_modes_keep_and_blank_override_content(sample_deck, tmp_path):
     assert [[c.text for c in r.cells] for r in table.rows] == [["Function", "Countries"], ["", ""]]
     body = slide.placeholders[1].text_frame.text
     assert "alpha" not in body and "To be completed" not in body
+
+
+def test_hidden_and_reordered_slides_with_slide_map(sample_deck, tmp_path):
+    manifest = _fixture_manifest(sample_deck)
+    manifest.slides.exclude = []
+    content = Content(fields={"business_need": "Need"})
+    result = render(sample_deck, manifest, content, tmp_path / "order.pptx", order=[2, 1])
+    assert result.slides == 2 and result.slide_map == [2, 1]
+    prs = Presentation(str(tmp_path / "order.pptx"))
+    assert prs.slides[0].shapes.title is None and prs.slides[1].shapes.title.text.startswith("Executive Overview")
+
+    hidden = render(sample_deck, manifest, content, tmp_path / "hidden.pptx", hidden=[2])
+    assert hidden.slides == 1 and hidden.slide_map == [1]
+
+    manifest.field("first_point").bindings[0].max_chars = 40
+    long = Content(fields={"first_point": "\n".join(f"- point number {i} with some words" for i in range(1, 7))})
+    spread = render(sample_deck, manifest, long, tmp_path / "spread.pptx", order=[2, 1])
+    assert spread.slide_map[0] == 2 and set(spread.slide_map[1:]) == {1} and len(spread.slide_map) >= 3

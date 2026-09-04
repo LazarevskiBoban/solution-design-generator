@@ -398,13 +398,7 @@ def design_page() -> None:
             st.session_state[f"{state_key}:v"] = version + 1
             st.rerun()
     content = load_markdown(design.content_markdown, manifest) if design.content_markdown.strip() else Content()
-    sections = []
-    for section in blueprint.sections:
-        if section.kind in ("static", "divider"):
-            continue
-        fields = [f for f in (manifest.field(k) for k in section.fields) if f is not None and f.kind != "image"]
-        if fields:
-            sections.append((section, fields))
+    sections = _writable(blueprint, manifest)
     if not design.content_markdown.strip():
         st.info("Nothing drafted yet. Draft the sections in step 1, import a content file, or write them here. Generate also drafts on its own when nothing has been drafted.")
     if sections:
@@ -412,29 +406,7 @@ def design_page() -> None:
         picked = st.selectbox("Section", [s.key for s, _ in sections], format_func=labels.get, key=f"{state_key}:section")
         section, fields = next((s, f) for s, f in sections if s.key == picked)
         with st.container(border=True):
-            if section.ask:
-                st.caption(section.ask)
-            mode = st.radio(
-                "Slide content",
-                list(SECTION_MODES),
-                format_func=SECTION_MODES.get,
-                horizontal=True,
-                key=_init(f"{prefix}mode:{section.key}", design.modes.get(section.key, "text")),
-            )
-            if mode == "text":
-                design.modes.pop(section.key, None)
-                for spec in fields:
-                    value = _review_widget(spec, f"{prefix}f:{spec.key}", content.fields.get(spec.key))
-                    if value in (None, "", []):
-                        content.fields.pop(spec.key, None)
-                    else:
-                        content.fields[spec.key] = value
-            else:
-                design.modes[section.key] = mode
-                if mode == "keep":
-                    _show_original(entry, fields)
-                else:
-                    st.caption("The fields of this slide stay empty in the document.")
+            _section_editor(entry, design, content, section, fields, prefix)
         design.content_markdown = dump_markdown(Content(globals=_globals(subject), fields=content.fields), manifest)
         st.download_button("Export content (.md)", data=design.content_markdown, file_name=f"{name}-content.md", key=f"{state_key}:export")
     else:
@@ -450,7 +422,7 @@ def design_page() -> None:
             key=f"{state_key}:missing",
         )
     with col_preview:
-        preview_clicked = st.button("Preview slides", key=f"{state_key}:preview", help="Shows the slides as pictures with the current sections. Needs PowerPoint on this machine; otherwise a table per slide is shown.")
+        preview_clicked = st.button("Preview slides", key=f"{state_key}:preview", help="Builds the slide board below: one picture per slide with edit, hide and move buttons. Pictures need PowerPoint on this machine; without it the board shows the slide texts.")
     with col_generate:
         generate = st.button("Generate document", type="primary", key=f"{state_key}:generate")
     if preview_clicked:
@@ -458,13 +430,26 @@ def design_page() -> None:
         notes = [str(i) for i in response.issues if not str(i).startswith("info")]
         try:
             with st.spinner("Rendering slide pictures with PowerPoint."):
-                pictures = [p.read_bytes() for p in export_slide_images(output, output.parent / "png")]
-            _preview_dialog(pictures, notes)
+                pictures: list = [p.read_bytes() for p in export_slide_images(output, output.parent / "png")]
         except RuntimeError as exc:
-            logging.getLogger("sdgen.ui").warning("slide preview fell back to the table: %s", exc)
-            fields, _ = _render_fields(design, entry)
-            rows = preview_rows(blueprint, manifest, Content(fields=fields), design.modes)
-            _preview_table_dialog(rows, [f"Slide pictures are not available: {exc}. This is what each slide will contain."] + notes)
+            logging.getLogger("sdgen.ui").warning("slide preview without pictures: %s", exc)
+            notes.insert(0, f"Slide pictures are not available: {exc}. The board shows the slide texts instead.")
+            pictures = [None] * len(response.slide_map)
+        by_slide = {s.slide: s for s in blueprint.sections}
+        current, _ = _render_fields(design, entry)
+        entries = []
+        for number, png in zip(response.slide_map, pictures):
+            section = by_slide.get(number)
+            entries.append(
+                {
+                    "section": section.key if section else f"slide-{number}",
+                    "title": section.title if section else f"Slide {number}",
+                    "png": png,
+                    "text": _slide_text(section, current) if section else "",
+                }
+            )
+        st.session_state[f"{state_key}:board"] = (entries, notes)
+        st.session_state.pop(f"{state_key}:stale", None)
     if generate:
         drafted_now = False
         if not design.llm and provider != "mock" and not design.brief.is_empty:
@@ -490,6 +475,10 @@ def design_page() -> None:
             st.session_state[f"{state_key}:v"] = version + 1
             st.rerun()
 
+    board = st.session_state.get(f"{state_key}:board")
+    if board:
+        _slide_board(state_key, entry, design, store, board[0], board[1])
+
     stored = st.session_state.get(f"{state_key}:output")
     if stored:
         file_name, data, issues, slides = stored
@@ -511,7 +500,20 @@ def design_page() -> None:
         store.save(design)
 
 
+def _writable(blueprint: Blueprint, manifest: Manifest) -> list[tuple]:
+    result = []
+    for section in blueprint.sections:
+        if section.kind in ("static", "divider"):
+            continue
+        fields = [f for f in (manifest.field(k) for k in section.fields) if f is not None and f.kind != "image"]
+        if fields:
+            result.append((section, fields))
+    return result
+
+
 def _section_status(section, fields, design: Design, content: Content) -> str:
+    if section.key in design.hidden:
+        return "hidden"
     mode = design.modes.get(section.key, "text")
     if mode != "text":
         return SECTION_MODES[mode]
@@ -519,7 +521,33 @@ def _section_status(section, fields, design: Design, content: Content) -> str:
     return f"{filled} of {len(fields)} filled"
 
 
-def _show_original(entry, fields) -> None:
+def _section_editor(entry, design: Design, content: Content, section, fields, prefix: str) -> None:
+    if section.ask:
+        st.caption(section.ask)
+    mode = st.radio(
+        "Slide content",
+        list(SECTION_MODES),
+        format_func=SECTION_MODES.get,
+        horizontal=True,
+        key=_init(f"{prefix}mode:{section.key}", design.modes.get(section.key, "text")),
+    )
+    if mode == "text":
+        design.modes.pop(section.key, None)
+        for spec in fields:
+            value = _review_widget(spec, f"{prefix}f:{spec.key}", content.fields.get(spec.key))
+            if value in (None, "", []):
+                content.fields.pop(spec.key, None)
+            else:
+                content.fields[spec.key] = value
+    else:
+        design.modes[section.key] = mode
+        if mode == "keep":
+            _show_original(entry, fields, prefix)
+        else:
+            st.caption("The fields of this slide stay empty in the document.")
+
+
+def _show_original(entry, fields, prefix: str) -> None:
     original = entry.original.fields if entry.original else {}
     if not any(original.get(f.key) not in (None, "", []) for f in fields):
         st.caption("The template holds no text for this slide, so the unfilled-section setting from step 4 applies.")
@@ -530,7 +558,116 @@ def _show_original(entry, fields) -> None:
         if isinstance(value, list) and value:
             st.dataframe(pd.DataFrame(value), hide_index=True, width="stretch")
         elif isinstance(value, str) and value:
-            st.text_area(spec.label, value=value, disabled=True, height=100, key=f"original:{entry.name}:{spec.key}")
+            st.text_area(spec.label, value=value, disabled=True, height=100, key=f"{prefix}orig:{spec.key}")
+
+
+@st.dialog("Edit section", width="large")
+def _edit_section_dialog(state_key: str, entry, section_key: str) -> None:
+    design: Design = st.session_state[state_key]
+    version = st.session_state[f"{state_key}:v"]
+    manifest, blueprint = entry.manifest, entry.blueprint
+    section = next(s for s in blueprint.sections if s.key == section_key)
+    fields = [f for f in (manifest.field(k) for k in section.fields) if f is not None and f.kind != "image"]
+    content = load_markdown(design.content_markdown, manifest) if design.content_markdown.strip() else Content()
+    st.markdown(f"**{section.title}**")
+    _section_editor(entry, design, content, section, fields, f"{state_key}:{version}:edit:")
+    if st.button("Save and close", type="primary", key=f"{state_key}:edit_save"):
+        design.content_markdown = dump_markdown(Content(globals=_globals(design.brief.subject), fields=content.fields), manifest)
+        design_store().save(design)
+        st.session_state[f"{state_key}:stale"] = set(st.session_state.get(f"{state_key}:stale", set())) | {section_key}
+        st.session_state[f"{state_key}:v"] = version + 1
+        st.rerun()
+
+
+def _slide_board(state_key: str, entry, design: Design, store: DesignStore, entries: list[dict], notes: list[str]) -> None:
+    blueprint = entry.blueprint
+    sections = {s.key: s for s in blueprint.sections}
+    order = _section_order(design, blueprint)
+    shown = [e for key in order if key not in design.hidden for e in entries if e["section"] == key]
+    shown += [e for e in entries if e["section"] not in sections]
+    stale = st.session_state.get(f"{state_key}:stale", set())
+    with st.expander(f"Slide board: {len(shown)} slides", expanded=True):
+        for index, note in enumerate(notes):
+            (st.error if index == 0 and note.startswith("Slide pictures") else st.warning)(note)
+        st.caption("Edit opens the section in a window. Hide drops the slide from the document. Up and Down move the section. Press Preview slides again to refresh the pictures after editing.")
+        if stale:
+            st.info("Edited since the pictures were taken: " + ", ".join(sections[k].title for k in stale if k in sections))
+        seen: set[str] = set()
+        for start in range(0, len(shown), 4):
+            columns = st.columns(4)
+            for offset, item in enumerate(shown[start : start + 4]):
+                index = start + offset
+                key = item["section"]
+                section = sections.get(key)
+                with columns[offset], st.container(border=True):
+                    if item["png"]:
+                        st.image(item["png"], width="stretch")
+                    else:
+                        st.markdown(f"**{item['title']}**")
+                        st.caption(item["text"] or "(no text)")
+                    st.caption(f"{index + 1}. {item['title']}" + (" · edited" if key in stale else ""))
+                    if section is not None and key not in seen:
+                        seen.add(key)
+                        _board_buttons(state_key, entry, design, store, section, order)
+        if design.hidden:
+            st.markdown("**Hidden slides**")
+            for key in list(design.hidden):
+                col_name, col_button = st.columns([4, 1], vertical_alignment="center")
+                col_name.write(sections[key].title if key in sections else key)
+                if col_button.button("Unhide", key=f"{state_key}:bd:unhide:{key}"):
+                    design.hidden.remove(key)
+                    store.save(design)
+                    st.rerun()
+
+
+def _board_buttons(state_key: str, entry, design: Design, store: DesignStore, section, order: list[str]) -> None:
+    editable = any(f is not None and f.kind != "image" for f in (entry.manifest.field(k) for k in section.fields))
+    position = order.index(section.key)
+    col_edit, col_up, col_down, col_hide = st.columns(4)
+    with col_edit:
+        if st.button("Edit", key=f"{state_key}:bd:edit:{section.key}", disabled=not editable, help="Edit this section in a window"):
+            _edit_section_dialog(state_key, entry, section.key)
+    with col_up:
+        if st.button("Up", key=f"{state_key}:bd:up:{section.key}", disabled=position == 0):
+            _move_section(design, entry.blueprint, section.key, -1)
+            store.save(design)
+            st.rerun()
+    with col_down:
+        if st.button("Down", key=f"{state_key}:bd:down:{section.key}", disabled=position >= len(order) - 1):
+            _move_section(design, entry.blueprint, section.key, 1)
+            store.save(design)
+            st.rerun()
+    with col_hide:
+        if st.button("Hide", key=f"{state_key}:bd:hide:{section.key}", disabled=section.kind == "cover", help="Drop this slide from the document"):
+            design.hidden.append(section.key)
+            store.save(design)
+            st.rerun()
+
+
+def _section_order(design: Design, blueprint: Blueprint) -> list[str]:
+    keys = [s.key for s in blueprint.sections]
+    ordered = [k for k in design.order if k in keys]
+    return ordered + [k for k in keys if k not in ordered]
+
+
+def _move_section(design: Design, blueprint: Blueprint, key: str, step: int) -> None:
+    order = _section_order(design, blueprint)
+    index = order.index(key)
+    target = index + step
+    if 0 <= target < len(order):
+        order[index], order[target] = order[target], order[index]
+        design.order = order
+
+
+def _slide_text(section, fields: dict) -> str:
+    for key in section.fields:
+        value = fields.get(key)
+        if isinstance(value, str) and value.strip():
+            text = " ".join(value.split())
+            return text if len(text) <= 140 else text[:140].rstrip() + "…"
+        if isinstance(value, list) and value and isinstance(value[0], dict):
+            return f"{len(value)} table rows"
+    return ""
 
 
 def _delete_design(store: DesignStore, template: str, name: str) -> None:
@@ -566,25 +703,6 @@ def _render_fields(design: Design, entry) -> tuple[dict, dict[str, str]]:
                 fields.pop(key, None)
                 field_modes[key] = "blank"
     return fields, field_modes
-
-
-@st.dialog("Slide preview", width="large")
-def _preview_dialog(pictures: list[bytes], notes: list[str]) -> None:
-    for note in notes:
-        st.warning(note)
-    columns = st.columns(2)
-    for index, png in enumerate(pictures):
-        with columns[index % 2]:
-            st.image(png, caption=f"Slide {index + 1}", width="stretch")
-
-
-@st.dialog("Slide preview", width="large")
-def _preview_table_dialog(rows: list[dict], notes: list[str]) -> None:
-    if notes:
-        st.error(notes[0])
-    for note in notes[1:]:
-        st.warning(note)
-    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
 # ----------------------------------------------------------------------------- mappings
@@ -766,6 +884,9 @@ def _render_design(entry, store: DesignStore, design: Design, subject: str, name
     fields, field_modes = _render_fields(design, entry)
     images = {k: v for k, v in store.content(design, manifest).fields.items() if manifest.field(k) and manifest.field(k).kind == "image"}
     final = Content(globals=_globals(subject), fields={**fields, **images})
+    sections = {s.key: s for s in blueprint.sections}
+    hidden_slides = [sections[k].slide for k in design.hidden if k in sections]
+    slide_order = [sections[k].slide for k in _section_order(design, blueprint)] if design.order else []
     out_dir = Path(tempfile.mkdtemp(prefix="sdgen-out-"))
     output = out_dir / f"{slugify(subject) or name}.pptx"
     response = render_document(
@@ -777,6 +898,8 @@ def _render_design(entry, store: DesignStore, design: Design, subject: str, name
             missing=missing,
             continue_on=continuation_slides(blueprint),
             field_modes=field_modes,
+            hidden_slides=hidden_slides,
+            slide_order=slide_order,
         )
     )
     return output, response

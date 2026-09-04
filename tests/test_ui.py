@@ -91,6 +91,15 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     assert not app.exception
 
     ui = _app_module()
+    blueprint = Registry(registry_with_demo).load("demo").blueprint
+    keys = [s.key for s in blueprint.sections]
+    board_design = ui.Design(name="x", template="demo")
+    assert ui._section_order(board_design, blueprint) == keys
+    ui._move_section(board_design, blueprint, keys[-1], -1)
+    assert board_design.order == [keys[-1]] + keys[:-1]
+    ui._move_section(board_design, blueprint, keys[-1], -1)
+    assert board_design.order[0] == keys[-1]
+
     ui._delete_design(DesignStore(tmp_path / "designs"), "demo", "camt-053")
     assert not (tmp_path / "designs" / "camt-053").exists()
     ui._remove_template(Registry(registry_with_demo), "demo")

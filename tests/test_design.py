@@ -81,3 +81,11 @@ def test_delete_removes_the_design_folder(tmp_path):
     assert store.names() == [] and not (tmp_path / "designs" / "lockbox").exists()
     with pytest.raises(FileNotFoundError):
         store.delete("lockbox")
+
+
+def test_hidden_and_order_are_persisted(tmp_path):
+    store = DesignStore(tmp_path / "designs")
+    design = Design(name="lockbox", template="demo", hidden=["duplicate_checker"], order=["cover", "executive_overview"])
+    store.save(design)
+    loaded = store.load("lockbox")
+    assert loaded.hidden == ["duplicate_checker"] and loaded.order == ["cover", "executive_overview"]

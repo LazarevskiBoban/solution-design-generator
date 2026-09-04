@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from sdgen.content import Content, ImageValue, images_of, parse_pipe_table
 from sdgen.fill.image import replace_picture
-from sdgen.fill.slides import clone_slide, remove_slide
+from sdgen.fill.slides import clone_slide, move_slide, remove_slide
 from sdgen.fill.table import fill_table
 from sdgen.fill.text import Block, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text
 from sdgen.inventory import find_shape, walk_shapes
@@ -39,6 +39,7 @@ class RenderResult(BaseModel):
     output: str
     slides: int
     issues: list[RenderIssue] = Field(default_factory=list)
+    slide_map: list[int] = Field(default_factory=list)  # template slide number behind each output slide
 
     @property
     def errors(self) -> list[RenderIssue]:
@@ -53,10 +54,15 @@ def render(
     missing: MissingMode = "placeholder",
     continue_on: set[int] | list[int] | None = None,
     field_modes: dict[str, MissingMode] | None = None,
+    hidden: list[int] | set[int] | None = None,
+    order: list[int] | None = None,
 ) -> RenderResult:
     prs = Presentation(str(template))
     slides = list(prs.slides)
     issues: list[RenderIssue] = []
+    hidden_slides = {n for n in (hidden or []) if 1 <= n <= len(slides)}
+    numbers = {slide.slide_id: n for n, slide in enumerate(slides, 1)}
+    _reorder(prs, slides, order)
     prototypes = set(manifest.slides.prototypes.values())
     if continue_on is not None:
         prototypes |= set(continue_on)
@@ -90,6 +96,8 @@ def render(
                 value = [[PLACEHOLDER_ROW]] if spec.kind == "table" else placeholder_text(spec.label)
                 issues.append(RenderIssue(level="info", field=spec.key, message="no value; placeholder shown"))
         for binding in spec.bindings:
+            if binding.slide in hidden_slides:
+                continue
             if not 1 <= binding.slide <= len(slides):
                 issues.append(RenderIssue(level="error", field=spec.key, slide=binding.slide, message="slide does not exist"))
                 continue
@@ -104,14 +112,36 @@ def render(
             except Exception as exc:  # keep rendering the rest of the document
                 issues.append(RenderIssue(level="error", field=spec.key, slide=binding.slide, message=str(exc)))
 
-    for index in sorted(set(manifest.slides.exclude), reverse=True):
+    for index in sorted(set(manifest.slides.exclude) | hidden_slides, reverse=True):
         if 1 <= index <= len(slides):
             remove_slide(prs, slides[index - 1])
         else:
             issues.append(RenderIssue(slide=index, message="excluded slide does not exist"))
 
     prs.save(str(output))
-    return RenderResult(output=str(output), slides=len(prs.slides), issues=issues)
+    return RenderResult(output=str(output), slides=len(prs.slides), issues=issues, slide_map=_slide_map(prs, numbers))
+
+
+def _reorder(prs, slides: list, order: list[int] | None) -> None:
+    wanted: list[int] = []
+    for number in order or []:
+        if 1 <= number <= len(slides) and number not in wanted:
+            wanted.append(number)
+    if not wanted:
+        return
+    sequence = wanted + [n for n in range(1, len(slides) + 1) if n not in wanted]
+    for position, number in enumerate(sequence):
+        move_slide(prs, slides[number - 1], position)
+
+
+def _slide_map(prs, numbers: dict[int, int]) -> list[int]:
+    # Clones are inserted right after their source, so they inherit the last seen origin.
+    result: list[int] = []
+    last = 0
+    for slide in prs.slides:
+        last = numbers.get(slide.slide_id, last)
+        result.append(last)
+    return result
 
 
 def _locate(slide, binding: Binding):
