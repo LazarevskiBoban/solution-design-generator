@@ -19,6 +19,7 @@ from sdgen.manifest import FieldSpec, GlobalSpec, Manifest
 from sdgen.mapping.extract import extract_fields
 from sdgen.mapping.model import MappingEntry, MappingSet, SourceSpec, TargetSpec
 from sdgen.mapping.workbook import write_workbook
+from sdgen.preview import export_slide_images, preview_rows
 from sdgen.registry import Registry, safe_name
 from sdgen.tools import AnalyzeRequest, RenderRequest, analyze_template, continuation_slides, render_document
 from sdgen.writer import draft_content, writable_sections
@@ -440,7 +441,7 @@ def design_page() -> None:
         st.download_button("Export content (.md)", data=dump_markdown(Content(globals=_globals(subject), fields=edited), manifest), file_name=f"{name}-content.md", key=f"{state_key}:export")
 
     st.subheader("4. Generate")
-    col_missing, col_generate = st.columns([1, 2])
+    col_missing, col_preview, col_generate = st.columns([1, 1, 1])
     with col_missing:
         missing = st.selectbox(
             "Unfilled sections",
@@ -448,8 +449,20 @@ def design_page() -> None:
             format_func={"placeholder": "show a placeholder", "keep": "keep template text", "blank": "leave blank"}.get,
             key=f"{state_key}:missing",
         )
+    with col_preview:
+        preview_clicked = st.button("Preview slides", key=f"{state_key}:preview", help="Shows the slides as pictures with the current sections. Needs PowerPoint on this machine; otherwise a table per slide is shown.")
     with col_generate:
         generate = st.button("Generate document", type="primary", key=f"{state_key}:generate")
+    if preview_clicked:
+        output, response = _render_design(entry, blueprint, manifest, store, design, subject, name, dict(edited), modes, missing)
+        notes = [str(i) for i in response.issues if not str(i).startswith("info")]
+        try:
+            with st.spinner("Rendering slide pictures with PowerPoint."):
+                pictures = export_slide_images(output, output.parent / "png")
+            st.session_state[f"{state_key}:preview"] = ("images", [p.read_bytes() for p in pictures], notes)
+        except RuntimeError as exc:
+            table = preview_rows(blueprint, manifest, Content(fields=dict(edited)), modes)
+            st.session_state[f"{state_key}:preview"] = ("table", table, [f"Slide pictures are not available ({exc}); this is what each slide will contain."] + notes)
     if generate:
         fields = dict(edited)
         drafted_now = False
@@ -469,28 +482,28 @@ def design_page() -> None:
         elif not any(v not in ("", [], None) for v in fields.values()):
             st.warning("No section text yet, so the document will only show placeholders. Draft the sections with AI first, or fill them under Review sections.")
         design.modes = modes
-        images = {k: v for k, v in store.content(design, manifest).fields.items() if manifest.field(k) and manifest.field(k).kind == "image"}
-        final = Content(globals=_globals(subject), fields={**fields, **images})
         design.content_markdown = dump_markdown(Content(globals=_globals(subject), fields=fields), manifest)
         store.save(design)
-        out_dir = Path(tempfile.mkdtemp(prefix="sdgen-out-"))
-        output = out_dir / f"{slugify(subject) or name}.pptx"
-        field_modes = {key: "blank" for section in blueprint.sections if modes.get(section.key) == "blank" for key in section.fields}
-        response = render_document(
-            RenderRequest(
-                template=str(entry.template_path),
-                manifest=manifest,
-                content=final,
-                output=str(output),
-                missing=missing,
-                continue_on=continuation_slides(blueprint),
-                field_modes=field_modes,
-            )
-        )
+        output, response = _render_design(entry, blueprint, manifest, store, design, subject, name, fields, modes, missing)
         st.session_state[f"{state_key}:output"] = (output.name, output.read_bytes(), [str(i) for i in response.issues], response.slides)
+        st.session_state.pop(f"{state_key}:preview", None)
         if drafted_now:
             st.session_state[f"{state_key}:v"] = version + 1
             st.rerun()
+
+    shown = st.session_state.get(f"{state_key}:preview")
+    if shown:
+        kind, payload, notes = shown
+        st.markdown("**Preview**")
+        for note in notes:
+            st.warning(note)
+        if kind == "images":
+            columns = st.columns(3)
+            for index, png in enumerate(payload):
+                with columns[index % 3]:
+                    st.image(png, caption=f"Slide {index + 1}", width="stretch")
+        else:
+            st.dataframe(pd.DataFrame(payload), hide_index=True, width="stretch")
 
     stored = st.session_state.get(f"{state_key}:output")
     if stored:
@@ -679,6 +692,26 @@ def _show_draft_warnings(warnings: list[str]) -> None:
             st.warning(warning)
     if empty:
         st.warning(f"{len(empty)} fields came back empty: " + ", ".join(empty))
+
+
+def _render_design(entry, blueprint: Blueprint, manifest: Manifest, store: DesignStore, design: Design, subject: str, name: str, fields: dict, modes: dict[str, str], missing: str):
+    images = {k: v for k, v in store.content(design, manifest).fields.items() if manifest.field(k) and manifest.field(k).kind == "image"}
+    final = Content(globals=_globals(subject), fields={**fields, **images})
+    out_dir = Path(tempfile.mkdtemp(prefix="sdgen-out-"))
+    output = out_dir / f"{slugify(subject) or name}.pptx"
+    field_modes = {key: "blank" for section in blueprint.sections if modes.get(section.key) == "blank" for key in section.fields}
+    response = render_document(
+        RenderRequest(
+            template=str(entry.template_path),
+            manifest=manifest,
+            content=final,
+            output=str(output),
+            missing=missing,
+            continue_on=continuation_slides(blueprint),
+            field_modes=field_modes,
+        )
+    )
+    return output, response
 
 
 def _confirm_delete(key: str, label: str, question: str) -> bool:
