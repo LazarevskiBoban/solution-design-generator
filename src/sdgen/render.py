@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pptx import Presentation
 from pydantic import BaseModel, Field
 
-from sdgen.content import Content, ImageValue, parse_pipe_table
+from sdgen.content import Content, ImageValue, images_of, parse_pipe_table
 from sdgen.fill.image import replace_picture
 from sdgen.fill.slides import clone_slide, remove_slide
 from sdgen.fill.table import fill_table
@@ -110,10 +110,24 @@ def _apply(prs, slide, shape, spec: FieldSpec, binding: Binding, value: Any, iss
         fill_table(shape, rows, header_rows=binding.header_rows, keep_last_row_if=binding.keep_last_row_if, columns=spec.columns or None)
         return
     if spec.kind == "image":
-        path = value.path if isinstance(value, ImageValue) else str(value)
-        if not Path(path).is_file():
-            raise FileNotFoundError(f"image not found: {path}")
-        replace_picture(slide, shape, path, binding.fit)
+        images = images_of(value)
+        missing = [i.path for i in images if not Path(i.path).is_file()]
+        if missing:
+            raise FileNotFoundError(f"image not found: {missing[0]}")
+        if not images:
+            return
+        picture = replace_picture(slide, shape, images[0].path, binding.fit)
+        current = slide
+        for image in images[1:]:
+            current = clone_slide(prs, current)
+            _mark_continuation(current)
+            target = next((s for s in walk_shapes(current.shapes) if s.name == picture.name), None)
+            if target is None:
+                issues.append(RenderIssue(field=spec.key, slide=binding.slide, message="could not place an extra image"))
+                break
+            picture = replace_picture(current, target, image.path, binding.fit)
+        if len(images) > 1:
+            issues.append(RenderIssue(level="info", field=spec.key, slide=binding.slide, message=f"{len(images) - 1} extra slide(s) for images"))
         return
     if not shape.has_text_frame:
         raise ValueError("bound shape has no text")

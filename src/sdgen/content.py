@@ -28,7 +28,17 @@ class ImageValue(BaseModel):
     path: str
 
 
-FieldValue = str | list[dict[str, Any]] | ImageValue
+FieldValue = str | list[dict[str, Any]] | ImageValue | list[ImageValue]
+
+
+def images_of(value: Any) -> list[ImageValue]:
+    if isinstance(value, ImageValue):
+        return [value]
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, ImageValue)]
+    if isinstance(value, str) and value.strip():
+        return [ImageValue(path=value.strip())]
+    return []
 
 
 class Content(BaseModel):
@@ -119,10 +129,10 @@ def validate_content(content: Content, manifest: Manifest) -> list[str]:
                 if extra:
                     warnings.append(f"field '{spec.key}' has columns not in the template: {', '.join(extra)}")
         elif spec.kind == "image":
-            path = value.path if isinstance(value, ImageValue) else str(value)
-            if not Path(path).is_file():
-                warnings.append(f"field '{spec.key}' image not found: {path}")
-        elif isinstance(value, ImageValue):
+            for image in images_of(value):
+                if not Path(image.path).is_file():
+                    warnings.append(f"field '{spec.key}' image not found: {image.path}")
+        elif images_of(value) and not isinstance(value, str):
             warnings.append(f"field '{spec.key}' expects text but got an image")
     for heading in content.unknown:
         warnings.append(f"section '{heading}' does not match any field and is ignored")
@@ -196,13 +206,15 @@ def _parse_value(kind: str, section: str, base_dir: str | Path | None) -> FieldV
     if kind == "table":
         return parse_pipe_table(section)
     if kind == "image":
-        match = IMAGE_RE.search(section)
-        raw = match.group(1).strip() if match else section.strip()
-        if not raw:
+        paths = [m.strip() for m in IMAGE_RE.findall(section)] or ([section.strip()] if section.strip() else [])
+        images = []
+        for raw in paths:
+            if base_dir is not None and not Path(raw).is_absolute():
+                raw = str(Path(base_dir) / raw)
+            images.append(ImageValue(path=raw))
+        if not images:
             return ""
-        if base_dir is not None and not Path(raw).is_absolute():
-            raw = str(Path(base_dir) / raw)
-        return ImageValue(path=raw)
+        return images[0] if len(images) == 1 else images
     return section
 
 
@@ -211,8 +223,9 @@ def _strip_comments(section: str) -> str:
 
 
 def _format_value(value: FieldValue, spec: FieldSpec | None) -> str:
-    if isinstance(value, ImageValue):
-        return f"![]({value.path})"
+    images = images_of(value) if not isinstance(value, str) else []
+    if images:
+        return "\n".join(f"![]({image.path})" for image in images)
     if isinstance(value, list):
         columns = list(spec.columns) if spec and spec.columns else _union_keys(value)
         return _pipe_table(value, columns)

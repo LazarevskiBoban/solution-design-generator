@@ -8,6 +8,7 @@ from pptx import Presentation
 from pydantic import BaseModel
 
 from sdgen.blueprint import Blueprint
+from sdgen.diagrams import add_image_slots
 from sdgen.manifest import Manifest
 from sdgen.tokenize import tokenize_deck
 
@@ -68,6 +69,8 @@ class Registry:
         if tokenize:
             prs = Presentation(str(deck_path))
             manifest = tokenize_deck(prs, manifest)
+            if blueprint is not None:
+                manifest, blueprint = add_image_slots(prs, manifest, blueprint)
             prs.save(str(directory / TEMPLATE_FILE))
         else:
             shutil.copyfile(deck_path, directory / TEMPLATE_FILE)
