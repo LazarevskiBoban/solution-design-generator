@@ -86,6 +86,32 @@ def test_mock_keeps_cover_subtitle_short():
     assert "## subtitle\n[Draft] CAMT.053 Integration" in mock_draft(context)
 
 
+def test_mock_respects_budgets_and_tokens():
+    from sdgen.llm import mock_draft
+
+    about = "First sentence is short. Second sentence adds quite a few more words to it. Third one is here."
+    context = {
+        "brief": {"subject": "X", "about": about},
+        "sections": [
+            {
+                "section": "overview",
+                "title": "Executive Overview",
+                "kind": "composite",
+                "ask": "",
+                "fields": [
+                    {"key": "need", "kind": "text", "max_chars": 40},
+                    {"key": "effort", "kind": "text", "token": True},
+                    {"key": "points", "kind": "bullets", "max_chars": 60},
+                ],
+            }
+        ],
+    }
+    draft = mock_draft(context)
+    assert "## need\n[Draft] First sentence is short.\n" in draft
+    assert "## effort\n[TBC]\n" in draft
+    assert draft.endswith("## points\n- [Draft] First sentence is short.\n")
+
+
 def test_cli_draft_writes_content(sample_deck, tmp_path):
     entry = _template(sample_deck, tmp_path)
     brief_path = tmp_path / "brief.md"

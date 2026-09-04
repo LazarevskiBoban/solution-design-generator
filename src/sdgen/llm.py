@@ -49,6 +49,13 @@ def mock_draft(context: dict) -> str:
         for field in section.get("fields", []):
             lines.append(f"## {field['key']}")
             kind = field.get("kind", "text")
+            budget = field.get("max_chars") or 0
+            if field.get("token"):
+                lines.append("[TBC]")
+                lines.append("")
+                continue
+            if budget:
+                source = _fit(source, max(budget - 8, 20))
             if kind == "table":
                 columns = field.get("columns") or ["value"]
                 if _is_reference(columns):
@@ -90,6 +97,18 @@ def _pick_source(section: dict, brief: dict) -> str:
 
 def _sentences(text: str) -> list[str]:
     return [s.strip() for s in SENTENCE_RE.split(text) if s.strip()]
+
+
+def _fit(text: str, budget: int) -> str:
+    if len(text) <= budget:
+        return text
+    kept: list[str] = []
+    for sentence in _sentences(text):
+        candidate = " ".join(kept + [sentence])
+        if len(candidate) > budget:
+            break
+        kept.append(sentence)
+    return " ".join(kept) if kept else text[: budget - 1].rstrip() + "…"
 
 
 def _first_sentence(text: str) -> str:

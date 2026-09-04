@@ -55,6 +55,8 @@ def build_prompt(brief: Brief, blueprint: Blueprint, manifest: Manifest) -> tupl
                 detail += "; columns: " + ", ".join(field["columns"])
             if field["max_chars"]:
                 detail += f"; about {field['max_chars']} characters"
+            if field["token"]:
+                detail += "; a few words only, it replaces a short placeholder"
             lines.append(f"- {field['key']} — {field['label']} ({detail})")
         if section["example"]:
             lines.append("Example from an earlier document (tone and depth only, do not reuse its facts):")
@@ -99,6 +101,7 @@ def writable_sections(blueprint: Blueprint, manifest: Manifest) -> list[dict]:
                         "kind": f.kind,
                         "columns": list(f.columns),
                         "max_chars": max((b.max_chars or 0) for b in f.bindings) or None,
+                        "token": any(b.mode == "token" for b in f.bindings),
                         "guidance": f.guidance,
                     }
                     for f in fields
