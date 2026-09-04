@@ -39,6 +39,27 @@ def test_save_load_and_content(tmp_path):
     assert isinstance(images, list) and len(images) == 2 and all(isinstance(i, ImageValue) for i in images)
 
 
+def test_mapping_set_is_persisted_with_the_design(tmp_path):
+    from sdgen.mapping.model import FieldInfo, MappingEntry, MappingSet, SourceSpec, TargetSpec
+
+    store = DesignStore(tmp_path / "designs")
+    mapping = MappingSet(
+        name="camt",
+        target=TargetSpec(name="API", fields=[FieldInfo(path="A/B", required=True)]),
+        sources=[SourceSpec(name="Bank A", fields=[FieldInfo(path="X/Y")])],
+        entries=[MappingEntry(target_path="A/B", source="Bank A", source_path="X/Y")],
+    )
+    design = Design(name="camt", template="demo", mapping=mapping)
+    store.save(design)
+    assert (tmp_path / "designs" / "camt" / "mappings.yaml").is_file()
+    loaded = store.load("camt")
+    assert loaded.mapping == mapping
+    assert loaded.workbook_name == "camt-mapping.xlsx"
+    assert store.workbook_path(loaded).parent == tmp_path / "designs" / "camt" / "mapping"
+    saved = store.add_mapping_file(loaded, "bank-a.xml", b"<x/>")
+    assert saved.read_bytes() == b"<x/>"
+
+
 def _png() -> bytes:
     import io
 

@@ -67,3 +67,30 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     assert slide.shapes.title.text == "Executive Overview: Lockbox Integration"
     need = next(s for s in slide.shapes if s.name == "Business Need Box").text_frame.text
     assert need.startswith("Business Need: [Draft] Bank statements arrive daily.")
+
+
+def test_mappings_page_shows_grid_and_writes_workbook(registry_with_demo, tmp_path):
+    from sdgen.design import Design, DesignStore
+    from sdgen.mapping.model import FieldInfo, MappingEntry, MappingSet, SourceSpec, TargetSpec
+
+    store = DesignStore(tmp_path / "designs")
+    mapping = MappingSet(
+        name="camt",
+        target=TargetSpec(name="API", kind="edmx", fields=[FieldInfo(path="Stmt/Id", required=True), FieldInfo(path="Stmt/Amount")]),
+        sources=[SourceSpec(name="Bank A", file="a.xml", kind="xml", fields=[FieldInfo(path="Doc/Id"), FieldInfo(path="Doc/Amt")])],
+        entries=[MappingEntry(target_path="Stmt/Id", source="Bank A", source_path="Doc/Id")],
+    )
+    store.save(Design(name="camt", template="demo", mapping=mapping))
+
+    app = AppTest.from_file(str(APP), default_timeout=60).run()
+    app.sidebar.radio[0].set_value("Mappings").run()
+    assert not app.exception
+    assert app.selectbox(key="mapping_design:demo").value == "camt"
+    assert any("Source Bank A: 1 of 2 target fields mapped" in t.value for t in app.text)
+
+    app.button(key="design:demo:camt:summary_to_brief").click().run()
+    assert not app.exception
+    design = app.session_state["design:demo:camt"]
+    assert "Detailed field mapping: camt-mapping.xlsx" in design.brief.mapping_summary
+    assert (tmp_path / "designs" / "camt" / "mapping" / "camt-mapping.xlsx").is_file()
+    assert store.load("camt").brief.mapping_summary == design.brief.mapping_summary

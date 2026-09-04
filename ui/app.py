@@ -15,6 +15,9 @@ from sdgen.design import Design, DesignStore
 from sdgen.inventory import DeckInfo
 from sdgen.llm import LLMNotConfigured, get_llm
 from sdgen.manifest import FieldSpec, GlobalSpec, Manifest
+from sdgen.mapping.extract import extract_fields
+from sdgen.mapping.model import MappingEntry, MappingSet, SourceSpec, TargetSpec
+from sdgen.mapping.workbook import write_workbook
 from sdgen.registry import Registry, safe_name
 from sdgen.tools import AnalyzeRequest, RenderRequest, analyze_template, render_document
 from sdgen.writer import draft_content
@@ -23,7 +26,10 @@ ROOT = Path(__file__).resolve().parent.parent
 KINDS = ["text", "bullets", "table", "image"]
 SECTION_KINDS = ["cover", "static", "divider", "text", "table", "composite", "diagram", "mapping", "references"]
 PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 NEW_DESIGN = "New design"
+MAPPINGS = "Mappings"
+SAMPLE_TYPES = ["xml", "xsd", "edmx", "json", "csv"]
 
 
 def registry() -> Registry:
@@ -37,9 +43,11 @@ def design_store() -> DesignStore:
 def main() -> None:
     st.set_page_config(page_title="sdgen", layout="wide")
     names = registry().names()
-    page = st.sidebar.radio("Page", [NEW_DESIGN, "Templates"], index=0 if names else 1)
+    page = st.sidebar.radio("Page", [NEW_DESIGN, MAPPINGS, "Templates"], index=0 if names else 2)
     if page == "Templates":
         templates_page()
+    elif page == MAPPINGS:
+        mappings_page()
     else:
         design_page()
 
@@ -282,6 +290,8 @@ def design_page() -> None:
         except LLMNotConfigured as exc:
             st.error(str(exc))
         else:
+            if design.mapping is not None and not design.brief.mapping_summary.strip():
+                design.brief.mapping_summary = _mapping_note(design)
             result = draft_content(design.brief, blueprint, manifest, llm)
             design.content_markdown = result.markdown
             design.llm = result.llm
@@ -377,7 +387,155 @@ def design_page() -> None:
         for issue in issues:
             (st.error if issue.startswith("error") else st.info if issue.startswith("info") else st.warning)(issue)
         st.success(f"Generated {file_name} with {slides} slides.")
-        st.download_button("Download document", data=data, file_name=file_name, mime=PPTX_MIME, key=f"{state_key}:download")
+        col_deck, col_book = st.columns(2)
+        with col_deck:
+            st.download_button("Download document", data=data, file_name=file_name, mime=PPTX_MIME, key=f"{state_key}:download")
+        if design.mapping is not None and design.mapping.sources:
+            with col_book:
+                workbook = write_workbook(design.mapping, store.workbook_path(design))
+                st.download_button("Download mapping workbook", data=workbook.read_bytes(), file_name=design.workbook_name, mime=XLSX_MIME, key=f"{state_key}:download_xlsx")
+
+
+# ----------------------------------------------------------------------------- mappings
+
+
+def mappings_page() -> None:
+    st.header(MAPPINGS)
+    reg = registry()
+    names = reg.names()
+    if not names:
+        st.info("No templates yet. Add one on the Templates page.")
+        return
+    template = st.selectbox("Template", names, key="mapping_template")
+    store = design_store()
+    existing = store.names(template)
+    if not existing:
+        st.info(f"Create a design on the '{NEW_DESIGN}' page first; mappings belong to a design.")
+        return
+    name = st.selectbox("Design", existing, key=f"mapping_design:{template}")
+    state_key = f"design:{template}:{name}"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = store.load(name)
+        st.session_state[f"{state_key}:v"] = 0
+    design: Design = st.session_state[state_key]
+
+    st.subheader("1. Target")
+    st.caption("The unified payload the integration sends, for example the S/4HANA API metadata (EDMX), an XSD, or a sample payload.")
+    target_file = st.file_uploader("Target definition", type=SAMPLE_TYPES, key=f"{state_key}:target_upload")
+    if target_file is not None and st.session_state.get(f"{state_key}:target_token") != f"{target_file.name}:{target_file.size}":
+        path = store.add_mapping_file(design, target_file.name, target_file.getvalue())
+        kind, fields = extract_fields(path)
+        target = TargetSpec(name=Path(target_file.name).stem, file=target_file.name, kind=kind, fields=fields)
+        if design.mapping is None:
+            design.mapping = MappingSet(name=design.name, target=target)
+        else:
+            design.mapping.target = target
+        store.save(design)
+        st.session_state[f"{state_key}:target_token"] = f"{target_file.name}:{target_file.size}"
+        st.rerun()
+    mapping = design.mapping
+    if mapping is None:
+        st.info("Upload the target definition to start.")
+        return
+    st.caption(f"Target: {mapping.target.name} ({mapping.target.kind}, {len(mapping.target.fields)} fields)")
+
+    st.subheader("2. Sources")
+    st.caption("One sample per sending party, for example one CAMT.053 file per bank. Each source gets its own sheet in the workbook.")
+    col_name, col_file, col_add = st.columns([1, 2, 1])
+    with col_name:
+        source_name = st.text_input("Source name", key=f"{state_key}:source_name", placeholder="Bank A")
+    with col_file:
+        source_file = st.file_uploader("Source sample (XML, JSON, CSV)", type=SAMPLE_TYPES, key=f"{state_key}:source_upload")
+    with col_add:
+        st.write("")
+        st.write("")
+        add_source = st.button("Add source", key=f"{state_key}:add_source", disabled=source_file is None or not source_name.strip())
+    if add_source and source_file is not None:
+        path = store.add_mapping_file(design, source_file.name, source_file.getvalue())
+        kind, fields = extract_fields(path)
+        clean = source_name.strip()
+        mapping.sources = [s for s in mapping.sources if s.name != clean] + [SourceSpec(name=clean, file=source_file.name, kind=kind, fields=fields)]
+        store.save(design)
+        st.rerun()
+    if not mapping.sources:
+        st.info("Add at least one source sample.")
+        return
+
+    st.subheader("3. Map fields")
+    tabs = st.tabs([s.name for s in mapping.sources])
+    for tab, source in zip(tabs, mapping.sources):
+        with tab:
+            st.caption(f"{source.file} ({source.kind}, {len(source.fields)} fields). Pick the source field for each target field; describe constants or conversions as a rule.")
+            entries = mapping.entries_for(source.name)
+            rows = []
+            for field in mapping.target.fields:
+                entry = entries.get(field.path)
+                rows.append(
+                    {
+                        "target": field.path,
+                        "type": field.type,
+                        "required": "yes" if field.required else "",
+                        "source_field": entry.source_path if entry else "",
+                        "rule": entry.rule if entry else "",
+                        "example": entry.example if entry else "",
+                        "note": entry.note if entry else "",
+                    }
+                )
+            frame = pd.DataFrame(rows, columns=["target", "type", "required", "source_field", "rule", "example", "note"])
+            edited = st.data_editor(
+                frame,
+                hide_index=True,
+                width="stretch",
+                height=min(60 + 36 * len(rows), 600),
+                disabled=["target", "type", "required"],
+                key=f"{state_key}:grid:{source.name}",
+                column_config={
+                    "target": st.column_config.TextColumn("Target field", width="large"),
+                    "type": st.column_config.TextColumn("Type", width="small"),
+                    "required": st.column_config.TextColumn("Required", width="small"),
+                    "source_field": st.column_config.SelectboxColumn("Source field", options=[""] + [f.path for f in source.fields], width="large"),
+                    "rule": st.column_config.TextColumn("Transformation rule"),
+                    "example": st.column_config.TextColumn("Example"),
+                    "note": st.column_config.TextColumn("Notes"),
+                },
+            )
+            for row in edited.itertuples(index=False):
+                mapping.set_entry(
+                    MappingEntry(
+                        target_path=row.target,
+                        source=source.name,
+                        source_path=_text(row.source_field),
+                        rule=_text(row.rule),
+                        example=_text(row.example),
+                        note=_text(row.note),
+                    )
+                )
+            if st.button(f"Remove source '{source.name}'", key=f"{state_key}:remove:{source.name}"):
+                mapping.sources = [s for s in mapping.sources if s.name != source.name]
+                mapping.entries = [e for e in mapping.entries if e.source != source.name]
+                store.save(design)
+                st.rerun()
+
+    st.subheader("4. Workbook")
+    st.text(mapping.summary_text())
+    col_save, col_brief, col_download = st.columns(3)
+    with col_save:
+        if st.button("Save mappings", key=f"{state_key}:save_mapping"):
+            store.save(design)
+            st.success("Mappings saved.")
+    with col_brief:
+        if st.button("Use summary in brief", key=f"{state_key}:summary_to_brief"):
+            design.brief.mapping_summary = _mapping_note(design)
+            store.save(design)
+            st.session_state[f"{state_key}:v"] = st.session_state.get(f"{state_key}:v", 0) + 1
+            st.success("Mapping summary written into the brief.")
+    with col_download:
+        workbook = write_workbook(mapping, store.workbook_path(design))
+        st.download_button("Download workbook (.xlsx)", data=workbook.read_bytes(), file_name=design.workbook_name, mime=XLSX_MIME, key=f"{state_key}:download_workbook")
+
+
+def _mapping_note(design: Design) -> str:
+    return f"{design.mapping.summary_text()}\nDetailed field mapping: {design.workbook_name}"
 
 
 def _review_widget(spec: FieldSpec, key: str, value):

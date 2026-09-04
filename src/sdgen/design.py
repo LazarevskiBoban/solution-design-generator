@@ -9,12 +9,15 @@ from pydantic import BaseModel, Field
 from sdgen.brief import Brief, dump_brief, load_brief
 from sdgen.content import Content, ImageValue, load_markdown
 from sdgen.manifest import Manifest
+from sdgen.mapping.model import MappingSet
 from sdgen.registry import safe_name
 
 DESIGN_FILE = "design.yaml"
 BRIEF_FILE = "brief.md"
 CONTENT_FILE = "content.md"
+MAPPING_FILE = "mappings.yaml"
 IMAGES_DIR = "images"
+MAPPING_DIR = "mapping"
 
 
 class Design(BaseModel):
@@ -23,8 +26,13 @@ class Design(BaseModel):
     brief: Brief = Field(default_factory=Brief)
     content_markdown: str = ""
     images: dict[str, list[str]] = Field(default_factory=dict)
+    mapping: MappingSet | None = None
     llm: str = ""
     updated: str = ""
+
+    @property
+    def workbook_name(self) -> str:
+        return f"{safe_name(self.name)}-mapping.xlsx"
 
 
 class DesignStore:
@@ -54,12 +62,14 @@ class DesignStore:
         data = yaml.safe_load(meta.read_text(encoding="utf-8")) or {}
         brief_path = folder / BRIEF_FILE
         content_path = folder / CONTENT_FILE
+        mapping_path = folder / MAPPING_FILE
         return Design(
             name=name,
             template=data.get("template", ""),
             brief=load_brief(brief_path.read_text(encoding="utf-8")) if brief_path.is_file() else Brief(),
             content_markdown=content_path.read_text(encoding="utf-8") if content_path.is_file() else "",
             images={k: list(v) for k, v in (data.get("images") or {}).items()},
+            mapping=MappingSet.load(mapping_path) if mapping_path.is_file() else None,
             llm=data.get("llm", ""),
             updated=data.get("updated", ""),
         )
@@ -72,12 +82,27 @@ class DesignStore:
         (folder / DESIGN_FILE).write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), encoding="utf-8")
         (folder / BRIEF_FILE).write_text(dump_brief(design.brief), encoding="utf-8")
         (folder / CONTENT_FILE).write_text(design.content_markdown, encoding="utf-8")
+        if design.mapping is not None:
+            design.mapping.save(folder / MAPPING_FILE)
         return folder
 
     def image_dir(self, name: str) -> Path:
         folder = self.root / safe_name(name) / IMAGES_DIR
         folder.mkdir(parents=True, exist_ok=True)
         return folder
+
+    def mapping_dir(self, name: str) -> Path:
+        folder = self.root / safe_name(name) / MAPPING_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def add_mapping_file(self, design: Design, file_name: str, data: bytes) -> Path:
+        target = self.mapping_dir(design.name) / Path(file_name).name
+        target.write_bytes(data)
+        return target
+
+    def workbook_path(self, design: Design) -> Path:
+        return self.mapping_dir(design.name) / design.workbook_name
 
     def add_image(self, design: Design, field_key: str, file_name: str, data: bytes) -> str:
         folder = self.image_dir(design.name)
