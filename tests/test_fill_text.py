@@ -226,3 +226,21 @@ def test_block_objects_are_accepted():
     set_rich_text(box, blocks)
     assert box.text_frame.text == "Hello there"
     assert blocks == original
+
+
+def test_fit_text_shape_scales_overflowing_text_only():
+    from sdgen.fill.text import fit_text_shape
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(2), Inches(0.6))
+    box.text_frame.text = "Short"
+    assert fit_text_shape(box) == 1.0
+    assert box.text_frame._txBody.bodyPr.find(qn("a:normAutofit")) is None
+
+    long_box = slide.shapes.add_textbox(Inches(1), Inches(2), Inches(2), Inches(0.6))
+    long_box.text_frame.text = "This is a long paragraph that certainly needs many more lines than the box can offer at fourteen points. " * 3
+    scale = fit_text_shape(long_box)
+    assert 0.8 <= scale < 1.0
+    autofit = long_box.text_frame._txBody.bodyPr.find(qn("a:normAutofit"))
+    assert autofit is not None and int(autofit.get("fontScale")) == int(round(scale * 100000)) and autofit.get("lnSpcReduction") == "10000"

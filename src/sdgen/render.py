@@ -12,11 +12,12 @@ from sdgen.fill.image import replace_picture
 from sdgen.flow import FlowSpec, draw_flow
 from sdgen.fill.slides import clone_slide, move_slide, remove_slide
 from sdgen.fill.table import fill_table
-from sdgen.fill.text import Block, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text
+from sdgen.fill.text import Block, fit_text_shape, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text
 from sdgen.inventory import find_shape, walk_shapes
 from sdgen.manifest import Binding, FieldSpec, Manifest
 
 CONTINUATION_SUFFIX = " (cont.)"
+SPILL_RATIO = 1.25
 MissingMode = Literal["keep", "blank", "placeholder"]
 PLACEHOLDER_ROW = "[To be completed]"
 
@@ -72,6 +73,7 @@ def render(
     titles: dict[int, str] | None = None,
     extras: list[ExtraSlide] | None = None,
     flows: dict[str, FlowSpec] | None = None,
+    spill: bool = False,
 ) -> RenderResult:
     prs = Presentation(str(template))
     slides = list(prs.slides)
@@ -104,6 +106,7 @@ def render(
         set_rich_text(shape, f"{title.strip()}: {subject}" if subject and subject in current else title.strip())
 
     drawn = _draw_flows(slides, manifest, content, flows or {}, hidden_slides, issues)
+    pending: dict[int, dict] = {}
     for spec in manifest.fields:
         if spec.key in drawn:
             continue
@@ -138,9 +141,14 @@ def render(
                 continue
             try:
                 allow = binding.slide in prototypes or (continue_on is None and shape.is_placeholder)
-                _apply(prs, slide, shape, spec, binding, value, issues, allow)
+                remaining = _apply(prs, slide, shape, spec, binding, value, issues, allow, spill=spill)
+                if remaining:
+                    pending.setdefault(binding.slide, {})[spec.key] = (spec, binding, remaining)
             except Exception as exc:  # keep rendering the rest of the document
                 issues.append(RenderIssue(level="error", field=spec.key, slide=binding.slide, message=str(exc)))
+
+    for number, fields_pending in pending.items():
+        _continue_composite(prs, slides[number - 1], manifest, number, fields_pending, issues)
 
     extra_ids = _add_extras(prs, slides, extras or [], subject, issues)
 
@@ -252,7 +260,7 @@ def _locate(slide, binding: Binding):
     return shape
 
 
-def _apply(prs, slide, shape, spec: FieldSpec, binding: Binding, value: Any, issues: list[RenderIssue], prototype: bool) -> None:
+def _apply(prs, slide, shape, spec: FieldSpec, binding: Binding, value: Any, issues: list[RenderIssue], prototype: bool, spill: bool = False) -> list:
     if spec.kind == "table":
         if not getattr(shape, "has_table", False):
             raise ValueError("bound shape is not a table")
@@ -290,19 +298,57 @@ def _apply(prs, slide, shape, spec: FieldSpec, binding: Binding, value: Any, iss
     blocks = parse_blocks(text)
     chunks = [blocks]
     if binding.max_chars and len(text) > binding.max_chars:
-        if prototype:
+        # Shrinking covers up to a quarter more text; beyond that the box continues on a copy of the slide.
+        if prototype or (spill and len(text) > binding.max_chars * SPILL_RATIO):
             chunks = _split_blocks(blocks, binding.max_chars)
             issues.append(RenderIssue(level="info", field=spec.key, slide=binding.slide, message=f"continued on {len(chunks) - 1} extra slide(s)"))
         else:
-            issues.append(RenderIssue(field=spec.key, slide=binding.slide, message=f"text is {len(text)} characters, about {binding.max_chars} fit"))
+            issues.append(RenderIssue(level="info", field=spec.key, slide=binding.slide, message=f"text is {len(text)} characters, about {binding.max_chars} fit; shrunk to fit"))
 
     set_rich_text(shape, chunks[0], keep_prefix=binding.keep_prefix)
+    _shrink(shape, spec, binding, issues)
+    if not prototype:
+        return chunks[1:]
     current = slide
     for chunk in chunks[1:]:
         current = clone_slide(prs, current)
         _mark_continuation(current)
         target = find_shape(current, shape.shape_id)
         set_rich_text(target, chunk, keep_prefix=binding.keep_prefix)
+        _shrink(target, spec, binding, issues)
+    return []
+
+
+def _continue_composite(prs, slide, manifest: Manifest, number: int, pending: dict, issues: list[RenderIssue]) -> None:
+    """Copies a slide as often as its longest box needs; every copy continues each long box and blanks the rest."""
+    count = max(len(chunks) for _, _, chunks in pending.values())
+    current = slide
+    for index in range(count):
+        current = clone_slide(prs, current)
+        _mark_continuation(current)
+        for other in manifest.fields:
+            if other.kind == "image":
+                continue
+            for binding in other.bindings:
+                if binding.slide != number or binding.mode == "token":
+                    continue
+                target = find_shape(current, binding.shape.id)
+                if target is None:
+                    continue
+                entry = pending.get(other.key)
+                if entry is not None and index < len(entry[2]):
+                    set_rich_text(target, entry[2][index], keep_prefix=binding.keep_prefix)
+                    _shrink(target, other, binding, issues)
+                elif other.kind == "table" and getattr(target, "has_table", False):
+                    fill_table(target, [], header_rows=binding.header_rows, keep_last_row_if=binding.keep_last_row_if, columns=other.columns or None)
+                elif getattr(target, "has_text_frame", False):
+                    set_rich_text(target, "", keep_prefix=binding.keep_prefix)
+
+
+def _shrink(shape, spec: FieldSpec, binding: Binding, issues: list[RenderIssue]) -> None:
+    scale = fit_text_shape(shape)
+    if scale < 1.0:
+        issues.append(RenderIssue(level="info", field=spec.key, slide=binding.slide, message=f"text shrunk to {int(scale * 100)} percent to fit the box"))
 
 
 def _split_blocks(blocks: list[Block], max_chars: int) -> list[list[Block]]:

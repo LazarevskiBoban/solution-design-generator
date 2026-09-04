@@ -264,3 +264,30 @@ def test_flows_are_drawn_into_the_image_slot(sample_deck, tmp_path):
     upload_slide = Presentation(str(tmp_path / "upload.pptx")).slides[0]
     assert any(isinstance(s, Picture) for s in upload_slide.shapes) and not any(s.name.startswith("Flow") for s in upload_slide.shapes)
     assert not any("diagram drawn" in str(i) for i in kept.issues)
+
+
+def test_composite_box_spills_onto_a_copy_with_other_boxes_blank(sample_deck, tmp_path):
+    manifest = _fixture_manifest(sample_deck)
+    manifest.slides.exclude = []
+    manifest.field("business_need").bindings[0].max_chars = 60
+    manifest.field("first_point").bindings[0].max_chars = 20
+    need = "\n".join(f"Paragraph number {i} with enough words to matter." for i in range(1, 7))
+    points = "- alpha\n- beta gamma delta\n- epsilon zeta eta theta"
+    content = Content(fields={"business_need": need, "scope": [{"Function": "Finance", "Countries": "ZA"}], "first_point": points})
+
+    kept = render(sample_deck, manifest, content, tmp_path / "shrunk.pptx", continue_on=[])
+    assert kept.slides == 2 and any("shrunk to fit" in str(i) for i in kept.issues)
+
+    spilled = render(sample_deck, manifest, content, tmp_path / "spill.pptx", continue_on=[], spill=True)
+    assert spilled.slides == 7 and any("continued on 5 extra" in str(i) for i in spilled.issues)  # copies are shared by both long boxes
+    assert spilled.slide_map == [1, 1, 1, 1, 1, 1, 2]
+    prs = Presentation(str(tmp_path / "spill.pptx"))
+    copy = prs.slides[1]
+    assert copy.shapes.title.text.endswith("(cont.)")
+    assert _shape_text(copy, "Business Need Box") == "Business Need: Paragraph number 2 with enough words to matter."
+    table = next(s for s in copy.shapes if s.has_table).table
+    assert [[c.text for c in r.cells] for r in table.rows] == [["Function", "Countries"], ["", ""]]
+    assert copy.placeholders[1].text_frame.text != "" and prs.slides[4].placeholders[1].text_frame.text == ""
+    original = prs.slides[0]
+    assert [c.text for c in next(s for s in original.shapes if s.has_table).table.rows[1].cells] == ["Finance", "ZA"]
+    assert _shape_text(original, "Business Need Box") == "Business Need: Paragraph number 1 with enough words to matter."

@@ -232,7 +232,8 @@ def _text_candidates(
     kind: FieldKind = "bullets" if any(p.has_bullet for p in shape.paragraphs) else "text"
     if is_body and len(shape.paragraphs) > 1 and kind == "text":
         kind = "bullets"
-    include = is_body or long_enough
+    # A box under its own label is content whatever its length; short text there is project text too.
+    include = is_body or long_enough or reason == "named after nearby label"
     return [
         Candidate(
             slide=slide.index,
@@ -366,9 +367,11 @@ def _max_chars(shape: ShapeInfo, prefix_len: int = 0) -> int | None:
         return None
     size = next((p.font_size for p in shape.paragraphs if p.font_size), None)
     size = size or (PLACEHOLDER_FONT_PT if shape.placeholder_type else DEFAULT_FONT_PT)
-    columns = shape.width * 72 / (0.5 * size)
-    rows = shape.height * 72 / (1.2 * size)
-    estimate = int(columns * rows * 0.85) - prefix_len
+    # Conservative: proportional fonts average about 0.55 em per character, lines take 1.3 em,
+    # and bullets, paragraph spacing and ragged line ends waste roughly a quarter of the box.
+    columns = shape.width * 72 / (0.55 * size)
+    rows = shape.height * 72 / (1.3 * size)
+    estimate = int(columns * rows * 0.7) - prefix_len
     return max(0, estimate // 10 * 10)
 
 

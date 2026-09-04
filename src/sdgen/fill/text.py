@@ -336,3 +336,69 @@ def _t(run: etree._Element) -> etree._Element:
 
 def _first(items, predicate):
     return next((item for item in items if predicate(item)), None)
+
+
+EMU_PER_PT = 12700
+CHAR_WIDTH_EM = 0.55
+LINE_HEIGHT_EM = 1.3
+PARAGRAPH_GAP_EM = 0.35
+MIN_FONT_SCALE = 0.8
+DEFAULT_FONT_PT = 14.0
+
+
+def fit_text_shape(shape, default_pt: float = DEFAULT_FONT_PT) -> float:
+    """Estimates whether the text overflows its box and stores a PowerPoint font scale so it shrinks to fit.
+
+    PowerPoint only recomputes shrink-to-fit when a user edits the text, so the scale is written explicitly.
+    Returns the scale applied (1.0 when the text fits).
+    """
+    if not getattr(shape, "has_text_frame", False) or shape.width is None or shape.height is None:
+        return 1.0
+    frame = shape.text_frame
+    font_pt = _font_pt(frame) or default_pt
+    usable_width = shape.width - (frame.margin_left or 0) - (frame.margin_right or 0)
+    usable_height = shape.height - (frame.margin_top or 0) - (frame.margin_bottom or 0)
+    if usable_width <= 0 or usable_height <= 0:
+        return 1.0
+    per_line = max(8, int(usable_width / (font_pt * CHAR_WIDTH_EM * EMU_PER_PT)))
+    lines = 0
+    for paragraph in frame.paragraphs:
+        text = " ".join(paragraph.text.split())
+        indent = 3 * (paragraph.level or 0) + 2
+        lines += max(1, -(-(len(text) + indent) // per_line)) if text else 1
+    paragraphs = max(1, len(frame.paragraphs))
+    needed = (lines * LINE_HEIGHT_EM + (paragraphs - 1) * PARAGRAPH_GAP_EM) * font_pt * EMU_PER_PT
+    scale = 1.0 if needed <= usable_height else max(MIN_FONT_SCALE, usable_height / needed)
+    body = frame._txBody.bodyPr
+    existing = body.find(qn("a:normAutofit"))
+    if scale >= 1.0 and existing is None:
+        return 1.0
+    for tag in ("a:noAutofit", "a:spAutoFit", "a:normAutofit"):
+        for element in body.findall(qn(tag)):
+            body.remove(element)
+    autofit = etree.SubElement(body, qn("a:normAutofit"))
+    if scale < 1.0:
+        autofit.set("fontScale", str(int(round(scale * 100000))))
+        autofit.set("lnSpcReduction", "10000")
+    _order_body_children(body, autofit)
+    return scale
+
+
+def _font_pt(frame) -> float | None:
+    for paragraph in frame.paragraphs:
+        for run in paragraph.runs:
+            if run.font.size is not None:
+                return run.font.size.pt
+        end = paragraph._p.find(qn("a:endParaRPr"))
+        if end is not None and end.get("sz"):
+            return int(end.get("sz")) / 100
+    return None
+
+
+def _order_body_children(body, autofit) -> None:
+    # The autofit choice must precede scene3d, sp3d, flatTx and extLst in the body properties.
+    for tag in ("a:scene3d", "a:sp3d", "a:flatTx", "a:extLst"):
+        follower = body.find(qn(tag))
+        if follower is not None:
+            follower.addprevious(autofit)
+            return

@@ -105,3 +105,25 @@ def test_carrier_deck_analysis():
     manifest = analysis.to_manifest("ntt-solution-design")
     assert manifest.field("success_measurement_quantitative") is not None
     assert manifest.slides.exclude == [30, 31]
+
+
+def test_short_text_under_a_label_is_a_field(tmp_path):
+    from pptx.util import Inches
+
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    slide.shapes.title.text = "Solution Design Areas: Demo"
+    label = slide.shapes.add_textbox(Inches(1), Inches(1.6), Inches(3), Inches(0.35))
+    label.text_frame.text = "DATA ARCHITECTURE"
+    box = slide.shapes.add_textbox(Inches(1), Inches(2.0), Inches(3.5), Inches(1.9))
+    box.text_frame.text = "None identified"
+    lonely = slide.shapes.add_textbox(Inches(8), Inches(5.0), Inches(3), Inches(0.5))
+    lonely.text_frame.text = "Just a remark"
+    path = tmp_path / "areas.pptx"
+    prs.save(path)
+
+    analysis = analyze_deck(inspect_deck(path))
+    by_key = {c.key: c for c in analysis.candidates}
+    assert by_key["data_architecture"].include and by_key["data_architecture"].reason == "named after nearby label"
+    assert not any(c.include for c in analysis.candidates if c.preview.startswith("Just a remark"))

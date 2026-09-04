@@ -100,6 +100,7 @@ class RenderRequest(BaseModel):
     titles: dict[int, str] = Field(default_factory=dict)
     extras: list[ExtraSlide] = Field(default_factory=list)
     flows: dict[str, FlowSpec] = Field(default_factory=dict)
+    spill: bool = True  # continue an overflowing box on a copy of its slide instead of shrinking below 80 percent
 
 
 class RenderResponse(BaseModel):
@@ -130,5 +131,6 @@ def render_document(request: RenderRequest) -> RenderResponse:
         titles=request.titles,
         extras=request.extras,
         flows=request.flows,
+        spill=request.spill,
     )
     return RenderResponse(output=result.output, slides=result.slides, issues=result.issues, slide_map=result.slide_map, slide_keys=result.slide_keys)
