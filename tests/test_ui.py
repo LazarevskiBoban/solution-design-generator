@@ -1,3 +1,4 @@
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,7 @@ from streamlit.testing.v1 import AppTest
 
 from sdgen.analyze import analyze_deck
 from sdgen.blueprint import derive_blueprint
+from sdgen.design import DesignStore
 from sdgen.inventory import inspect_deck
 from sdgen.manifest import GlobalSpec
 from sdgen.registry import Registry
@@ -80,18 +82,26 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     need = next(s for s in kept.shapes if s.name == "Business Need Box").text_frame.text
     assert need.startswith("Business Need: Something long")
 
+    # The confirmation opens a dialog, which the test harness cannot drive; the trigger and the action are checked apart.
     app.selectbox(key="design_choice:demo").select("camt-053").run()
     app.button(key="design:demo:camt-053:delete").click().run()
-    app.button(key="design:demo:camt-053:delete:yes").click().run()
     assert not app.exception
-    assert not (tmp_path / "designs" / "camt-053").exists()
-    assert app.selectbox(key="design_choice:demo").value == "New design"
-
     app.sidebar.radio[0].set_value("Templates").run()
     app.button(key="template_remove").click().run()
-    app.button(key="template_remove:yes").click().run()
     assert not app.exception
+
+    ui = _app_module()
+    ui._delete_design(DesignStore(tmp_path / "designs"), "demo", "camt-053")
+    assert not (tmp_path / "designs" / "camt-053").exists()
+    ui._remove_template(Registry(registry_with_demo), "demo")
     assert not (registry_with_demo / "demo").exists()
+
+
+def _app_module():
+    spec = importlib.util.spec_from_file_location("sdgen_ui_app", APP)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_mappings_page_shows_grid_and_writes_workbook(registry_with_demo, tmp_path):

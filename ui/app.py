@@ -109,11 +109,7 @@ def templates_page() -> None:
             question = f"Remove template '{target}' and its stored deck?"
             if used_by:
                 question += f" {len(used_by)} design(s) built on it stay on disk but disappear from the New design page: {', '.join(used_by)}."
-            if _confirm_delete("template_remove", "Remove template", question):
-                reg.remove(target)
-                for key in ("template_remove_choice", "design_template"):
-                    st.session_state.pop(key, None)
-                st.rerun()
+            _confirm_delete("template_remove", "Remove template", question, lambda: _remove_template(reg, target))
     else:
         st.caption("No templates yet.")
 
@@ -299,7 +295,9 @@ def design_page() -> None:
     store = design_store()
     existing = store.names(template)
 
-    choice = st.selectbox("Design", [NEW_DESIGN] + existing, key=f"design_choice:{template}")
+    col_choice, col_delete = st.columns([4, 1], vertical_alignment="bottom")
+    with col_choice:
+        choice = st.selectbox("Design", [NEW_DESIGN] + existing, key=f"design_choice:{template}")
     if choice == NEW_DESIGN:
         raw = st.text_input("Design name", key=f"design_name:{template}", placeholder="for example camt053-bank-statements")
         if not raw.strip():
@@ -308,13 +306,13 @@ def design_page() -> None:
         name = safe_name(raw)
     else:
         name = choice
-        question = f"Delete design '{name}' with its brief, sections, images and mappings? This cannot be undone."
-        if _confirm_delete(f"design:{template}:{name}:delete", "Delete design", question):
-            store.delete(name)
-            for key in [k for k in st.session_state if str(k) == f"design:{template}:{name}" or str(k).startswith(f"design:{template}:{name}:")]:
-                del st.session_state[key]
-            st.session_state.pop(f"design_choice:{template}", None)
-            st.rerun()
+        with col_delete:
+            _confirm_delete(
+                f"design:{template}:{name}:delete",
+                "Delete design",
+                f"Delete design '{name}' with its brief, sections, images and mappings? This cannot be undone.",
+                lambda: _delete_design(store, template, name),
+            )
 
     state_key = f"design:{template}:{name}"
     if state_key not in st.session_state:
@@ -323,52 +321,49 @@ def design_page() -> None:
     design: Design = st.session_state[state_key]
     version = st.session_state[f"{state_key}:v"]
     prefix = f"{state_key}:{version}:"
-
-    st.subheader("1. Brief")
-    subject = st.text_input("Integration name (used in slide titles)", key=_init(f"{prefix}b:subject", design.brief.subject))
-    texts = {}
-    for key, label, guidance in BRIEF_FIELDS:
-        texts[key] = st.text_area(label, key=_init(f"{prefix}b:{key}", getattr(design.brief, key)), help=guidance, height=110)
-    design.brief = Brief(subject=subject.strip(), diagrams=design.brief.diagrams, **texts)
-
-    col_save, col_draft, col_info = st.columns([1, 1, 2])
-    with col_save:
-        if st.button("Save brief", key=f"{state_key}:save_brief"):
-            store.save(design)
-            st.success("Brief saved.")
-    with col_draft:
-        draft_clicked = st.button("Draft sections with AI", type="primary", key=f"{state_key}:draft")
+    snapshot = design.model_dump_json()
     provider, settings = st.session_state.get("llm", ("mock", {}))
-    with col_info:
-        model = settings.get("model", "")
-        st.caption(f"Provider: {provider}" + (f" ({model})" if model else "") + ". Change it under AI provider in the sidebar.")
-    if draft_clicked:
-        try:
-            llm = get_llm(provider, **settings)
-            if design.mapping is not None and not design.brief.mapping_summary.strip():
-                design.brief.mapping_summary = _mapping_note(design)
-            with st.spinner(f"Drafting sections with {provider}. This can take a minute."):
-                result = draft_content(design.brief, blueprint, manifest, llm)
-        except (LLMNotConfigured, LLMError) as exc:
-            st.error(str(exc))
-        else:
-            if not result.content.fields:
-                st.error("The reply did not use the expected section headings, so nothing was filled. Try again or choose another model.")
+    model = settings.get("model", "")
+
+    with st.expander("1. Brief", expanded=design.brief.is_empty):
+        subject = st.text_input("Integration name (used in slide titles)", key=_init(f"{prefix}b:subject", design.brief.subject))
+        texts = {}
+        for key, label, guidance in BRIEF_FIELDS:
+            texts[key] = st.text_area(label, key=_init(f"{prefix}b:{key}", getattr(design.brief, key)), help=guidance, height=110)
+        design.brief = Brief(subject=subject.strip(), diagrams=design.brief.diagrams, **texts)
+
+        col_draft, col_info = st.columns([1, 3], vertical_alignment="center")
+        with col_draft:
+            draft_clicked = st.button("Draft sections with AI", type="primary", key=f"{state_key}:draft")
+        with col_info:
+            st.caption(f"Provider: {provider}" + (f" ({model})" if model else "") + ". Change it under AI provider in the sidebar. Changes are saved automatically.")
+        if draft_clicked:
+            try:
+                llm = get_llm(provider, **settings)
+                if design.mapping is not None and not design.brief.mapping_summary.strip():
+                    design.brief.mapping_summary = _mapping_note(design)
+                with st.spinner(f"Drafting sections with {provider}. This can take a minute."):
+                    result = draft_content(design.brief, blueprint, manifest, llm)
+            except (LLMNotConfigured, LLMError) as exc:
+                st.error(str(exc))
             else:
-                design.content_markdown = result.markdown
-                design.llm = result.llm
-                store.save(design)
-                total = sum(len(s["fields"]) for s in writable_sections(blueprint, manifest))
-                shown = f"{result.llm} ({model})" if model else result.llm
-                st.session_state[f"{state_key}:draft_done"] = f"Drafted {len(result.content.fields)} of {total} fields with {shown}. Review them below, then generate."
-                st.session_state[f"{state_key}:draft_warnings"] = result.warnings
-                st.session_state[f"{state_key}:v"] = version + 1
-                st.rerun()
-    if st.session_state.get(f"{state_key}:draft_done"):
-        st.success(st.session_state[f"{state_key}:draft_done"])
-    _show_draft_warnings(st.session_state.get(f"{state_key}:draft_warnings", []))
-    if design.llm == "mock" and design.content_markdown:
-        st.info("This draft comes from the mock provider and only echoes your brief into each section. Configure a real provider to get written sections.")
+                if not result.content.fields:
+                    st.error("The reply did not use the expected section headings, so nothing was filled. Try again or choose another model.")
+                else:
+                    design.content_markdown = result.markdown
+                    design.llm = result.llm
+                    store.save(design)
+                    total = sum(len(s["fields"]) for s in writable_sections(blueprint, manifest))
+                    shown = f"{result.llm} ({model})" if model else result.llm
+                    st.session_state[f"{state_key}:draft_done"] = f"Drafted {len(result.content.fields)} of {total} fields with {shown}. Review them in step 3, then generate."
+                    st.session_state[f"{state_key}:draft_warnings"] = result.warnings
+                    st.session_state[f"{state_key}:v"] = version + 1
+                    st.rerun()
+        if st.session_state.get(f"{state_key}:draft_done"):
+            st.success(st.session_state[f"{state_key}:draft_done"])
+        _show_draft_warnings(st.session_state.get(f"{state_key}:draft_warnings", []))
+        if design.llm == "mock" and design.content_markdown:
+            st.info("This draft comes from the mock provider and only echoes your brief into each section. Configure a real provider to get written sections.")
 
     diagram_fields = [
         (section, manifest.field(k))
@@ -378,40 +373,44 @@ def design_page() -> None:
         if manifest.field(k) is not None and manifest.field(k).kind == "image"
     ]
     if diagram_fields:
-        st.subheader("2. Diagrams")
-        for section, spec in diagram_fields:
-            files = st.file_uploader(section.title, type=["png", "jpg", "jpeg"], accept_multiple_files=True, key=f"{prefix}img:{spec.key}")
-            for file in files or []:
-                store.add_image(design, spec.key, file.name, file.getvalue())
-            current = design.images.get(spec.key, [])
-            if current:
-                st.caption("Images: " + ", ".join(current))
-                if st.button("Remove images", key=f"{state_key}:clear:{spec.key}"):
-                    design.images[spec.key] = []
-                    store.save(design)
-                    st.rerun()
+        uploaded = sum(len(design.images.get(spec.key, [])) for _, spec in diagram_fields)
+        with st.expander(f"2. Diagrams: {uploaded} image(s) uploaded for {len(diagram_fields)} slots", expanded=False):
+            for section, spec in diagram_fields:
+                files = st.file_uploader(section.title, type=["png", "jpg", "jpeg"], accept_multiple_files=True, key=f"{prefix}img:{spec.key}")
+                for file in files or []:
+                    store.add_image(design, spec.key, file.name, file.getvalue())
+                current = design.images.get(spec.key, [])
+                if current:
+                    st.caption("Images: " + ", ".join(current))
+                    if st.button("Remove images", key=f"{state_key}:clear:{spec.key}"):
+                        design.images[spec.key] = []
+                        store.save(design)
+                        st.rerun()
 
     st.subheader("3. Review sections")
-    imported = st.file_uploader("Import a content file (.md)", type=["md", "markdown", "txt"], key=f"{prefix}import")
-    if imported is not None and st.session_state.get(f"{state_key}:import_token") != f"{imported.name}:{imported.size}":
-        design.content_markdown = imported.getvalue().decode("utf-8")
-        store.save(design)
-        st.session_state[f"{state_key}:import_token"] = f"{imported.name}:{imported.size}"
-        st.session_state[f"{state_key}:v"] = version + 1
-        st.rerun()
-    if not design.content_markdown.strip():
-        st.info("Draft the sections with AI, import a content file, or fill the sections below by hand.")
+    with st.expander("Import a content file (.md)", expanded=False):
+        imported = st.file_uploader("Content file", type=["md", "markdown", "txt"], key=f"{prefix}import", label_visibility="collapsed")
+        if imported is not None and st.session_state.get(f"{state_key}:import_token") != f"{imported.name}:{imported.size}":
+            design.content_markdown = imported.getvalue().decode("utf-8")
+            store.save(design)
+            st.session_state[f"{state_key}:import_token"] = f"{imported.name}:{imported.size}"
+            st.session_state[f"{state_key}:v"] = version + 1
+            st.rerun()
     content = load_markdown(design.content_markdown, manifest) if design.content_markdown.strip() else Content()
-    edited: dict = {}
-    modes: dict[str, str] = {}
+    sections = []
     for section in blueprint.sections:
         if section.kind in ("static", "divider"):
             continue
-        fields = [manifest.field(k) for k in section.fields]
-        fields = [f for f in fields if f is not None and f.kind != "image"]
-        if not fields:
-            continue
-        with st.expander(section.title, expanded=bool(design.content_markdown.strip())):
+        fields = [f for f in (manifest.field(k) for k in section.fields) if f is not None and f.kind != "image"]
+        if fields:
+            sections.append((section, fields))
+    if not design.content_markdown.strip():
+        st.info("Nothing drafted yet. Draft the sections in step 1, import a content file, or write them here. Generate also drafts on its own when nothing has been drafted.")
+    if sections:
+        labels = {s.key: f"{s.title}  ({_section_status(s, fields, design, content)})" for s, fields in sections}
+        picked = st.selectbox("Section", [s.key for s, _ in sections], format_func=labels.get, key=f"{state_key}:section")
+        section, fields = next((s, f) for s, f in sections if s.key == picked)
+        with st.container(border=True):
             if section.ask:
                 st.caption(section.ask)
             mode = st.radio(
@@ -421,27 +420,27 @@ def design_page() -> None:
                 horizontal=True,
                 key=_init(f"{prefix}mode:{section.key}", design.modes.get(section.key, "text")),
             )
-            modes[section.key] = mode
-            for spec in fields:
-                if mode == "text":
+            if mode == "text":
+                design.modes.pop(section.key, None)
+                for spec in fields:
                     value = _review_widget(spec, f"{prefix}f:{spec.key}", content.fields.get(spec.key))
-                elif mode == "keep":
-                    value = entry.original.fields.get(spec.key) if entry.original else None
+                    if value in (None, "", []):
+                        content.fields.pop(spec.key, None)
+                    else:
+                        content.fields[spec.key] = value
+            else:
+                design.modes[section.key] = mode
+                if mode == "keep":
+                    _show_original(entry, fields)
                 else:
-                    value = None
-                if value not in (None, "", []):
-                    edited[spec.key] = value
-    col_save_c, col_export = st.columns(2)
-    with col_save_c:
-        if st.button("Save sections", key=f"{state_key}:save_content"):
-            design.content_markdown = dump_markdown(Content(globals=_globals(subject), fields=edited), manifest)
-            store.save(design)
-            st.success("Sections saved.")
-    with col_export:
-        st.download_button("Export content (.md)", data=dump_markdown(Content(globals=_globals(subject), fields=edited), manifest), file_name=f"{name}-content.md", key=f"{state_key}:export")
+                    st.caption("The fields of this slide stay empty in the document.")
+        design.content_markdown = dump_markdown(Content(globals=_globals(subject), fields=content.fields), manifest)
+        st.download_button("Export content (.md)", data=design.content_markdown, file_name=f"{name}-content.md", key=f"{state_key}:export")
+    else:
+        st.caption("This template has no sections to write.")
 
     st.subheader("4. Generate")
-    col_missing, col_preview, col_generate = st.columns([1, 1, 1])
+    col_missing, col_preview, col_generate = st.columns([1, 1, 1], vertical_alignment="bottom")
     with col_missing:
         missing = st.selectbox(
             "Unfilled sections",
@@ -454,17 +453,17 @@ def design_page() -> None:
     with col_generate:
         generate = st.button("Generate document", type="primary", key=f"{state_key}:generate")
     if preview_clicked:
-        output, response = _render_design(entry, blueprint, manifest, store, design, subject, name, dict(edited), modes, missing)
+        output, response = _render_design(entry, store, design, subject, name, missing)
         notes = [str(i) for i in response.issues if not str(i).startswith("info")]
         try:
             with st.spinner("Rendering slide pictures with PowerPoint."):
-                pictures = export_slide_images(output, output.parent / "png")
-            st.session_state[f"{state_key}:preview"] = ("images", [p.read_bytes() for p in pictures], notes)
+                pictures = [p.read_bytes() for p in export_slide_images(output, output.parent / "png")]
+            _preview_dialog(pictures, notes)
         except RuntimeError as exc:
-            table = preview_rows(blueprint, manifest, Content(fields=dict(edited)), modes)
-            st.session_state[f"{state_key}:preview"] = ("table", table, [f"Slide pictures are not available ({exc}); this is what each slide will contain."] + notes)
+            fields, _ = _render_fields(design, entry)
+            rows = preview_rows(blueprint, manifest, Content(fields=fields), design.modes)
+            _preview_table_dialog(rows, [f"Slide pictures are not available ({exc}); this is what each slide will contain."] + notes)
     if generate:
-        fields = dict(edited)
         drafted_now = False
         if not design.llm and provider != "mock" and not design.brief.is_empty:
             try:
@@ -474,43 +473,26 @@ def design_page() -> None:
             except (LLMNotConfigured, LLMError) as exc:
                 st.error(str(exc))
                 st.stop()
-            fields = {**result.content.fields, **fields}
+            merged = {**result.content.fields, **content.fields}
+            design.content_markdown = dump_markdown(Content(globals=_globals(subject), fields=merged), manifest)
             design.llm = result.llm
             drafted_now = True
             st.session_state[f"{state_key}:draft_done"] = f"Drafted {len(result.content.fields)} fields with {result.llm} while generating. Text you typed yourself was kept."
             st.session_state[f"{state_key}:draft_warnings"] = result.warnings
-        elif not any(v not in ("", [], None) for v in fields.values()):
+        elif not any(v not in ("", [], None) for v in _render_fields(design, entry)[0].values()):
             st.warning("No section text yet, so the document will only show placeholders. Draft the sections with AI first, or fill them under Review sections.")
-        design.modes = modes
-        design.content_markdown = dump_markdown(Content(globals=_globals(subject), fields=fields), manifest)
         store.save(design)
-        output, response = _render_design(entry, blueprint, manifest, store, design, subject, name, fields, modes, missing)
+        output, response = _render_design(entry, store, design, subject, name, missing)
         st.session_state[f"{state_key}:output"] = (output.name, output.read_bytes(), [str(i) for i in response.issues], response.slides)
-        st.session_state.pop(f"{state_key}:preview", None)
         if drafted_now:
             st.session_state[f"{state_key}:v"] = version + 1
             st.rerun()
 
-    shown = st.session_state.get(f"{state_key}:preview")
-    if shown:
-        kind, payload, notes = shown
-        st.markdown("**Preview**")
-        for note in notes:
-            st.warning(note)
-        if kind == "images":
-            columns = st.columns(3)
-            for index, png in enumerate(payload):
-                with columns[index % 3]:
-                    st.image(png, caption=f"Slide {index + 1}", width="stretch")
-        else:
-            st.dataframe(pd.DataFrame(payload), hide_index=True, width="stretch")
-
     stored = st.session_state.get(f"{state_key}:output")
     if stored:
         file_name, data, issues, slides = stored
-        for issue in issues:
-            (st.error if issue.startswith("error") else st.info if issue.startswith("info") else st.warning)(issue)
-        st.success(f"Generated {file_name} with {slides} slides.")
+        problems = [i for i in issues if not i.startswith("info")]
+        st.success(f"Generated {file_name} with {slides} slides." + (f" {len(problems)} remark(s), see below." if problems else ""))
         col_deck, col_book = st.columns(2)
         with col_deck:
             st.download_button("Download document", data=data, file_name=file_name, mime=PPTX_MIME, key=f"{state_key}:download")
@@ -518,6 +500,87 @@ def design_page() -> None:
             with col_book:
                 workbook = write_workbook(design.mapping, store.workbook_path(design))
                 st.download_button("Download mapping workbook", data=workbook.read_bytes(), file_name=design.workbook_name, mime=XLSX_MIME, key=f"{state_key}:download_xlsx")
+        if problems:
+            with st.expander(f"{len(problems)} remark(s) from the generator", expanded=False):
+                for issue in problems:
+                    (st.error if issue.startswith("error") else st.warning)(issue)
+
+    if design.model_dump_json() != snapshot:
+        store.save(design)
+
+
+def _section_status(section, fields, design: Design, content: Content) -> str:
+    mode = design.modes.get(section.key, "text")
+    if mode != "text":
+        return SECTION_MODES[mode]
+    filled = sum(1 for f in fields if content.fields.get(f.key) not in (None, "", []))
+    return f"{filled} of {len(fields)} filled"
+
+
+def _show_original(entry, fields) -> None:
+    original = entry.original.fields if entry.original else {}
+    if not any(original.get(f.key) not in (None, "", []) for f in fields):
+        st.caption("The template holds no text for this slide, so the unfilled-section setting from step 4 applies.")
+        return
+    st.caption("The slide keeps the text of the template:")
+    for spec in fields:
+        value = original.get(spec.key)
+        if isinstance(value, list) and value:
+            st.dataframe(pd.DataFrame(value), hide_index=True, width="stretch")
+        elif isinstance(value, str) and value:
+            st.text_area(spec.label, value=value, disabled=True, height=100, key=f"original:{entry.name}:{spec.key}")
+
+
+def _delete_design(store: DesignStore, template: str, name: str) -> None:
+    store.delete(name)
+    for key in [k for k in st.session_state if str(k) == f"design:{template}:{name}" or str(k).startswith(f"design:{template}:{name}:")]:
+        del st.session_state[key]
+    st.session_state.pop(f"design_choice:{template}", None)
+
+
+def _remove_template(reg: Registry, target: str) -> None:
+    reg.remove(target)
+    for key in ("template_remove_choice", "design_template"):
+        st.session_state.pop(key, None)
+
+
+def _render_fields(design: Design, entry) -> tuple[dict, dict[str, str]]:
+    manifest = entry.manifest
+    content = load_markdown(design.content_markdown, manifest) if design.content_markdown.strip() else Content()
+    fields = {k: v for k, v in content.fields.items() if manifest.field(k) is None or manifest.field(k).kind != "image"}
+    field_modes: dict[str, str] = {}
+    for section in entry.blueprint.sections:
+        mode = design.modes.get(section.key, "text")
+        if mode == "text":
+            continue
+        for key in section.fields:
+            if mode == "keep":
+                original = entry.original.fields.get(key) if entry.original else None
+                if original in (None, "", []):
+                    fields.pop(key, None)
+                else:
+                    fields[key] = original
+            else:
+                fields.pop(key, None)
+                field_modes[key] = "blank"
+    return fields, field_modes
+
+
+@st.dialog("Slide preview", width="large")
+def _preview_dialog(pictures: list[bytes], notes: list[str]) -> None:
+    for note in notes:
+        st.warning(note)
+    columns = st.columns(2)
+    for index, png in enumerate(pictures):
+        with columns[index % 2]:
+            st.image(png, caption=f"Slide {index + 1}", width="stretch")
+
+
+@st.dialog("Slide preview", width="large")
+def _preview_table_dialog(rows: list[dict], notes: list[str]) -> None:
+    for note in notes:
+        st.warning(note)
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
 # ----------------------------------------------------------------------------- mappings
@@ -694,12 +757,13 @@ def _show_draft_warnings(warnings: list[str]) -> None:
         st.warning(f"{len(empty)} fields came back empty: " + ", ".join(empty))
 
 
-def _render_design(entry, blueprint: Blueprint, manifest: Manifest, store: DesignStore, design: Design, subject: str, name: str, fields: dict, modes: dict[str, str], missing: str):
+def _render_design(entry, store: DesignStore, design: Design, subject: str, name: str, missing: str):
+    manifest, blueprint = entry.manifest, entry.blueprint
+    fields, field_modes = _render_fields(design, entry)
     images = {k: v for k, v in store.content(design, manifest).fields.items() if manifest.field(k) and manifest.field(k).kind == "image"}
     final = Content(globals=_globals(subject), fields={**fields, **images})
     out_dir = Path(tempfile.mkdtemp(prefix="sdgen-out-"))
     output = out_dir / f"{slugify(subject) or name}.pptx"
-    field_modes = {key: "blank" for section in blueprint.sections if modes.get(section.key) == "blank" for key in section.fields}
     response = render_document(
         RenderRequest(
             template=str(entry.template_path),
@@ -714,23 +778,22 @@ def _render_design(entry, blueprint: Blueprint, manifest: Manifest, store: Desig
     return output, response
 
 
-def _confirm_delete(key: str, label: str, question: str) -> bool:
-    armed = f"{key}:armed"
+def _confirm_delete(key: str, label: str, question: str, on_confirm) -> None:
     if st.button(label, key=key):
-        st.session_state[armed] = True
-    if not st.session_state.get(armed):
-        return False
+        _confirm_dialog(key, question, on_confirm)
+
+
+@st.dialog("Please confirm")
+def _confirm_dialog(key: str, question: str, on_confirm) -> None:
     st.warning(question)
-    col_yes, col_no = st.columns([1, 5])
+    col_yes, col_no = st.columns(2)
     with col_yes:
-        confirmed = st.button("Yes, delete", type="primary", key=f"{key}:yes")
+        if st.button("Yes, delete", type="primary", key=f"{key}:yes"):
+            on_confirm()
+            st.rerun()
     with col_no:
         if st.button("Cancel", key=f"{key}:no"):
-            st.session_state[armed] = False
             st.rerun()
-    if confirmed:
-        st.session_state[armed] = False
-    return confirmed
 
 
 def _init(key: str, value) -> str:
@@ -745,4 +808,5 @@ def _text(value) -> str:
     return str(value).strip()
 
 
-main()
+if __name__ == "__main__":
+    main()
