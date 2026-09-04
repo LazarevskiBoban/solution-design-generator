@@ -11,12 +11,14 @@ from sdgen.brief import Brief, dump_brief, load_brief
 from sdgen.content import Content, ImageValue, load_markdown
 from sdgen.manifest import Manifest
 from sdgen.mapping.model import MappingSet
+from sdgen.plan import SectionPlan
 from sdgen.registry import safe_name
 
 DESIGN_FILE = "design.yaml"
 BRIEF_FILE = "brief.md"
 CONTENT_FILE = "content.md"
 MAPPING_FILE = "mappings.yaml"
+PLAN_FILE = "plan.yaml"
 IMAGES_DIR = "images"
 MAPPING_DIR = "mapping"
 
@@ -31,6 +33,8 @@ class Design(BaseModel):
     modes: dict[str, str] = Field(default_factory=dict)
     hidden: list[str] = Field(default_factory=list)
     order: list[str] = Field(default_factory=list)
+    titles: dict[str, str] = Field(default_factory=dict)
+    plan: SectionPlan | None = None
     llm: str = ""
     updated: str = ""
 
@@ -73,6 +77,7 @@ class DesignStore:
         brief_path = folder / BRIEF_FILE
         content_path = folder / CONTENT_FILE
         mapping_path = folder / MAPPING_FILE
+        plan_path = folder / PLAN_FILE
         return Design(
             name=name,
             template=data.get("template", ""),
@@ -80,6 +85,8 @@ class DesignStore:
             content_markdown=content_path.read_text(encoding="utf-8") if content_path.is_file() else "",
             images={k: list(v) for k, v in (data.get("images") or {}).items()},
             mapping=MappingSet.load(mapping_path) if mapping_path.is_file() else None,
+            plan=SectionPlan.load(plan_path) if plan_path.is_file() else None,
+            titles={str(k): str(v) for k, v in (data.get("titles") or {}).items()},
             modes={str(k): str(v) for k, v in (data.get("modes") or {}).items()},
             hidden=[str(k) for k in (data.get("hidden") or [])],
             order=[str(k) for k in (data.get("order") or [])],
@@ -97,6 +104,7 @@ class DesignStore:
             "modes": design.modes,
             "hidden": design.hidden,
             "order": design.order,
+            "titles": design.titles,
             "llm": design.llm,
             "updated": design.updated,
         }
@@ -105,6 +113,8 @@ class DesignStore:
         (folder / CONTENT_FILE).write_text(design.content_markdown, encoding="utf-8")
         if design.mapping is not None:
             design.mapping.save(folder / MAPPING_FILE)
+        if design.plan is not None:
+            design.plan.save(folder / PLAN_FILE)
         return folder
 
     def image_dir(self, name: str) -> Path:

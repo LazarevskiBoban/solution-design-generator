@@ -210,3 +210,11 @@ def test_hidden_and_reordered_slides_with_slide_map(sample_deck, tmp_path):
     long = Content(fields={"first_point": "\n".join(f"- point number {i} with some words" for i in range(1, 7))})
     spread = render(sample_deck, manifest, long, tmp_path / "spread.pptx", order=[2, 1])
     assert spread.slide_map[0] == 2 and set(spread.slide_map[1:]) == {1} and len(spread.slide_map) >= 3
+
+
+def test_titles_replace_slide_titles_keeping_the_subject(sample_deck, tmp_path):
+    manifest = _fixture_manifest(sample_deck)
+    out = tmp_path / "titles.pptx"
+    result = render(sample_deck, manifest, Content(globals={"subject": "Carrier Invoices"}), out, titles={1: "Overview", 9: "Nothing"})
+    assert not result.errors
+    assert Presentation(str(out)).slides[0].shapes.title.text == "Overview: Carrier Invoices"

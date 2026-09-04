@@ -72,10 +72,11 @@ def draft_content(
     llm: LLMClient | None = None,
     original: Content | None = None,
     repair: bool = True,
+    skip_sections: set[str] | None = None,
 ) -> DraftResult:
     llm = llm or get_llm()
     fixed = mechanical_fills(brief, blueprint, manifest, original)
-    sections = writable_sections(blueprint, manifest, exclude=set(fixed.fields))
+    sections = writable_sections(blueprint, manifest, exclude=set(fixed.fields), skip_sections=skip_sections)
     content = Content(fields=dict(fixed.fields))
     calls = 0
     for group, members in group_sections(sections):
@@ -242,10 +243,10 @@ def example_outline(example: str) -> str:
     return "\n".join(parts)
 
 
-def writable_sections(blueprint: Blueprint, manifest: Manifest, exclude: set[str] | None = None) -> list[dict]:
+def writable_sections(blueprint: Blueprint, manifest: Manifest, exclude: set[str] | None = None, skip_sections: set[str] | None = None) -> list[dict]:
     result = []
     for section in blueprint.sections:
-        if section.kind in SKIP_KINDS:
+        if section.kind in SKIP_KINDS or section.key in (skip_sections or set()):
             continue
         fields = [manifest.field(k) for k in section.fields]
         fields = [f for f in fields if f is not None and f.kind != "image" and f.key not in (exclude or set())]

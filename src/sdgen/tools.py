@@ -96,6 +96,7 @@ class RenderRequest(BaseModel):
     field_modes: dict[str, MissingMode] = Field(default_factory=dict)
     hidden_slides: list[int] = Field(default_factory=list)
     slide_order: list[int] = Field(default_factory=list)
+    titles: dict[int, str] = Field(default_factory=dict)
 
 
 class RenderResponse(BaseModel):
@@ -122,5 +123,6 @@ def render_document(request: RenderRequest) -> RenderResponse:
         field_modes=request.field_modes,
         hidden=request.hidden_slides,
         order=request.slide_order,
+        titles=request.titles,
     )
     return RenderResponse(output=result.output, slides=result.slides, issues=result.issues, slide_map=result.slide_map)

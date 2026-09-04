@@ -1,0 +1,260 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Literal
+
+import yaml
+from pydantic import BaseModel, Field
+
+from sdgen.analyze import slugify
+from sdgen.blueprint import Blueprint
+from sdgen.brief import Brief, dump_brief
+from sdgen.llm import LLMClient
+from sdgen.manifest import Manifest
+
+Source = Literal["draft", "keep", "blank", "diagram", "mechanical"]
+SOURCES = ("draft", "keep", "blank", "diagram", "mechanical")
+EFFORT_RE = re.compile(r"effort", re.IGNORECASE)
+GIST_CHARS = 200
+
+EXTRA_DEFAULTS = {
+    "acceptance_criteria": ("Acceptance Criteria and Test Scenarios", "table", ["Ref", "Scenario", "Expected result", "Evidence"]),
+    "operations": ("Error Handling, Monitoring and Operations", "text", []),
+    "decisions_log": ("Decisions and Open Questions", "table", ["Ref", "Question or decision", "Owner", "Status"]),
+}
+
+PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "decisions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string"},
+                    "use": {"type": "boolean"},
+                    "title": {"type": "string"},
+                    "source": {"type": "string", "enum": list(SOURCES)},
+                    "reason": {"type": "string"},
+                },
+                "required": ["key", "use", "source"],
+            },
+        },
+        "extras": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string"},
+                    "title": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["table", "text"]},
+                    "columns": {"type": "array", "items": {"type": "string"}},
+                    "before": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["key", "title", "kind"],
+            },
+        },
+        "flows": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"section": {"type": "string"}, "title": {"type": "string"}, "purpose": {"type": "string"}},
+                "required": ["section", "title", "purpose"],
+            },
+        },
+    },
+    "required": ["decisions"],
+}
+
+SYSTEM_PROMPT = """You plan which slides of a solution-design template apply to one specific integration.
+You get the template outline (one line per section with its key, kind, what it asks for and a
+gist of the text an earlier project wrote there) and the brief of the new integration.
+For every section decide:
+- use: false when the section only makes sense for the earlier project (its flows, systems or
+  API calls have no counterpart in the brief); true otherwise. The cover, document version
+  control, contents and guiding principles always apply.
+- title: a new title only when the template title names the earlier project's systems or
+  flows and the slide's purpose still fits the new integration (for example a flow slide that
+  becomes the new integration's equivalent flow); otherwise an empty string keeps the title.
+- source: "draft" when the model should write it, "keep" for template text that applies as it
+  is (guiding principles, contents), "blank" when the slide should stay empty, "diagram" for
+  diagram slides to draw from the brief, "mechanical" for cover, version control and references.
+- reason: one short sentence.
+Propose extra slides only when the brief has content for them: an acceptance criteria table
+(columns Ref, Scenario, Expected result, Evidence), an operations text slide, a decisions and
+open questions table (columns Ref, Question or decision, Owner, Status). Place extras before
+the effort estimation.
+For every diagram section in use without an uploaded image, add a flow entry with the title
+and purpose of the diagram to draw from the brief.
+Return only JSON matching the schema."""
+
+
+class SectionDecision(BaseModel):
+    key: str
+    use: bool = True
+    title: str = ""
+    source: Source = "draft"
+    reason: str = ""
+
+
+class ExtraSection(BaseModel):
+    key: str
+    title: str
+    kind: Literal["table", "text"] = "text"
+    columns: list[str] = Field(default_factory=list)
+    prototype: str = ""
+    before: str = ""
+    reason: str = ""
+    include: bool = True
+
+
+class FlowRequest(BaseModel):
+    section: str
+    title: str = ""
+    purpose: str = ""
+
+
+class SectionPlan(BaseModel):
+    decisions: list[SectionDecision] = Field(default_factory=list)
+    extras: list[ExtraSection] = Field(default_factory=list)
+    flows: list[FlowRequest] = Field(default_factory=list)
+    model: str = ""
+
+    def decision(self, key: str) -> SectionDecision | None:
+        return next((d for d in self.decisions if d.key == key), None)
+
+    def save(self, path: str | Path) -> None:
+        Path(path).write_text(yaml.safe_dump(self.model_dump(mode="json"), sort_keys=False, allow_unicode=True, width=100), encoding="utf-8")
+
+    @classmethod
+    def load(cls, path: str | Path) -> SectionPlan:
+        return cls.model_validate(yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {})
+
+
+def default_plan(blueprint: Blueprint, images: set[str] | None = None) -> SectionPlan:
+    """Every section applies; sources follow the section kind."""
+    images = images or set()
+    decisions = []
+    flows = []
+    for section in blueprint.sections:
+        source: Source = "draft"
+        if section.kind in ("static", "divider"):
+            source = "keep"
+        elif section.kind == "cover":
+            source = "mechanical"
+        elif section.kind == "diagram":
+            has_image = any(k in images for k in section.fields)
+            source = "draft" if has_image else "diagram"
+            if not has_image:
+                flows.append(FlowRequest(section=section.key, title=section.title, purpose=section.ask))
+        decisions.append(SectionDecision(key=section.key, use=True, source=source))
+    return SectionPlan(decisions=decisions, flows=flows)
+
+
+def plan_sections(brief: Brief, blueprint: Blueprint, manifest: Manifest, llm: LLMClient, images: set[str] | None = None) -> SectionPlan:
+    base = default_plan(blueprint, images)
+    data = llm.complete_json(SYSTEM_PROMPT, _prompt(brief, blueprint, manifest, images or set()), PLAN_SCHEMA, name="section_plan")
+    plan = merge_plan(base, data, blueprint, images or set())
+    plan.model = str(getattr(llm, "label", llm.name))
+    return plan
+
+
+def merge_plan(base: SectionPlan, data: dict, blueprint: Blueprint, images: set[str]) -> SectionPlan:
+    sections = {s.key: s for s in blueprint.sections}
+    plan = base.model_copy(deep=True)
+    for item in data.get("decisions") or []:
+        decision = plan.decision(str(item.get("key", "")))
+        if decision is None:
+            continue
+        section = sections[decision.key]
+        if section.kind == "cover":
+            continue
+        decision.use = bool(item.get("use", decision.use))
+        title = str(item.get("title") or "").strip()
+        decision.title = "" if title == section.title else title
+        source = str(item.get("source") or decision.source)
+        if source in SOURCES:
+            decision.source = source  # type: ignore[assignment]
+        decision.reason = str(item.get("reason") or "").strip()
+    extras = []
+    for item in data.get("extras") or []:
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        key = slugify(str(item.get("key") or title))
+        kind = "table" if str(item.get("kind") or "text") == "table" else "text"
+        columns = [str(c).strip() for c in (item.get("columns") or []) if str(c).strip()] if kind == "table" else []
+        if kind == "table" and not columns:
+            columns = next((c for k, (t, kd, c) in EXTRA_DEFAULTS.items() if k.split("_")[0] in key or k.split("_")[0] in title.lower()), ["Ref", "Item", "Notes"])
+        before = str(item.get("before") or "").strip()
+        extras.append(
+            ExtraSection(
+                key=key,
+                title=title,
+                kind=kind,
+                columns=columns,
+                prototype=_prototype(blueprint, kind),
+                before=before if before in sections else _before(blueprint),
+                reason=str(item.get("reason") or "").strip(),
+            )
+        )
+    plan.extras = extras
+    flows = []
+    for item in data.get("flows") or []:
+        key = str(item.get("section") or "")
+        section = sections.get(key)
+        decision = plan.decision(key)
+        if section is None or section.kind != "diagram" or decision is None or not decision.use:
+            continue
+        if any(k in images for k in section.fields):
+            continue
+        flows.append(FlowRequest(section=key, title=str(item.get("title") or section.title).strip(), purpose=str(item.get("purpose") or "").strip()))
+    if flows:
+        plan.flows = flows
+    else:
+        plan.flows = [f for f in plan.flows if (plan.decision(f.section) or SectionDecision(key=f.section)).use]
+    return plan
+
+
+def apply_plan(plan: SectionPlan, design, blueprint: Blueprint) -> None:
+    """Writes the plan into the design's hidden sections, modes and titles."""
+    sections = {s.key: s for s in blueprint.sections}
+    design.hidden = [d.key for d in plan.decisions if not d.use and d.key in sections and sections[d.key].kind != "cover"]
+    design.modes = {d.key: d.source for d in plan.decisions if d.use and d.source in ("keep", "blank") and d.key in sections and sections[d.key].fields}
+    design.titles = {d.key: d.title.strip() for d in plan.decisions if d.use and d.title.strip() and d.key in sections}
+    design.plan = plan
+
+
+def _prompt(brief: Brief, blueprint: Blueprint, manifest: Manifest, images: set[str]) -> str:
+    lines = ["# Template outline"]
+    for section in blueprint.sections:
+        gist = " ".join(section.example.split())
+        gist = gist if len(gist) <= GIST_CHARS else gist[:GIST_CHARS].rsplit(" ", 1)[0] + " …"
+        has_image = any(k in images for k in section.fields)
+        parts = [section.key, f"slide {section.slide}", section.kind, section.title]
+        if section.ask:
+            parts.append(f"asks: {section.ask}")
+        if gist:
+            parts.append(f"earlier document: {gist}")
+        if section.kind == "diagram":
+            parts.append("image uploaded: " + ("yes" if has_image else "no"))
+        lines.append("- " + " | ".join(parts))
+    lines += ["", "# Brief", dump_brief(brief)]
+    return "\n".join(lines)
+
+
+def _prototype(blueprint: Blueprint, kind: str) -> str:
+    wanted = "table" if kind == "table" else "text"
+    for section in blueprint.sections:
+        if section.kind == wanted and section.fields:
+            return section.key
+    return next((s.key for s in blueprint.sections if s.kind == "composite"), "")
+
+
+def _before(blueprint: Blueprint) -> str:
+    for section in blueprint.sections:
+        if EFFORT_RE.search(section.title):
+            return section.key
+    return ""

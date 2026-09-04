@@ -85,6 +85,13 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     need = next(s for s in kept.shapes if s.name == "Business Need Box").text_frame.text
     assert need.startswith("Business Need: Something long")
 
+    app.button(key=f"{state_key}:plan").click().run()
+    assert not app.exception and app.session_state[f"{state_key}:proposed_plan"] is not None
+    app.button(key=f"{state_key}:plan_confirm").click().run()
+    assert not app.exception
+    assert app.session_state[state_key].plan is not None and (tmp_path / "designs" / "camt-053" / "plan.yaml").is_file()
+    assert f"{state_key}:proposed_plan" not in app.session_state
+
     # The confirmation opens a dialog, which the test harness cannot drive; the trigger and the action are checked apart.
     app.selectbox(key="design_choice:demo").select("camt-053").run()
     app.button(key="design:demo:camt-053:delete").click().run()

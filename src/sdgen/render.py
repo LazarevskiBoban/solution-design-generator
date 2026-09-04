@@ -56,6 +56,7 @@ def render(
     field_modes: dict[str, MissingMode] | None = None,
     hidden: list[int] | set[int] | None = None,
     order: list[int] | None = None,
+    titles: dict[int, str] | None = None,
 ) -> RenderResult:
     prs = Presentation(str(template))
     slides = list(prs.slides)
@@ -75,6 +76,17 @@ def render(
         hits = replace_literal_everywhere(prs, spec.replaces, value)
         if hits == 0:
             issues.append(RenderIssue(field=spec.key, message=f"'{spec.replaces}' not found in the template"))
+
+    subject = str(content.globals.get("subject", "") or "")
+    for number, title in (titles or {}).items():
+        if not 1 <= number <= len(slides) or not title.strip():
+            continue
+        shape = slides[number - 1].shapes.title
+        if shape is None:
+            issues.append(RenderIssue(slide=number, message="no title placeholder to retitle"))
+            continue
+        current = shape.text_frame.text
+        set_rich_text(shape, f"{title.strip()}: {subject}" if subject and subject in current else title.strip())
 
     for spec in manifest.fields:
         value = content.fields.get(spec.key)

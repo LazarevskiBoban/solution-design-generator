@@ -20,6 +20,7 @@ from sdgen.manifest import FieldSpec, GlobalSpec, Manifest
 from sdgen.mapping.extract import extract_fields
 from sdgen.mapping.model import MappingEntry, MappingSet, SourceSpec, TargetSpec
 from sdgen.mapping.workbook import write_workbook
+from sdgen.plan import SOURCES, SectionDecision, SectionPlan, apply_plan, plan_sections
 from sdgen.preview import export_slide_images
 from sdgen.registry import Registry, safe_name
 from sdgen.tools import AnalyzeRequest, RenderRequest, analyze_template, continuation_slides, render_document
@@ -400,7 +401,7 @@ def design_page() -> None:
                 if design.mapping is not None and not design.brief.mapping_summary.strip():
                     design.brief.mapping_summary = _mapping_note(design)
                 with st.spinner(f"Drafting sections with {provider}. This can take a minute."):
-                    result = draft_content(design.brief, blueprint, manifest, llm, original=entry.original)
+                    result = draft_content(design.brief, blueprint, manifest, llm, original=entry.original, skip_sections=set(design.hidden) | set(design.modes))
             except (LLMNotConfigured, LLMError) as exc:
                 st.error(str(exc))
             else:
@@ -421,6 +422,39 @@ def design_page() -> None:
         _show_draft_warnings(st.session_state.get(f"{state_key}:draft_warnings", []))
         if design.llm == "mock" and design.content_markdown:
             st.info("This draft comes from the mock provider and only echoes your brief into each section. Configure a real provider to get written sections.")
+
+    with st.expander(_plan_title(design), expanded=design.plan is None and not design.brief.is_empty):
+        st.caption("The model decides which slides apply to this design, proposes titles for slides named after another project, extra slides for the developer content and the diagrams to draw. Confirm to apply it: hidden slides, kept slides and titles follow the plan.")
+        if st.button("Plan sections with AI", key=f"{state_key}:plan"):
+            try:
+                llm = get_llm(provider, **settings)
+                planner = llm.with_effort("medium") if hasattr(llm, "with_effort") else llm
+                with st.spinner("Planning the sections."):
+                    proposed = plan_sections(design.brief, blueprint, manifest, planner, images={k for k, v in design.images.items() if v})
+            except (LLMNotConfigured, LLMError) as exc:
+                st.error(str(exc))
+            else:
+                st.session_state[f"{state_key}:proposed_plan"] = proposed
+                st.session_state[f"{state_key}:v"] = version + 1
+                st.rerun()
+        proposed = st.session_state.get(f"{state_key}:proposed_plan")
+        plan = proposed or design.plan
+        if plan is not None:
+            if proposed is not None:
+                st.info(f"Proposal from {proposed.model or provider}. Adjust the grid, then confirm.")
+            edited_plan = _plan_editor(plan, blueprint, f"{prefix}plan")
+            col_confirm, col_discard = st.columns([1, 4])
+            with col_confirm:
+                if st.button("Confirm plan", type="primary", key=f"{state_key}:plan_confirm"):
+                    apply_plan(edited_plan, design, blueprint)
+                    store.save(design)
+                    st.session_state.pop(f"{state_key}:proposed_plan", None)
+                    st.session_state[f"{state_key}:v"] = version + 1
+                    st.rerun()
+            with col_discard:
+                if proposed is not None and st.button("Discard proposal", key=f"{state_key}:plan_discard"):
+                    st.session_state.pop(f"{state_key}:proposed_plan", None)
+                    st.rerun()
 
     diagram_fields = [
         (section, manifest.field(k))
@@ -499,7 +533,7 @@ def design_page() -> None:
             entries.append(
                 {
                     "section": section.key if section else f"slide-{number}",
-                    "title": section.title if section else f"Slide {number}",
+                    "title": design.titles.get(section.key, section.title) if section else f"Slide {number}",
                     "png": png,
                     "text": _slide_text(section, current) if section else "",
                 }
@@ -514,7 +548,7 @@ def design_page() -> None:
             try:
                 llm = get_llm(provider, **settings)
                 with st.spinner(f"Drafting the sections with {provider} before generating. This can take a minute."):
-                    result = draft_content(design.brief, blueprint, manifest, llm, original=entry.original)
+                    result = draft_content(design.brief, blueprint, manifest, llm, original=entry.original, skip_sections=set(design.hidden) | set(design.modes))
             except (LLMNotConfigured, LLMError) as exc:
                 st.error(str(exc))
                 st.stop()
@@ -634,7 +668,7 @@ def _slide_board(state_key: str, entry, design: Design, store: DesignStore, entr
         with st.expander(f"Hidden slides ({len(design.hidden)})", expanded=False):
             for key in list(design.hidden):
                 col_name, col_button = st.columns([4, 1], vertical_alignment="center")
-                col_name.write(sections[key].title if key in sections else key)
+                col_name.write(design.titles.get(key, sections[key].title) if key in sections else key)
                 if col_button.button("Unhide", key=f"{state_key}:bd:unhide:{key}"):
                     design.hidden.remove(key)
                     store.save(design)
@@ -744,7 +778,7 @@ def _visible_entries(entries: list[dict], design: Design, blueprint: Blueprint) 
         if key in design.hidden:
             continue
         matches = [e for e in entries if e["section"] == key]
-        shown.extend(matches or [{"section": key, "title": sections[key].title, "png": None, "text": ""}])
+        shown.extend(matches or [{"section": key, "title": design.titles.get(key, sections[key].title), "png": None, "text": ""}])
     shown.extend(e for e in entries if e["section"] not in sections)
     return shown
 
@@ -772,7 +806,7 @@ def _refresh_section_pictures(state_key: str, entry, design: Design, store: Desi
         slide_section = by_slide.get(number)
         slide_key = slide_section.key if slide_section else f"slide-{number}"
         if slide_key == key:
-            rebuilt.append({"section": key, "title": section.title, "png": pictures.get(position), "text": _slide_text(section, current)})
+            rebuilt.append({"section": key, "title": design.titles.get(key, section.title), "png": pictures.get(position), "text": _slide_text(section, current)})
             continue
         match = next((e for e in cached if e["section"] == slide_key), None)
         if match is not None:
@@ -1030,6 +1064,7 @@ def _render_design(entry, store: DesignStore, design: Design, subject: str, name
     sections = {s.key: s for s in blueprint.sections}
     hidden_slides = [sections[k].slide for k in design.hidden if k in sections]
     slide_order = [sections[k].slide for k in _section_order(design, blueprint)] if design.order else []
+    titles = {sections[k].slide: t for k, t in design.titles.items() if k in sections and t.strip()}
     out_dir = Path(tempfile.mkdtemp(prefix="sdgen-out-"))
     output = out_dir / f"{slugify(subject) or name}.pptx"
     response = render_document(
@@ -1043,9 +1078,78 @@ def _render_design(entry, store: DesignStore, design: Design, subject: str, name
             field_modes=field_modes,
             hidden_slides=hidden_slides,
             slide_order=slide_order,
+            titles=titles,
         )
     )
     return output, response
+
+
+def _plan_title(design: Design) -> str:
+    if design.plan is None:
+        return "2. Section plan"
+    hidden = len(design.hidden)
+    retitled = len(design.titles)
+    extras = len([e for e in design.plan.extras if e.include])
+    return f"2. Section plan: {hidden} hidden, {retitled} retitled, {extras} extra slide(s), {len(design.plan.flows)} diagram(s) to draw"
+
+
+def _plan_editor(plan: SectionPlan, blueprint: Blueprint, key: str) -> SectionPlan:
+    sections = {s.key: s for s in blueprint.sections}
+    rows = []
+    for decision in plan.decisions:
+        section = sections.get(decision.key)
+        rows.append(
+            {
+                "use": decision.use,
+                "slide": section.slide if section else 0,
+                "template title": section.title if section else decision.key,
+                "title": decision.title,
+                "source": decision.source,
+                "reason": decision.reason,
+                "key": decision.key,
+            }
+        )
+    frame = pd.DataFrame(rows, columns=["use", "slide", "template title", "title", "source", "reason", "key"])
+    edited = st.data_editor(
+        frame,
+        hide_index=True,
+        width="stretch",
+        height=min(60 + 36 * len(frame), 640),
+        disabled=["slide", "template title", "reason", "key"],
+        key=f"{key}:grid",
+        column_config={
+            "use": st.column_config.CheckboxColumn("Use"),
+            "slide": st.column_config.NumberColumn("Slide"),
+            "template title": st.column_config.TextColumn("Template title"),
+            "title": st.column_config.TextColumn("Title for this design", help="Leave empty to keep the template title."),
+            "source": st.column_config.SelectboxColumn("Source", options=list(SOURCES), required=True),
+            "reason": st.column_config.TextColumn("Reason", width="large"),
+            "key": None,
+        },
+    )
+    decisions = []
+    for _, row in edited.iterrows():
+        decisions.append(
+            SectionDecision(
+                key=str(row["key"]),
+                use=bool(row["use"]),
+                title=_text(row["title"]),
+                source=str(row["source"]) if str(row["source"]) in SOURCES else "draft",
+                reason=_text(row["reason"]),
+            )
+        )
+    extras = []
+    if plan.extras:
+        st.markdown("**Extra slides**")
+        for extra in plan.extras:
+            label = f"{extra.title} ({extra.kind}" + (": " + ", ".join(extra.columns) if extra.columns else "") + ")" + (f". {extra.reason}" if extra.reason else "")
+            include = st.checkbox(label, value=extra.include, key=f"{key}:extra:{extra.key}")
+            extras.append(extra.model_copy(update={"include": include}))
+    if plan.flows:
+        st.markdown("**Diagrams to draw from the brief**")
+        for flow in plan.flows:
+            st.caption(f"{flow.title or flow.section}: {flow.purpose}" if flow.purpose else flow.title or flow.section)
+    return plan.model_copy(update={"decisions": decisions, "extras": extras})
 
 
 def _confirm_delete(key: str, label: str, question: str, on_confirm) -> None:
