@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 from click.testing import CliRunner
 
@@ -6,7 +8,7 @@ from sdgen.blueprint import derive_blueprint
 from sdgen.brief import Brief, brief_skeleton, dump_brief, load_brief
 from sdgen.cli import main
 from sdgen.inventory import inspect_deck
-from sdgen.llm import LLMNotConfigured, MockLLM, get_llm
+from sdgen.llm import DEFAULT_AZURE_API_VERSION, MAX_OUTPUT_TOKENS, LLMError, LLMNotConfigured, MockLLM, OpenAILLM, get_llm
 from sdgen.manifest import GlobalSpec
 from sdgen.registry import Registry
 from sdgen.writer import build_prompt, draft_content, writable_sections
@@ -40,14 +42,93 @@ def test_brief_roundtrip_and_skeleton():
     assert by_label.about == "text" and by_label.subject == "X"
 
 
+PROVIDER_VARS = ("SDGEN_LLM", "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_API_VERSION")
+
+
 def test_get_llm_defaults_to_mock_and_rejects_unconfigured(monkeypatch):
-    monkeypatch.delenv("SDGEN_LLM", raising=False)
+    for var in PROVIDER_VARS:
+        monkeypatch.delenv(var, raising=False)
     assert get_llm().name == "mock"
     monkeypatch.setenv("SDGEN_LLM", "anthropic")
     with pytest.raises(LLMNotConfigured):
         get_llm()
     with pytest.raises(LLMNotConfigured):
         get_llm("nonsense")
+    with pytest.raises(LLMNotConfigured, match="endpoint, API key, deployment"):
+        get_llm("azure")
+    with pytest.raises(LLMNotConfigured, match="OPENAI_API_KEY"):
+        get_llm("openai")
+
+
+def _fake_client(reply: str, finish: str = "stop"):
+    completions = SimpleNamespace(calls=[])
+
+    def create(**kwargs):
+        completions.calls.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=reply), finish_reason=finish)])
+
+    completions.create = create
+    return SimpleNamespace(chat=SimpleNamespace(completions=completions)), completions
+
+
+def test_openai_adapter_sends_prompts_and_returns_text():
+    client, completions = _fake_client("## a\nhello\n")
+    llm = OpenAILLM(client, "gpt-test", name="azure")
+    assert llm.name == "azure" and llm.complete("sys", "usr") == "## a\nhello\n"
+    call = completions.calls[0]
+    assert call["model"] == "gpt-test"
+    assert call["messages"] == [{"role": "system", "content": "sys"}, {"role": "user", "content": "usr"}]
+    assert call["max_completion_tokens"] == MAX_OUTPUT_TOKENS
+
+
+def test_openai_adapter_reports_truncation_and_failures():
+    client, _ = _fake_client("partial", finish="length")
+    with pytest.raises(LLMError, match="output limit"):
+        OpenAILLM(client, "m").complete("s", "u")
+
+    def boom(**kwargs):
+        raise RuntimeError("socket closed")
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=boom)))
+    with pytest.raises(LLMError, match="socket closed"):
+        OpenAILLM(client, "m").complete("s", "u")
+
+
+def test_azure_factory_builds_client_from_settings_or_env(monkeypatch):
+    openai = pytest.importorskip("openai")
+    for var in PROVIDER_VARS:
+        monkeypatch.delenv(var, raising=False)
+    created = []
+
+    class Recorder:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+    monkeypatch.setattr(openai, "AzureOpenAI", Recorder)
+    llm = get_llm("azure", endpoint=" https://demo.openai.azure.com/ ", api_key="k", model="gpt-5-deploy")
+    assert llm.name == "azure" and llm.model == "gpt-5-deploy"
+    assert created[-1] == {"api_key": "k", "azure_endpoint": "https://demo.openai.azure.com/", "api_version": DEFAULT_AZURE_API_VERSION}
+
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://env.openai.azure.com/")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "envkey")
+    monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT", "gpt-env")
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2025-04-01-preview")
+    monkeypatch.setenv("SDGEN_LLM", "azure")
+    llm = get_llm()
+    assert llm.model == "gpt-env"
+    assert created[-1] == {"api_key": "envkey", "azure_endpoint": "https://env.openai.azure.com/", "api_version": "2025-04-01-preview"}
+
+
+def test_draft_content_parses_a_fenced_provider_reply(sample_deck, tmp_path):
+    entry = _template(sample_deck, tmp_path)
+    reply = "```markdown\n---\nsubject: Bank Statement\n---\n## business_need\nBanks deliver statements daily.\n\n## Scope\n| Function | Countries |\n|---|---|\n| Finance | ZA |\n\n## first_point\n- one\n```"
+    client, _ = _fake_client(reply)
+    result = draft_content(BRIEF, entry.blueprint, entry.manifest, OpenAILLM(client, "m", name="azure"))
+    assert result.llm == "azure" and result.warnings == []
+    assert result.content.globals["subject"] == "Bank Statement"
+    assert result.content.fields["business_need"] == "Banks deliver statements daily."
+    assert result.content.fields["scope"] == [{"Function": "Finance", "Countries": "ZA"}]
+    assert result.content.fields["first_point"] == "- one"
 
 
 def test_prompt_lists_sections_fields_and_brief(sample_deck, tmp_path):

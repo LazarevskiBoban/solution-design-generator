@@ -68,6 +68,7 @@ def build_prompt(brief: Brief, blueprint: Blueprint, manifest: Manifest) -> tupl
     lines.append("A Markdown content file: front-matter with `subject`, then one `## <field key>` heading per field listed above, in order.")
     lines.append("Text fields: paragraphs and bullet lines. Table fields: a pipe table with exactly the listed columns, one row per entry.")
     lines.append("")
+    lines.append("Machine-readable copy of the outline and brief for tooling; do not repeat it in the answer:")
     context = {
         "brief": {"subject": brief.subject, **brief.texts()},
         "sections": [{k: v for k, v in s.items() if k != "example"} for s in sections],

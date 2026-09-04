@@ -11,7 +11,7 @@ layouts, fonts and styles intact.
 ```
 python -m venv .venv
 .venv\Scripts\activate
-pip install -e .[ui,dev,preview]
+pip install -e .[ui,llm,dev,preview]
 sdgen ui
 ```
 
@@ -29,9 +29,24 @@ sdgen ui
 
 ## Model provider
 
-The writer calls a provider chosen by `SDGEN_LLM`. `mock` (default) needs no key and echoes
-the brief into each section as a labelled draft. Real providers are added behind the same
-interface once a key is available.
+The writer calls a provider chosen under **AI provider** in the sidebar (or by `SDGEN_LLM` on
+the command line). `mock` (default) needs no key and echoes the brief into each section as a
+labelled draft. `azure` and `openai` write real sections through the `openai` package
+(`pip install -e .[llm]`).
+
+For Azure AI Foundry open the project, **Keys and endpoints**, and take the Azure OpenAI
+endpoint (`https://<resource>.openai.azure.com/`), one of the keys and the deployment name of
+the model. Enter them in the sidebar for the session, or keep them in `.streamlit/secrets.toml`
+(git-ignored) or environment variables:
+
+```
+AZURE_OPENAI_ENDPOINT = "https://<resource>.openai.azure.com/"
+AZURE_OPENAI_API_KEY = "..."
+AZURE_OPENAI_DEPLOYMENT = "gpt-5"
+AZURE_OPENAI_API_VERSION = "2024-10-21"   # optional
+```
+
+Plain OpenAI uses `OPENAI_API_KEY` and, optionally, `SDGEN_OPENAI_MODEL`.
 
 ## Commands
 
@@ -41,7 +56,7 @@ sdgen analyze deck.pptx                   # proposed fields
 sdgen outline deck.pptx                   # proposed sections
 sdgen add my-template deck.pptx           # register (placeholders + image slots + outline)
 sdgen brief -o brief.md                   # empty brief
-sdgen draft my-template brief.md -o content.md [--llm mock]
+sdgen draft my-template brief.md -o content.md [--llm mock|azure|openai] [--model gpt-5]
 sdgen skeleton my-template -o content.md  # empty content file (manual route)
 sdgen render my-template content.md -o out.pptx [--missing placeholder|keep|blank]
 sdgen preview out.pptx --pdf out.pdf      # open in PowerPoint to verify, export PDF

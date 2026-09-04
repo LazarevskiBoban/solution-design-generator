@@ -13,7 +13,7 @@ from sdgen.brief import BRIEF_FIELDS, Brief
 from sdgen.content import Content, dump_markdown, load_markdown
 from sdgen.design import Design, DesignStore
 from sdgen.inventory import DeckInfo
-from sdgen.llm import LLMNotConfigured, get_llm
+from sdgen.llm import DEFAULT_AZURE_API_VERSION, DEFAULT_OPENAI_MODEL, LLMError, LLMNotConfigured, get_llm
 from sdgen.manifest import FieldSpec, GlobalSpec, Manifest
 from sdgen.mapping.extract import extract_fields
 from sdgen.mapping.model import MappingEntry, MappingSet, SourceSpec, TargetSpec
@@ -40,10 +40,44 @@ def design_store() -> DesignStore:
     return DesignStore(os.environ.get("SDGEN_DESIGNS", str(ROOT / "designs")))
 
 
+def provider_settings() -> tuple[str, dict[str, str]]:
+    options = ["mock", "azure", "openai"]
+    default = (os.environ.get("SDGEN_LLM") or "mock").strip().lower()
+    with st.sidebar.expander("AI provider", expanded=False):
+        provider = st.selectbox("Provider", options, index=options.index(default) if default in options else 0, key="llm_provider")
+        settings: dict[str, str] = {}
+        if provider == "azure":
+            settings["endpoint"] = st.text_input(
+                "Azure OpenAI endpoint",
+                key=_init("llm_endpoint", _secret("AZURE_OPENAI_ENDPOINT")),
+                help="Foundry > Keys and endpoints > Azure OpenAI endpoint, like https://<resource>.openai.azure.com/ (not the project endpoint).",
+            )
+            settings["model"] = st.text_input("Deployment name", key=_init("llm_deployment", _secret("AZURE_OPENAI_DEPLOYMENT")), help="The name of the model deployment in Foundry.")
+            settings["api_key"] = st.text_input("API key", type="password", key=_init("llm_azure_key", _secret("AZURE_OPENAI_API_KEY")))
+            settings["api_version"] = st.text_input("API version", key=_init("llm_api_version", _secret("AZURE_OPENAI_API_VERSION") or DEFAULT_AZURE_API_VERSION))
+        elif provider == "openai":
+            settings["model"] = st.text_input("Model", key=_init("llm_model", _secret("SDGEN_OPENAI_MODEL") or DEFAULT_OPENAI_MODEL))
+            settings["api_key"] = st.text_input("API key", type="password", key=_init("llm_openai_key", _secret("OPENAI_API_KEY")))
+        if provider != "mock":
+            st.caption("Values typed here last for this browser session. Put them in .streamlit/secrets.toml or environment variables to keep them.")
+    return provider, {k: v.strip() for k, v in settings.items()}
+
+
+def _secret(name: str) -> str:
+    value = os.environ.get(name, "")
+    if value:
+        return value
+    try:
+        return str(st.secrets.get(name, "") or "")
+    except Exception:
+        return ""
+
+
 def main() -> None:
     st.set_page_config(page_title="sdgen", layout="wide")
     names = registry().names()
     page = st.sidebar.radio("Page", [NEW_DESIGN, MAPPINGS, "Templates"], index=0 if names else 2)
+    st.session_state["llm"] = provider_settings()
     if page == "Templates":
         templates_page()
     elif page == MAPPINGS:
@@ -282,17 +316,20 @@ def design_page() -> None:
             st.success("Brief saved.")
     with col_draft:
         draft_clicked = st.button("Draft sections with AI", type="primary", key=f"{state_key}:draft")
+    provider, settings = st.session_state.get("llm", ("mock", {}))
     with col_info:
-        st.caption(f"Provider: {os.environ.get('SDGEN_LLM', 'mock')} (set SDGEN_LLM to change)")
+        model = settings.get("model", "")
+        st.caption(f"Provider: {provider}" + (f" ({model})" if model else "") + ". Change it under AI provider in the sidebar.")
     if draft_clicked:
         try:
-            llm = get_llm()
-        except LLMNotConfigured as exc:
-            st.error(str(exc))
-        else:
+            llm = get_llm(provider, **settings)
             if design.mapping is not None and not design.brief.mapping_summary.strip():
                 design.brief.mapping_summary = _mapping_note(design)
-            result = draft_content(design.brief, blueprint, manifest, llm)
+            with st.spinner(f"Drafting sections with {provider}. This can take a minute."):
+                result = draft_content(design.brief, blueprint, manifest, llm)
+        except (LLMNotConfigured, LLMError) as exc:
+            st.error(str(exc))
+        else:
             design.content_markdown = result.markdown
             design.llm = result.llm
             store.save(design)

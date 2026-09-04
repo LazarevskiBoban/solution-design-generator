@@ -40,6 +40,7 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     app = AppTest.from_file(str(APP), default_timeout=60).run()
     assert not app.exception
     assert app.sidebar.radio[0].value == "New design"
+    assert app.selectbox(key="llm_provider").value == "mock"
     assert app.selectbox(key="design_template").value == "demo"
 
     app.text_input(key="design_name:demo").input("CAMT 053").run()
