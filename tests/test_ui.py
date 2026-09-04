@@ -54,6 +54,7 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     assert not app.exception
     design = app.session_state[state_key]
     assert "[Draft] Bank statements" in design.content_markdown
+    assert any(s.value.startswith("Drafted 3 of 3 fields with mock") for s in app.success)
     assert (tmp_path / "designs" / "camt-053" / "content.md").is_file()
 
     app.button(key=f"{state_key}:generate").click().run()

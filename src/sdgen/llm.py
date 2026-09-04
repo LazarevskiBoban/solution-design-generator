@@ -29,6 +29,7 @@ class LLMError(RuntimeError):
 
 class MockLLM:
     name = "mock"
+    wants_context = True
 
     def complete(self, system: str, user: str) -> str:
         match = CONTEXT_RE.search(user)

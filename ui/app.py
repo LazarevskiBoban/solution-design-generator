@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from sdgen.mapping.model import MappingEntry, MappingSet, SourceSpec, TargetSpec
 from sdgen.mapping.workbook import write_workbook
 from sdgen.registry import Registry, safe_name
 from sdgen.tools import AnalyzeRequest, RenderRequest, analyze_template, continuation_slides, render_document
-from sdgen.writer import draft_content
+from sdgen.writer import draft_content, writable_sections
 
 ROOT = Path(__file__).resolve().parent.parent
 KINDS = ["text", "bullets", "table", "image"]
@@ -30,6 +31,7 @@ XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 NEW_DESIGN = "New design"
 MAPPINGS = "Mappings"
 SAMPLE_TYPES = ["xml", "xsd", "edmx", "json", "csv"]
+EMPTY_FIELD_RE = re.compile(r"field '[^']+' \((.+)\) is empty$")
 
 
 def registry() -> Registry:
@@ -330,14 +332,21 @@ def design_page() -> None:
         except (LLMNotConfigured, LLMError) as exc:
             st.error(str(exc))
         else:
-            design.content_markdown = result.markdown
-            design.llm = result.llm
-            store.save(design)
-            st.session_state[f"{state_key}:draft_warnings"] = result.warnings
-            st.session_state[f"{state_key}:v"] = version + 1
-            st.rerun()
-    for warning in st.session_state.get(f"{state_key}:draft_warnings", []):
-        st.warning(warning)
+            if not result.content.fields:
+                st.error("The reply did not use the expected section headings, so nothing was filled. Try again or choose another model.")
+            else:
+                design.content_markdown = result.markdown
+                design.llm = result.llm
+                store.save(design)
+                total = sum(len(s["fields"]) for s in writable_sections(blueprint, manifest))
+                shown = f"{result.llm} ({model})" if model else result.llm
+                st.session_state[f"{state_key}:draft_done"] = f"Drafted {len(result.content.fields)} of {total} fields with {shown}. Review them below, then generate."
+                st.session_state[f"{state_key}:draft_warnings"] = result.warnings
+                st.session_state[f"{state_key}:v"] = version + 1
+                st.rerun()
+    if st.session_state.get(f"{state_key}:draft_done"):
+        st.success(st.session_state[f"{state_key}:draft_done"])
+    _show_draft_warnings(st.session_state.get(f"{state_key}:draft_warnings", []))
     if design.llm == "mock" and design.content_markdown:
         st.info("This draft comes from the mock provider and only echoes your brief into each section. Configure a real provider to get written sections.")
 
@@ -409,6 +418,8 @@ def design_page() -> None:
     with col_generate:
         generate = st.button("Generate document", type="primary", key=f"{state_key}:generate")
     if generate:
+        if not any(v not in ("", [], None) for v in edited.values()):
+            st.warning("No section text yet, so the document will only show placeholders. Draft the sections with AI first, or fill them under Review sections.")
         images = {k: v for k, v in store.content(design, manifest).fields.items() if manifest.field(k) and manifest.field(k).kind == "image"}
         final = Content(globals=_globals(subject), fields={**edited, **images})
         design.content_markdown = dump_markdown(Content(globals=_globals(subject), fields=edited), manifest)
@@ -602,6 +613,18 @@ def _review_widget(spec: FieldSpec, key: str, value):
 
 def _globals(subject: str) -> dict[str, str]:
     return {"subject": subject.strip()} if subject.strip() else {}
+
+
+def _show_draft_warnings(warnings: list[str]) -> None:
+    empty = []
+    for warning in warnings:
+        match = EMPTY_FIELD_RE.match(warning)
+        if match:
+            empty.append(match.group(1))
+        else:
+            st.warning(warning)
+    if empty:
+        st.warning(f"{len(empty)} fields came back empty: " + ", ".join(empty))
 
 
 def _init(key: str, value) -> str:

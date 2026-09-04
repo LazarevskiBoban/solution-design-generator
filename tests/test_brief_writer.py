@@ -121,7 +121,7 @@ def test_azure_factory_builds_client_from_settings_or_env(monkeypatch):
 
 def test_draft_content_parses_a_fenced_provider_reply(sample_deck, tmp_path):
     entry = _template(sample_deck, tmp_path)
-    reply = "```markdown\n---\nsubject: Bank Statement\n---\n## business_need\nBanks deliver statements daily.\n\n## Scope\n| Function | Countries |\n|---|---|\n| Finance | ZA |\n\n## first_point\n- one\n```"
+    reply = "```markdown\n---\nsubject: Bank Statement\n---\n<!-- Section: Executive Overview -->\n## business_need (Business Need)\nBusiness need: Banks deliver statements daily.\n\n## `Scope`\n| Function | Countries |\n|---|---|\n| Finance | ZA |\n\n## first_point\n- one\n```"
     client, _ = _fake_client(reply)
     result = draft_content(BRIEF, entry.blueprint, entry.manifest, OpenAILLM(client, "m", name="azure"))
     assert result.llm == "azure" and result.warnings == []
@@ -138,9 +138,18 @@ def test_prompt_lists_sections_fields_and_brief(sample_deck, tmp_path):
     keys = {f["key"] for f in sections[0]["fields"]}
     assert keys == {"business_need", "scope", "first_point"}
     system, user = build_prompt(BRIEF, entry.blueprint, entry.manifest)
-    assert "Never invent" in system
-    assert "## Executive Overview" in user and "- scope — Scope (table; columns: Function, Countries)" in user
-    assert "Banks deliver CAMT.053" in user and "```json" in user
+    assert "Never invent" in system and "skeleton" in system
+    assert "## Executive Overview (" in user
+    fields_line = next(line for line in user.splitlines() if line.startswith("Fields: "))
+    assert set(fields_line[8:].split(", ")) == keys
+    assert "Banks deliver CAMT.053" in user and "```json" not in user
+    skeleton = user.split("# Answer skeleton", 1)[1]
+    assert skeleton.startswith('\n---\nsubject: "Bank Statement (CAMT.053) Integration"\n---\n')
+    assert "<!-- Section: Executive Overview -->" in skeleton
+    assert "## scope\n<!-- Scope: table" in skeleton and "| Function | Countries |\n|---|---|\n" in skeleton
+    assert "## business_need\n<!-- Business Need: text" in skeleton
+    _, with_context = build_prompt(BRIEF, entry.blueprint, entry.manifest, include_context=True)
+    assert "```json" in with_context
 
 
 def test_mock_draft_fills_every_writable_field(sample_deck, tmp_path):

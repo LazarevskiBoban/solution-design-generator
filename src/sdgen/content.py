@@ -183,11 +183,19 @@ def _sections(body: str) -> list[tuple[str, str]]:
 def _match_field(heading: str, manifest: Manifest | None) -> FieldSpec | None:
     if manifest is None:
         return None
-    wanted = slugify(heading)
-    for spec in manifest.fields:
-        if spec.key == heading.strip() or slugify(spec.key) == wanted or slugify(spec.label) == wanted:
-            return spec
+    for candidate in (heading.strip(), _bare_heading(heading)):
+        wanted = slugify(candidate)
+        for spec in manifest.fields:
+            if spec.key == candidate or slugify(spec.key) == wanted or slugify(spec.label) == wanted:
+                return spec
     return None
+
+
+def _bare_heading(heading: str) -> str:
+    # Tolerates "`key`", "key (Label)" and "key: Label" as written by some models.
+    bare = heading.strip().strip("`").strip()
+    bare = re.sub(r"\s*\(.*\)\s*$", "", bare)
+    return re.split(r"\s*[:—–]\s+", bare, maxsplit=1)[0].strip("` ")
 
 
 def _match_global(heading: str, manifest: Manifest) -> GlobalSpec | None:
