@@ -20,7 +20,8 @@ from sdgen.manifest import FieldSpec, GlobalSpec, Manifest
 from sdgen.mapping.extract import extract_fields
 from sdgen.mapping.model import MappingEntry, MappingSet, SourceSpec, TargetSpec
 from sdgen.mapping.workbook import write_workbook
-from sdgen.plan import SOURCES, SectionDecision, SectionPlan, active_extras, apply_plan, extended_blueprint, extended_manifest, extra_slides, plan_sections
+from sdgen.flow import plan_flows, to_mermaid
+from sdgen.plan import SOURCES, FlowRequest, SectionDecision, SectionPlan, active_extras, apply_plan, extended_blueprint, extended_manifest, extra_slides, plan_sections
 from sdgen.preview import export_slide_images
 from sdgen.registry import Registry, safe_name
 from sdgen.tools import AnalyzeRequest, RenderRequest, analyze_template, continuation_slides, render_document
@@ -417,7 +418,7 @@ def design_page() -> None:
                     store.save(design)
                     total = sum(len(s["fields"]) for s in writable_sections(blueprint, manifest))
                     extra = f", {len(result.mechanical)} filled from facts and template" if result.mechanical else ""
-                    st.session_state[f"{state_key}:draft_done"] = f"Drafted {len(result.content.fields)} of {total} fields with {result.llm}{extra}. Review them in step 3, then generate."
+                    st.session_state[f"{state_key}:draft_done"] = f"Drafted {len(result.content.fields)} of {total} fields with {result.llm}{extra}. Review them in step 4, then generate."
                     st.session_state[f"{state_key}:draft_warnings"] = result.warnings
                     st.session_state[f"{state_key}:v"] = version + 1
                     st.rerun()
@@ -468,10 +469,20 @@ def design_page() -> None:
         if manifest.field(k) is not None and manifest.field(k).kind == "image"
     ]
     if diagram_fields:
+        flows = store.flows(design)
         uploaded = sum(len(design.images.get(spec.key, [])) for _, spec in diagram_fields)
-        with st.expander(f"2. Diagrams: {uploaded} image(s) uploaded for {len(diagram_fields)} slots", expanded=False):
+        drawn = sum(1 for section, _ in diagram_fields if section.key in flows)
+        with st.expander(f"3. Diagrams: {uploaded} image(s) uploaded, {drawn} drawn from the brief, {len(diagram_fields)} slots", expanded=False):
+            st.caption("Draw from brief asks the model for the flow (systems, steps, arrows) and draws it as editable shapes on the slide; the Mermaid text is saved for draw.io. An uploaded image always wins over a drawing.")
+            requests = {f.section: f for f in (design.plan.flows if design.plan else [])}
+            pending = [section for section, spec in diagram_fields if section.key not in flows and not design.images.get(spec.key) and section.key not in design.hidden]
+            if pending and st.button(f"Draw {len(pending)} diagram(s) from the brief", key=f"{state_key}:draw_all"):
+                _draw_flows_for(state_key, design, store, pending, requests, provider, settings)
+            if st.session_state.get(f"{state_key}:flow_note"):
+                st.info(st.session_state.pop(f"{state_key}:flow_note"))
             for section, spec in diagram_fields:
-                files = st.file_uploader(section.title, type=["png", "jpg", "jpeg"], accept_multiple_files=True, key=f"{prefix}img:{spec.key}")
+                st.markdown(f"**{design.titles.get(section.key, section.title)}**" + (" (hidden)" if section.key in design.hidden else ""))
+                files = st.file_uploader("Image", type=["png", "jpg", "jpeg"], accept_multiple_files=True, key=f"{prefix}img:{spec.key}", label_visibility="collapsed")
                 for file in files or []:
                     store.add_image(design, spec.key, file.name, file.getvalue())
                 current = design.images.get(spec.key, [])
@@ -481,8 +492,25 @@ def design_page() -> None:
                         design.images[spec.key] = []
                         store.save(design)
                         st.rerun()
+                flow = flows.get(section.key)
+                col_draw, col_mermaid, col_remove = st.columns(3)
+                if flow is not None:
+                    st.caption("Drawn from the brief: " + " → ".join(n.label for n in flow.nodes[:6]) + (" …" if len(flow.nodes) > 6 else ""))
+                    with col_draw:
+                        if st.button("Redraw from brief", key=f"{state_key}:draw:{section.key}"):
+                            _draw_flows_for(state_key, design, store, [section], requests, provider, settings)
+                    with col_mermaid:
+                        st.download_button("Mermaid for draw.io", data=to_mermaid(flow), file_name=f"{section.key}.mmd", key=f"{state_key}:mmd:{section.key}")
+                    with col_remove:
+                        if st.button("Remove drawing", key=f"{state_key}:undraw:{section.key}"):
+                            store.delete_flow(design, section.key)
+                            st.rerun()
+                else:
+                    with col_draw:
+                        if st.button("Draw from brief", key=f"{state_key}:draw:{section.key}"):
+                            _draw_flows_for(state_key, design, store, [section], requests, provider, settings)
 
-    st.subheader("3. Review sections")
+    st.subheader("4. Review sections")
     with st.expander("Import a content file (.md)", expanded=False):
         imported = st.file_uploader("Content file", type=["md", "markdown", "txt"], key=f"{prefix}import", label_visibility="collapsed")
         if imported is not None and st.session_state.get(f"{state_key}:import_token") != f"{imported.name}:{imported.size}":
@@ -506,7 +534,7 @@ def design_page() -> None:
     else:
         st.caption("This template has no sections to write.")
 
-    st.subheader("4. Generate")
+    st.subheader("5. Generate")
     col_missing, col_preview, col_generate = st.columns([1, 1, 1], vertical_alignment="bottom")
     with col_missing:
         missing = st.selectbox(
@@ -1075,6 +1103,12 @@ def _render_design(entry, store: DesignStore, design: Design, subject: str, name
     images = {k: v for k, v in store.content(design, base_manifest).fields.items() if base_manifest.field(k) and base_manifest.field(k).kind == "image"}
     final = Content(globals=_globals(subject), fields={**fields, **images})
     sections = {s.key: s for s in blueprint.sections if s.key not in extra_keys}
+    flows = {}
+    for section_key, flow in store.flows(design).items():
+        section = sections.get(section_key)
+        for key in (section.fields if section else []):
+            if base_manifest.field(key) is not None and base_manifest.field(key).kind == "image":
+                flows[key] = flow
     hidden_slides = [sections[k].slide for k in design.hidden if k in sections]
     slide_order = [sections[k].slide for k in _section_order(design, blueprint) if k in sections] if design.order else []
     titles = {sections[k].slide: t for k, t in design.titles.items() if k in sections and t.strip()}
@@ -1093,9 +1127,27 @@ def _render_design(entry, store: DesignStore, design: Design, subject: str, name
             slide_order=slide_order,
             titles=titles,
             extras=slides_extra,
+            flows=flows,
         )
     )
     return output, response
+
+
+def _draw_flows_for(state_key: str, design: Design, store: DesignStore, sections: list, requests: dict, provider: str, settings: dict) -> None:
+    try:
+        llm = get_llm(provider, **settings)
+        planner = llm.with_effort("medium") if hasattr(llm, "with_effort") else llm
+        wanted = [requests.get(s.key) or FlowRequest(section=s.key, title=design.titles.get(s.key, s.title), purpose=s.ask) for s in sections]
+        with st.spinner("Designing the diagrams."):
+            specs = plan_flows(design.brief, wanted, planner)
+    except (LLMNotConfigured, LLMError) as exc:
+        st.error(str(exc))
+        return
+    for key, spec in specs.items():
+        store.save_flow(design, key, spec)
+    missing = [design.titles.get(s.key, s.title) for s in sections if s.key not in specs]
+    st.session_state[f"{state_key}:flow_note"] = f"Drew {len(specs)} diagram(s) from the brief." + (f" The model returned no flow for: {', '.join(missing)}." if missing else "")
+    st.rerun()
 
 
 def _plan_title(design: Design) -> str:

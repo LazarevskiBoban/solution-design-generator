@@ -7,6 +7,7 @@ from sdgen.blueprint import Blueprint, derive_blueprint
 from sdgen.content import Content, load_markdown, skeleton_markdown, validate_content as _validate
 from sdgen.inventory import DeckInfo, inspect_deck
 from sdgen.manifest import Manifest
+from sdgen.flow import FlowSpec
 from sdgen.render import ExtraSlide, MissingMode, RenderIssue, render
 
 
@@ -98,6 +99,7 @@ class RenderRequest(BaseModel):
     slide_order: list[int] = Field(default_factory=list)
     titles: dict[int, str] = Field(default_factory=dict)
     extras: list[ExtraSlide] = Field(default_factory=list)
+    flows: dict[str, FlowSpec] = Field(default_factory=dict)
 
 
 class RenderResponse(BaseModel):
@@ -127,5 +129,6 @@ def render_document(request: RenderRequest) -> RenderResponse:
         order=request.slide_order,
         titles=request.titles,
         extras=request.extras,
+        flows=request.flows,
     )
     return RenderResponse(output=result.output, slides=result.slides, issues=result.issues, slide_map=result.slide_map, slide_keys=result.slide_keys)

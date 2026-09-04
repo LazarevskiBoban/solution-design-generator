@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from sdgen.brief import Brief, dump_brief, load_brief
 from sdgen.content import Content, ImageValue, load_markdown
 from sdgen.manifest import Manifest
+from sdgen.flow import FlowSpec, to_mermaid
 from sdgen.mapping.model import MappingSet
 from sdgen.plan import SectionPlan
 from sdgen.registry import safe_name
@@ -19,6 +20,7 @@ BRIEF_FILE = "brief.md"
 CONTENT_FILE = "content.md"
 MAPPING_FILE = "mappings.yaml"
 PLAN_FILE = "plan.yaml"
+FLOWS_DIR = "flows"
 IMAGES_DIR = "images"
 MAPPING_DIR = "mapping"
 
@@ -134,6 +136,31 @@ class DesignStore:
 
     def workbook_path(self, design: Design) -> Path:
         return self.mapping_dir(design.name) / design.workbook_name
+
+    def flow_dir(self, name: str) -> Path:
+        folder = self.root / safe_name(name) / FLOWS_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def save_flow(self, design: Design, section_key: str, spec: FlowSpec) -> Path:
+        folder = self.flow_dir(design.name)
+        target = folder / f"{section_key}.yaml"
+        spec.save(target)
+        (folder / f"{section_key}.mmd").write_text(to_mermaid(spec), encoding="utf-8")
+        return target
+
+    def flows(self, design: Design) -> dict[str, FlowSpec]:
+        folder = self.root / safe_name(design.name) / FLOWS_DIR
+        if not folder.is_dir():
+            return {}
+        return {path.stem: FlowSpec.load(path) for path in sorted(folder.glob("*.yaml"))}
+
+    def delete_flow(self, design: Design, section_key: str) -> None:
+        folder = self.root / safe_name(design.name) / FLOWS_DIR
+        for suffix in (".yaml", ".mmd"):
+            path = folder / f"{section_key}{suffix}"
+            if path.is_file():
+                path.unlink()
 
     def add_image(self, design: Design, field_key: str, file_name: str, data: bytes) -> str:
         folder = self.image_dir(design.name)

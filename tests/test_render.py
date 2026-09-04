@@ -241,3 +241,26 @@ def test_extra_slides_are_cloned_from_a_prototype(sample_deck, tmp_path):
 
     tail = render(sample_deck, manifest, Content(), tmp_path / "tail.pptx", extras=[extra.model_copy(update={"before": 0, "value": None})])
     assert tail.slide_keys == ["", "", "extra_acc"] and any("placeholder shown" in str(i) for i in tail.issues)
+
+
+def test_flows_are_drawn_into_the_image_slot(sample_deck, tmp_path):
+    from pptx.shapes.picture import Picture
+
+    from sdgen.flow import FlowEdge, FlowNode, FlowSpec
+
+    manifest = _fixture_manifest(sample_deck)
+    image_key = next(f.key for f in manifest.fields if f.kind == "image")
+    flow = FlowSpec(nodes=[FlowNode(id="a", label="Bank", lane="source"), FlowNode(id="b", label="S/4HANA", lane="target")], edges=[FlowEdge(source="a", target="b", label="file")])
+    out = tmp_path / "flow.pptx"
+    result = render(sample_deck, manifest, Content(), out, flows={image_key: flow})
+    assert not result.errors and any("diagram drawn from the brief" in str(i) for i in result.issues)
+    slide = Presentation(str(out)).slides[0]
+    assert not any(isinstance(s, Picture) for s in slide.shapes)
+    assert sum(s.name.startswith(f"Flow {image_key} node") for s in slide.shapes) == 2
+
+    image = tmp_path / "up.png"
+    Image.new("RGB", (40, 30), "blue").save(image)
+    kept = render(sample_deck, manifest, Content(fields={image_key: ImageValue(path=str(image))}), tmp_path / "upload.pptx", flows={image_key: flow})
+    upload_slide = Presentation(str(tmp_path / "upload.pptx")).slides[0]
+    assert any(isinstance(s, Picture) for s in upload_slide.shapes) and not any(s.name.startswith("Flow") for s in upload_slide.shapes)
+    assert not any("diagram drawn" in str(i) for i in kept.issues)

@@ -35,7 +35,7 @@ def add_image_slots(prs, manifest: Manifest, blueprint: Blueprint) -> tuple[Mani
         drawn = [s for s in removable if not isinstance(s, Picture)] or removable
         box = _bounding_box(drawn, prs, slide.shapes.title)
         box = _avoid_overlap(box, kept)
-        _remove(slide, removable)
+        remove_shapes(slide, removable)
         picture = slide.shapes.add_picture(_placeholder_png(section.title, box), *box)
         picture.name = f"{SLOT_PREFIX}{section.title}"
         _send_to_back(slide, picture)
@@ -106,7 +106,7 @@ def _send_to_back(slide, shape) -> None:
     tree.insert(2, element)
 
 
-def _remove(slide, shapes) -> None:
+def remove_shapes(slide, shapes) -> None:
     rids: set[str] = set()
     for shape in shapes:
         element = shape._element

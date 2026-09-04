@@ -7,7 +7,9 @@ from pptx import Presentation
 from pydantic import BaseModel, Field
 
 from sdgen.content import Content, ImageValue, images_of, parse_pipe_table
+from sdgen.diagrams import remove_shapes
 from sdgen.fill.image import replace_picture
+from sdgen.flow import FlowSpec, draw_flow
 from sdgen.fill.slides import clone_slide, move_slide, remove_slide
 from sdgen.fill.table import fill_table
 from sdgen.fill.text import Block, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text
@@ -69,6 +71,7 @@ def render(
     order: list[int] | None = None,
     titles: dict[int, str] | None = None,
     extras: list[ExtraSlide] | None = None,
+    flows: dict[str, FlowSpec] | None = None,
 ) -> RenderResult:
     prs = Presentation(str(template))
     slides = list(prs.slides)
@@ -100,7 +103,10 @@ def render(
         current = shape.text_frame.text
         set_rich_text(shape, f"{title.strip()}: {subject}" if subject and subject in current else title.strip())
 
+    drawn = _draw_flows(slides, manifest, content, flows or {}, hidden_slides, issues)
     for spec in manifest.fields:
+        if spec.key in drawn:
+            continue
         value = content.fields.get(spec.key)
         mode = (field_modes or {}).get(spec.key)
         if mode == "keep":
@@ -152,6 +158,31 @@ def render(
         slide_map=_slide_map(prs, numbers),
         slide_keys=[extra_ids.get(slide.slide_id, "") for slide in prs.slides],
     )
+
+
+def _draw_flows(slides: list, manifest: Manifest, content: Content, flows: dict[str, FlowSpec], hidden: set[int], issues: list[RenderIssue]) -> set[str]:
+    """Draws each flow into its image slot unless an uploaded image fills that slot."""
+    drawn: set[str] = set()
+    for key, flow in flows.items():
+        spec = manifest.field(key)
+        if spec is None or spec.kind != "image":
+            issues.append(RenderIssue(field=key, message="flow refers to a field that is not an image slot"))
+            continue
+        if content.fields.get(key) not in (None, "", []) or not flow.nodes:
+            continue
+        for binding in spec.bindings:
+            if binding.slide in hidden or not 1 <= binding.slide <= len(slides):
+                continue
+            slide = slides[binding.slide - 1]
+            shape = _locate(slide, binding)
+            if shape is None:
+                issues.append(RenderIssue(field=key, slide=binding.slide, message="image slot not found for the flow"))
+                continue
+            draw_flow(slide, (shape.left, shape.top, shape.width, shape.height), flow, prefix=f"Flow {key}")
+            remove_shapes(slide, [shape])
+            issues.append(RenderIssue(level="info", field=key, slide=binding.slide, message=f"diagram drawn from the brief ({len(flow.nodes)} nodes)"))
+            drawn.add(key)
+    return drawn
 
 
 def _add_extras(prs, slides: list, extras: list[ExtraSlide], subject: str, issues: list[RenderIssue]) -> dict[int, str]:

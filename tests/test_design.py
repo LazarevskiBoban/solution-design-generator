@@ -89,3 +89,18 @@ def test_hidden_and_order_are_persisted(tmp_path):
     store.save(design)
     loaded = store.load("lockbox")
     assert loaded.hidden == ["duplicate_checker"] and loaded.order == ["cover", "executive_overview"]
+
+
+def test_flows_are_saved_next_to_the_design(tmp_path):
+    from sdgen.flow import FlowEdge, FlowNode, FlowSpec
+
+    store = DesignStore(tmp_path / "designs")
+    design = Design(name="lockbox", template="demo")
+    store.save(design)
+    spec = FlowSpec(nodes=[FlowNode(id="a", label="A", lane="source"), FlowNode(id="b", label="B", lane="target")], edges=[FlowEdge(source="a", target="b")])
+    store.save_flow(design, "level_2", spec)
+    folder = tmp_path / "designs" / "lockbox" / "flows"
+    assert (folder / "level_2.yaml").is_file() and (folder / "level_2.mmd").read_text(encoding="utf-8").startswith("flowchart LR")
+    assert store.flows(design) == {"level_2": spec}
+    store.delete_flow(design, "level_2")
+    assert store.flows(design) == {} and not (folder / "level_2.mmd").exists()
