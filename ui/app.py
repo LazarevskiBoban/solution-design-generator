@@ -42,7 +42,7 @@ def design_store() -> DesignStore:
 
 def provider_settings() -> tuple[str, dict[str, str]]:
     options = ["mock", "azure", "openai"]
-    default = (os.environ.get("SDGEN_LLM") or "mock").strip().lower()
+    default = (_secret("SDGEN_LLM") or "mock").strip().lower()
     with st.sidebar.expander("AI provider", expanded=False):
         provider = st.selectbox("Provider", options, index=options.index(default) if default in options else 0, key="llm_provider")
         settings: dict[str, str] = {}

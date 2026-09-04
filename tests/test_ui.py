@@ -24,7 +24,7 @@ def registry_with_demo(sample_deck, tmp_path, monkeypatch):
     Registry(root).add("demo", sample_deck, manifest, blueprint=blueprint)
     monkeypatch.setenv("SDGEN_TEMPLATES", str(root))
     monkeypatch.setenv("SDGEN_DESIGNS", str(tmp_path / "designs"))
-    monkeypatch.delenv("SDGEN_LLM", raising=False)
+    monkeypatch.setenv("SDGEN_LLM", "mock")
     return root
 
 

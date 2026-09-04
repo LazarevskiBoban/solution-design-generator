@@ -6,6 +6,15 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
 from pptx.util import Inches, Pt
 
+PROVIDER_VARS = ("SDGEN_LLM", "OPENAI_API_KEY", "SDGEN_OPENAI_MODEL", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_API_VERSION")
+
+
+@pytest.fixture(autouse=True)
+def no_real_provider(monkeypatch):
+    # Streamlit copies secrets.toml into os.environ, so a UI test could leak real credentials into later tests.
+    for var in PROVIDER_VARS:
+        monkeypatch.delenv(var, raising=False)
+
 
 @pytest.fixture
 def sample_deck(tmp_path: Path) -> Path:
