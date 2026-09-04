@@ -59,12 +59,12 @@ def test_slot_replaces_drawing_but_keeps_title_and_bound_table(diagram_deck, tmp
 
     slide = prs.slides[0]
     names = [s.name for s in slide.shapes]
-    assert names[0].startswith("Title") and "Steps Table" in names
+    assert names[0].startswith(SLOT_PREFIX) and names[1].startswith("Title") and "Steps Table" in names
     slots = [s for s in slide.shapes if s.name.startswith(SLOT_PREFIX)]
     assert len(slots) == 1 and len(slide.shapes) == 3
     slot = slots[0]
     assert slot.left == Inches(1) and slot.top == Inches(2)
-    assert slot.width == pytest.approx(Inches(8.7), rel=0.01)
+    assert slot.width == pytest.approx(Inches(7.9), rel=0.01)  # trimmed so it does not overlap the kept table
     assert slot.height == pytest.approx(Inches(2.8), rel=0.01)
 
     field = next(f for f in manifest.fields if f.kind == "image")

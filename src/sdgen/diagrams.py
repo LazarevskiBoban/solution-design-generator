@@ -13,6 +13,7 @@ from sdgen.manifest import Binding, FieldSpec, Manifest, ShapeRef
 RELATIONSHIP_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 SLOT_PREFIX = "Diagram slot: "
 MIN_SLOT_INCHES = 2.0
+GAP = Inches(0.1)
 MARGIN = Inches(0.42)
 CONTENT_TOP = Inches(1.0)
 BOTTOM_MARGIN = Inches(0.45)
@@ -30,11 +31,14 @@ def add_image_slots(prs, manifest: Manifest, blueprint: Blueprint) -> tuple[Mani
         slide = slides[section.slide - 1]
         bound = {b.shape.id for f in fields for b in f.bindings if b.slide == section.slide}
         removable = [s for s in slide.shapes if not _keep(s, bound)]
+        kept = [s for s in slide.shapes if _keep(s, bound) and not s.is_placeholder]
         drawn = [s for s in removable if not isinstance(s, Picture)] or removable
         box = _bounding_box(drawn, prs, slide.shapes.title)
+        box = _avoid_overlap(box, kept)
         _remove(slide, removable)
         picture = slide.shapes.add_picture(_placeholder_png(section.title, box), *box)
         picture.name = f"{SLOT_PREFIX}{section.title}"
+        _send_to_back(slide, picture)
 
         key = _unique_key(f"{section.key}_diagram", {f.key for f in fields})
         fields.append(
@@ -72,6 +76,36 @@ def _bounding_box(shapes, prs, title=None) -> tuple[int, int, int, int]:
     return left, top, right - left, bottom - top
 
 
+def _avoid_overlap(box: tuple[int, int, int, int], kept) -> tuple[int, int, int, int]:
+    left, top, width, height = box
+    right, bottom = left + width, top + height
+    for shape in kept:
+        if None in (shape.left, shape.top, shape.width, shape.height):
+            continue
+        s_left, s_top = shape.left, shape.top
+        s_right, s_bottom = s_left + shape.width, s_top + shape.height
+        if s_left >= right or s_right <= left or s_top >= bottom or s_bottom <= top:
+            continue
+        options = [
+            (left, top, s_left - GAP, bottom),
+            (s_right + GAP, top, right, bottom),
+            (left, top, right, s_top - GAP),
+            (left, s_bottom + GAP, right, bottom),
+        ]
+        valid = [o for o in options if o[2] - o[0] >= Inches(MIN_SLOT_INCHES) and o[3] - o[1] >= Inches(MIN_SLOT_INCHES)]
+        if not valid:
+            continue
+        left, top, right, bottom = max(valid, key=lambda o: (o[2] - o[0]) * (o[3] - o[1]))
+    return left, top, right - left, bottom - top
+
+
+def _send_to_back(slide, shape) -> None:
+    tree = slide.shapes._spTree
+    element = shape._element
+    tree.remove(element)
+    tree.insert(2, element)
+
+
 def _remove(slide, shapes) -> None:
     rids: set[str] = set()
     for shape in shapes:
@@ -92,12 +126,17 @@ def _placeholder_png(title: str, box: tuple[int, int, int, int]) -> io.BytesIO:
     image = Image.new("RGB", (width, height), (236, 240, 245))
     draw = ImageDraw.Draw(image)
     draw.rectangle([2, 2, width - 3, height - 3], outline=(150, 160, 175), width=2)
+    heading = f"Diagram: {title}"
+    size = max(14, height // 18)
     try:
-        font = ImageFont.load_default(size=max(14, height // 18))
-        small = ImageFont.load_default(size=max(11, height // 28))
+        font = ImageFont.load_default(size=size)
+        while size > 12 and _text_width(draw, heading, font) > width * 0.9:
+            size -= 1
+            font = ImageFont.load_default(size=size)
+        small = ImageFont.load_default(size=max(11, min(size - 4, height // 28)))
     except TypeError:
         font = small = ImageFont.load_default()
-    lines = [(f"Diagram: {title}", font), ("Upload an image for this section", small)]
+    lines = [(heading, font), ("Upload an image for this section", small)]
     y = height / 2 - sum(_text_height(draw, t, f) for t, f in lines) / 2
     for text, used in lines:
         w = _text_width(draw, text, used)
