@@ -1,8 +1,10 @@
 # sdgen
 
-Fills solution-design templates (PowerPoint first) from structured content while keeping the
-template's layouts, fonts and styles. A template is uploaded once, its fillable sections are
-confirmed and saved as a manifest; afterwards content is entered per document and rendered.
+Builds solution-design documents from a corporate PowerPoint template. A template is
+uploaded once and understood as sections; each new design starts from a short brief, a few
+diagram images and, where relevant, field mappings. A writer drafts the sections, the user
+reviews them, and the deck (plus an Excel mapping workbook) is generated with the template's
+layouts, fonts and styles intact.
 
 ## Setup
 
@@ -10,34 +12,43 @@ confirmed and saved as a manifest; afterwards content is entered per document an
 python -m venv .venv
 .venv\Scripts\activate
 pip install -e .[ui,dev,preview]
-```
-
-## Browser UI
-
-```
 sdgen ui
 ```
 
-Templates page: upload a deck, review the proposed fields, save. The stored copy has every
-confirmed section replaced by a `{{placeholder}}`; the manifest next to it describes the
-fields. Generate page: pick the template, fill the fields (or import a Markdown content file),
-generate, download.
+## Pages
 
-Templates live under `templates/<name>/` (override with the `SDGEN_TEMPLATES` environment
-variable).
+- **Templates**: upload a deck once. The analyzer proposes the sections (title, kind, what to
+  provide); confirm and save. The stored copy has every section replaced by a placeholder and
+  every drawn diagram replaced by an image slot. Templates live under `templates/<name>/`.
+- **New design**: pick a template, write the brief (what it is about, problem and outcome,
+  approach, APIs and references, investigation notes), upload diagram images, draft the
+  sections, review them, generate. Designs are saved under `designs/<name>/`.
+- **Mappings**: upload the target API definition (EDMX metadata, XSD or a sample payload) and
+  one sample per source; map fields in a grid per source; download the workbook; push the
+  summary into the brief.
+
+## Model provider
+
+The writer calls a provider chosen by `SDGEN_LLM`. `mock` (default) needs no key and echoes
+the brief into each section as a labelled draft. Real providers are added behind the same
+interface once a key is available.
 
 ## Commands
 
 ```
-sdgen inspect deck.pptx            # slides, shapes, tables and text of a deck
-sdgen inspect deck.pptx --json     # same as JSON
-sdgen analyze deck.pptx            # propose fillable fields (add --all to see unticked ones)
-sdgen analyze deck.pptx -o manifest.yaml --name my-template
-sdgen add my-template deck.pptx --manifest manifest.yaml   # register (fields become placeholders)
-sdgen skeleton my-template -o content.md      # empty content file for a registered template
-sdgen render my-template content.md -o out.pptx
-sdgen preview out.pptx --pdf out.pdf          # open in PowerPoint to verify, export PDF
-pytest                             # run the test suite
+sdgen inspect deck.pptx                   # slides, shapes, tables and text of a deck
+sdgen analyze deck.pptx                   # proposed fields
+sdgen outline deck.pptx                   # proposed sections
+sdgen add my-template deck.pptx           # register (placeholders + image slots + outline)
+sdgen brief -o brief.md                   # empty brief
+sdgen draft my-template brief.md -o content.md [--llm mock]
+sdgen skeleton my-template -o content.md  # empty content file (manual route)
+sdgen render my-template content.md -o out.pptx [--missing placeholder|keep|blank]
+sdgen preview out.pptx --pdf out.pdf      # open in PowerPoint to verify, export PDF
+sdgen mapping extract sample.xml          # fields in a sample or schema
+sdgen mapping new camt --target metadata.xml --source "Bank A=a.xml" -o mappings.yaml
+sdgen mapping workbook mappings.yaml -o mapping.xlsx
+pytest
 ```
 
 `my-template` is a folder under `templates/` (change with `--templates`), or a path to a
@@ -60,6 +71,6 @@ One paragraph per line.
 |---|---|---|---|
 | Finance | AR | ZA | 3 banks |
 
-## level2_flow_image
+## integration_architecture_diagram
 ![](images/flow.png)
 ```
