@@ -189,6 +189,14 @@ def test_replace_token_within_and_across_runs():
     assert replace_token(box, "<missing>", "x") == 0
 
 
+def test_loose_spaces_match_double_spaces_and_breaks():
+    _, slide = _slide()
+    box = _textbox(slide, "Areas: Carrier AP Invoice  Integration ")
+    assert replace_token(box, "Carrier AP Invoice Integration", "X") == 0
+    assert replace_token(box, "Carrier AP Invoice Integration", "X", loose_spaces=True) == 1
+    assert box.text_frame.text == "Areas: X "
+
+
 def test_replace_literal_everywhere_covers_titles_tables_and_groups(tmp_path):
     prs = Presentation()
     slide = prs.slides.add_slide(prs.slide_layouts[5])

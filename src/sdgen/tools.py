@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from sdgen.analyze import Analysis, analyze_deck, slugify
+from sdgen.blueprint import Blueprint, derive_blueprint
 from sdgen.content import Content, load_markdown, skeleton_markdown, validate_content as _validate
 from sdgen.inventory import DeckInfo, inspect_deck
 from sdgen.manifest import Manifest
@@ -29,13 +30,32 @@ class AnalyzeRequest(BaseModel):
 class AnalyzeResponse(BaseModel):
     analysis: Analysis
     manifest: Manifest
+    blueprint: Blueprint
+    deck: DeckInfo
 
 
 def analyze_template(request: AnalyzeRequest) -> AnalyzeResponse:
     deck = inspect_deck(request.deck)
     analysis = analyze_deck(deck)
     name = request.name or slugify(deck.path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1].rsplit(".", 1)[0])
-    return AnalyzeResponse(analysis=analysis, manifest=analysis.to_manifest(name, source=deck.path))
+    manifest = analysis.to_manifest(name, source=deck.path)
+    blueprint = derive_blueprint(deck, analysis, manifest, name)
+    return AnalyzeResponse(analysis=analysis, manifest=manifest, blueprint=blueprint, deck=deck)
+
+
+class OutlineRequest(BaseModel):
+    deck: DeckInfo
+    analysis: Analysis
+    manifest: Manifest
+    name: str
+
+
+class OutlineResponse(BaseModel):
+    blueprint: Blueprint
+
+
+def outline_template(request: OutlineRequest) -> OutlineResponse:
+    return OutlineResponse(blueprint=derive_blueprint(request.deck, request.analysis, request.manifest, request.name))
 
 
 class SkeletonRequest(BaseModel):

@@ -7,10 +7,12 @@ from pathlib import Path
 from pptx import Presentation
 from pydantic import BaseModel
 
+from sdgen.blueprint import Blueprint
 from sdgen.manifest import Manifest
 from sdgen.tokenize import tokenize_deck
 
 MANIFEST_FILE = "manifest.yaml"
+BLUEPRINT_FILE = "blueprint.yaml"
 TEMPLATE_FILE = "template.pptx"
 NAME_RE = re.compile(r"[^a-z0-9_-]+")
 
@@ -26,6 +28,7 @@ class TemplateEntry(BaseModel):
     name: str
     directory: Path
     manifest: Manifest
+    blueprint: Blueprint | None = None
 
     @property
     def template_path(self) -> Path:
@@ -46,9 +49,18 @@ class Registry:
         manifest_path = directory / MANIFEST_FILE
         if not manifest_path.is_file():
             raise FileNotFoundError(f"template '{name}' not found under {self.root}")
-        return TemplateEntry(name=name, directory=directory, manifest=Manifest.load(manifest_path))
+        blueprint_path = directory / BLUEPRINT_FILE
+        blueprint = Blueprint.load(blueprint_path) if blueprint_path.is_file() else None
+        return TemplateEntry(name=name, directory=directory, manifest=Manifest.load(manifest_path), blueprint=blueprint)
 
-    def add(self, name: str, deck_path: str | Path, manifest: Manifest, tokenize: bool = True) -> TemplateEntry:
+    def add(
+        self,
+        name: str,
+        deck_path: str | Path,
+        manifest: Manifest,
+        tokenize: bool = True,
+        blueprint: Blueprint | None = None,
+    ) -> TemplateEntry:
         name = safe_name(name)
         directory = self.root / name
         directory.mkdir(parents=True, exist_ok=True)
@@ -60,7 +72,16 @@ class Registry:
         else:
             shutil.copyfile(deck_path, directory / TEMPLATE_FILE)
         manifest.save(directory / MANIFEST_FILE)
-        return TemplateEntry(name=name, directory=directory, manifest=manifest)
+        if blueprint is not None:
+            blueprint = blueprint.model_copy(update={"name": name})
+            blueprint.save(directory / BLUEPRINT_FILE)
+        return TemplateEntry(name=name, directory=directory, manifest=manifest, blueprint=blueprint)
+
+    def save_blueprint(self, name: str, blueprint: Blueprint) -> None:
+        directory = self.root / name
+        if not directory.is_dir():
+            raise FileNotFoundError(f"template '{name}' not found under {self.root}")
+        blueprint.save(directory / BLUEPRINT_FILE)
 
     def save(self, name: str, manifest: Manifest) -> None:
         directory = self.root / name

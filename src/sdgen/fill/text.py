@@ -110,33 +110,43 @@ def set_rich_text(target, value: str | list[Block], keep_prefix: str | None = No
         tx_body.append(paragraph)
 
 
-def replace_token(target, token: str, value: str) -> int:
-    return sum(_replace_in_paragraph(p._p, token, value) for p in target.text_frame.paragraphs)
+def replace_token(target, token: str, value: str, loose_spaces: bool = False) -> int:
+    pattern = _loose_pattern(token) if loose_spaces else None
+    return sum(_replace_in_paragraph(p._p, token, value, pattern) for p in target.text_frame.paragraphs)
 
 
-def replace_literal_everywhere(prs, old: str, new: str) -> int:
+def replace_literal_everywhere(prs, old: str, new: str, loose_spaces: bool = True) -> int:
     count = 0
     for slide in prs.slides:
         for shape in walk_shapes(slide.shapes):
             if shape.has_text_frame:
-                count += replace_token(shape, old, new)
+                count += replace_token(shape, old, new, loose_spaces)
             elif getattr(shape, "has_table", False):
                 for cell in shape.table.iter_cells():
-                    count += replace_token(cell, old, new)
+                    count += replace_token(cell, old, new, loose_spaces)
     return count
 
 
-def _replace_in_paragraph(p: etree._Element, token: str, value: str) -> int:
+def _loose_pattern(token: str) -> re.Pattern | None:
+    words = token.split()
+    return re.compile(r"\s+".join(re.escape(w) for w in words)) if words else None
+
+
+def _replace_in_paragraph(p: etree._Element, token: str, value: str, pattern: re.Pattern | None = None) -> int:
     count = 0
     search_from = 0
     while True:
         runs = [r for r in p if r.tag == qn("a:r")]
         texts = [_text_of(r) for r in runs]
         full = "".join(texts)
-        start = full.find(token, search_from)
+        if pattern is not None:
+            match = pattern.search(full, search_from)
+            start, end = (match.start(), match.end()) if match else (-1, -1)
+        else:
+            start = full.find(token, search_from)
+            end = start + len(token)
         if start < 0:
             return count
-        end = start + len(token)
         first = last = None
         local_start = local_end = 0
         offset = 0

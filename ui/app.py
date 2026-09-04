@@ -8,7 +8,9 @@ import pandas as pd
 import streamlit as st
 
 from sdgen.analyze import Analysis, slugify
+from sdgen.blueprint import Blueprint, derive_blueprint
 from sdgen.content import Content, ImageValue, dump_markdown
+from sdgen.inventory import DeckInfo
 from sdgen.manifest import FieldSpec, GlobalSpec, Manifest
 from sdgen.registry import Registry, safe_name
 from sdgen.tools import (
@@ -24,6 +26,7 @@ from sdgen.tools import (
 
 ROOT = Path(__file__).resolve().parent.parent
 KINDS = ["text", "bullets", "table", "image"]
+SECTION_KINDS = ["cover", "static", "divider", "text", "table", "composite", "diagram", "mapping", "references"]
 PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
 
@@ -46,7 +49,10 @@ def templates_page() -> None:
     reg = registry()
     names = reg.names()
     if names:
-        rows = [{"template": n, "fields": len(reg.load(n).manifest.fields)} for n in names]
+        rows = []
+        for n in names:
+            entry = reg.load(n)
+            rows.append({"template": n, "sections": len(entry.blueprint.sections) if entry.blueprint else 0, "fields": len(entry.manifest.fields)})
         st.dataframe(pd.DataFrame(rows), hide_index=True)
     else:
         st.caption("No templates yet.")
@@ -54,7 +60,7 @@ def templates_page() -> None:
     st.subheader("Add a template")
     upload = st.file_uploader("PowerPoint deck", type=["pptx"], key="template_upload")
     if upload is None:
-        st.info("Upload a deck. It is analysed for fillable sections, which you confirm before saving.")
+        st.info("Upload a deck once. It is analysed into sections; you confirm what each section needs, then save.")
         return
 
     token = f"{upload.name}:{upload.size}"
@@ -65,50 +71,71 @@ def templates_page() -> None:
         response = analyze_template(AnalyzeRequest(deck=str(deck_path)))
         st.session_state["analysis_token"] = token
         st.session_state["analysis"] = response.analysis
+        st.session_state["deck_info"] = response.deck
+        st.session_state["blueprint"] = response.blueprint
         st.session_state["deck_path"] = str(deck_path)
         st.session_state["editor_version"] = st.session_state.get("editor_version", 0) + 1
 
     analysis: Analysis = st.session_state["analysis"]
+    deck_info: DeckInfo = st.session_state["deck_info"]
+    blueprint: Blueprint = st.session_state["blueprint"]
     version = st.session_state["editor_version"]
     name = st.text_input("Template name", value=safe_name(Path(upload.name).stem), key=f"name:{version}")
 
-    with st.expander("Slides", expanded=False):
-        st.dataframe(
-            pd.DataFrame([{"slide": s.index, "kind": s.kind, "note": s.reason} for s in analysis.slides]),
-            hide_index=True,
-        )
-    kinds = {s.index: s.kind for s in analysis.slides}
-    exclude = st.multiselect(
-        "Slides to leave out of every generated document",
-        options=[s.index for s in analysis.slides],
-        default=[i for i in analysis.exclude if i in kinds],
-        format_func=lambda i: f"{i} ({kinds[i]})",
-        key=f"exclude:{version}",
+    st.subheader("Sections")
+    st.caption("One row per slide. Rename a section, change its kind, edit what it asks for, or untick it to leave it out of every document.")
+    outline_df = pd.DataFrame(
+        [
+            {"use": True, "slide": s.slide, "title": s.title, "kind": s.kind, "ask": s.ask, "optional": s.optional}
+            for s in blueprint.sections
+        ],
+        columns=["use", "slide", "title", "kind", "ask", "optional"],
     )
-
-    st.subheader("Global replacements")
-    st.caption("Text replaced everywhere it appears, such as the integration name in slide titles.")
-    globals_df = pd.DataFrame(
-        [{"use": True, "key": g.key, "label": g.label, "replaces": g.replaces} for g in analysis.globals],
-        columns=["use", "key", "label", "replaces"],
-    )
-    globals_edit = st.data_editor(
-        globals_df,
-        num_rows="dynamic",
+    outline_edit = st.data_editor(
+        outline_df,
         hide_index=True,
         width="stretch",
-        key=f"globals:{version}",
+        height=min(60 + 36 * len(outline_df), 700),
+        disabled=["slide"],
+        key=f"outline:{version}",
         column_config={
-            "use": st.column_config.CheckboxColumn("Use", default=True),
-            "key": st.column_config.TextColumn("Key"),
-            "label": st.column_config.TextColumn("Label"),
-            "replaces": st.column_config.TextColumn("Text to replace"),
+            "use": st.column_config.CheckboxColumn("Use"),
+            "slide": st.column_config.NumberColumn("Slide"),
+            "title": st.column_config.TextColumn("Section"),
+            "kind": st.column_config.SelectboxColumn("Kind", options=SECTION_KINDS, required=True),
+            "ask": st.column_config.TextColumn("What to provide", width="large"),
+            "optional": st.column_config.CheckboxColumn("Optional"),
         },
     )
 
-    st.subheader("Fields")
-    st.caption("Tick the sections to fill, rename keys, and adjust the kind. Unticked rows are ignored.")
-    fields_df = pd.DataFrame(
+    advanced = st.expander("Advanced: fields and replacements", expanded=False)
+    with advanced:
+        st.caption("The shape-level detail behind the sections. Usually no change is needed.")
+    kinds = {s.index: s.kind for s in analysis.slides}
+    excluded_by_note = [i for i in analysis.exclude if i in kinds]
+
+    with advanced:
+        st.markdown("**Global replacements**")
+        globals_df = pd.DataFrame(
+        [{"use": True, "key": g.key, "label": g.label, "replaces": g.replaces} for g in analysis.globals],
+        columns=["use", "key", "label", "replaces"],
+    )
+        globals_edit = st.data_editor(
+            globals_df,
+            num_rows="dynamic",
+            hide_index=True,
+            width="stretch",
+            key=f"globals:{version}",
+            column_config={
+                "use": st.column_config.CheckboxColumn("Use", default=True),
+                "key": st.column_config.TextColumn("Key"),
+                "label": st.column_config.TextColumn("Label"),
+                "replaces": st.column_config.TextColumn("Text to replace"),
+            },
+        )
+
+        st.markdown("**Fields**")
+        fields_df = pd.DataFrame(
         [
             {
                 "use": c.include,
@@ -125,37 +152,61 @@ def templates_page() -> None:
         ],
         columns=["use", "slide", "kind", "key", "label", "keep_prefix", "max_chars", "preview", "shape"],
     )
-    fields_edit = st.data_editor(
-        fields_df,
-        hide_index=True,
-        width="stretch",
-        height=min(60 + 36 * len(fields_df), 700),
-        disabled=["slide", "preview", "shape"],
-        key=f"fields:{version}",
-        column_config={
-            "use": st.column_config.CheckboxColumn("Use"),
-            "slide": st.column_config.NumberColumn("Slide"),
-            "kind": st.column_config.SelectboxColumn("Kind", options=KINDS, required=True),
-            "key": st.column_config.TextColumn("Key"),
-            "label": st.column_config.TextColumn("Label"),
-            "keep_prefix": st.column_config.TextColumn("Keep prefix"),
-            "max_chars": st.column_config.NumberColumn("Max chars", min_value=0, step=10),
-            "preview": st.column_config.TextColumn("Preview", width="large"),
-            "shape": st.column_config.TextColumn("Shape"),
-        },
-    )
+        fields_edit = st.data_editor(
+            fields_df,
+            hide_index=True,
+            width="stretch",
+            height=min(60 + 36 * len(fields_df), 700),
+            disabled=["slide", "preview", "shape"],
+            key=f"fields:{version}",
+            column_config={
+                "use": st.column_config.CheckboxColumn("Use"),
+                "slide": st.column_config.NumberColumn("Slide"),
+                "kind": st.column_config.SelectboxColumn("Kind", options=KINDS, required=True),
+                "key": st.column_config.TextColumn("Key"),
+                "label": st.column_config.TextColumn("Label"),
+                "keep_prefix": st.column_config.TextColumn("Keep prefix"),
+                "max_chars": st.column_config.NumberColumn("Max chars", min_value=0, step=10),
+                "preview": st.column_config.TextColumn("Preview", width="large"),
+                "shape": st.column_config.TextColumn("Shape"),
+            },
+        )
 
     if st.button("Save template", type="primary", key="save_template"):
         if not name.strip():
             st.error("Give the template a name.")
             return
         try:
-            manifest = _build_manifest(analysis, fields_edit, globals_edit, safe_name(name), list(exclude))
-            entry = reg.add(name, st.session_state["deck_path"], manifest)
+            unused = [int(r.slide) for r in outline_edit.itertuples(index=False) if not bool(r.use)]
+            exclude = sorted(set(unused) | set(excluded_by_note))
+            manifest = _build_manifest(analysis, fields_edit, globals_edit, safe_name(name), exclude)
+            fresh = derive_blueprint(deck_info, analysis, manifest, safe_name(name))
+            final = _apply_outline_edits(fresh, outline_edit)
+            entry = reg.add(name, st.session_state["deck_path"], manifest, blueprint=final)
         except ValueError as exc:
             st.error(str(exc))
             return
-        st.success(f"Template '{entry.name}' saved with {len(entry.manifest.fields)} fields. It is now available on the Generate page.")
+        st.success(f"Template '{entry.name}' saved with {len(final.sections)} sections. It is now available on the Generate page.")
+
+
+def _apply_outline_edits(blueprint: Blueprint, outline_df: pd.DataFrame) -> Blueprint:
+    edits = {int(r.slide): r for r in outline_df.itertuples(index=False)}
+    sections = []
+    for section in blueprint.sections:
+        row = edits.get(section.slide)
+        if row is None:
+            sections.append(section)
+            continue
+        update = {
+            "title": _text(row.title) or section.title,
+            "kind": row.kind if row.kind in SECTION_KINDS else section.kind,
+            "ask": _text(row.ask),
+            "optional": bool(row.optional),
+        }
+        if update["kind"] == "diagram" and section.images == 0:
+            update["images"] = 1
+        sections.append(section.model_copy(update=update))
+    return blueprint.model_copy(update={"sections": sections})
 
 
 def _build_manifest(analysis: Analysis, fields_df: pd.DataFrame, globals_df: pd.DataFrame, name: str, exclude: list[int]) -> Manifest:

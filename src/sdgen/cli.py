@@ -7,6 +7,7 @@ from pathlib import Path
 import click
 
 from sdgen.analyze import analyze_deck, format_analysis, slugify
+from sdgen.blueprint import derive_blueprint, format_outline
 from sdgen.inventory import format_inventory, inspect_deck
 from sdgen.manifest import Manifest
 from sdgen.preview import preview as run_preview
@@ -69,6 +70,26 @@ def analyze(deck: Path, output: Path | None, name: str | None, show_all: bool, a
 
 
 @main.command()
+@click.argument("target")
+@TEMPLATES_OPTION
+def outline(target: str, templates: Path) -> None:
+    """Show the sections of a deck or of a registered template."""
+    path = Path(target)
+    if path.is_file() and path.suffix.lower() == ".pptx":
+        deck = inspect_deck(path)
+        analysis = analyze_deck(deck)
+        manifest = analysis.to_manifest(slugify(path.stem), source=path.name)
+        blueprint = derive_blueprint(deck, analysis, manifest, slugify(path.stem))
+    else:
+        entry = _resolve_template(target, templates)
+        if entry.blueprint is None:
+            click.echo(f"template '{entry.name}' has no outline; re-add it to create one")
+            raise SystemExit(1)
+        blueprint = entry.blueprint
+    click.echo(format_outline(blueprint))
+
+
+@main.command()
 @click.argument("template")
 @click.option("-o", "--output", type=click.Path(dir_okay=False, path_type=Path), help="Write the skeleton here instead of printing it.")
 @TEMPLATES_OPTION
@@ -121,8 +142,11 @@ def render(template: str, content: Path, output: Path, blank_missing: bool, temp
 @TEMPLATES_OPTION
 def add(name: str, deck: Path, manifest_path: Path | None, keep_content: bool, templates: Path) -> None:
     """Register a deck as a template."""
-    manifest = Manifest.load(manifest_path) if manifest_path else analyze_deck(inspect_deck(deck)).to_manifest(name)
-    entry = Registry(templates).add(name, deck, manifest, tokenize=not keep_content)
+    deck_info = inspect_deck(deck)
+    analysis = analyze_deck(deck_info)
+    manifest = Manifest.load(manifest_path) if manifest_path else analysis.to_manifest(name)
+    blueprint = derive_blueprint(deck_info, analysis, manifest, name)
+    entry = Registry(templates).add(name, deck, manifest, tokenize=not keep_content, blueprint=blueprint)
     click.echo(f"Template '{entry.name}' saved with {len(entry.manifest.fields)} fields in {entry.directory}")
 
 
