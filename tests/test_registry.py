@@ -16,10 +16,12 @@ def test_add_load_and_list(tmp_path, sample_deck):
     assert entry.template_path.is_file()
     assert entry.manifest.name == "demo" and entry.manifest.source == "template.pptx"
     assert registry.names() == ["demo"]
+    assert entry.original.fields["need"] == "First point\nSub point"
 
     loaded = registry.load("demo")
     assert loaded.manifest.field("need").bindings[0].slide == 1
     assert loaded.template_path == entry.template_path
+    assert loaded.original.fields["need"] == entry.original.fields["need"]
 
     updated = loaded.manifest.model_copy(update={"fields": []})
     registry.save("demo", updated)

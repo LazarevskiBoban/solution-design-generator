@@ -70,6 +70,16 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     need = next(s for s in slide.shapes if s.name == "Business Need Box").text_frame.text
     assert need.startswith("Business Need: [Draft] Bank statements arrive daily.")
 
+    section_key = Registry(registry_with_demo).load("demo").blueprint.sections[0].key
+    app.radio(key=f"{state_key}:1:mode:{section_key}").set_value("keep").run()
+    app.button(key=f"{state_key}:generate").click().run()
+    assert not app.exception
+    assert app.session_state[state_key].modes == {section_key: "keep"}
+    saved.write_bytes(app.session_state[f"{state_key}:output"][1])
+    kept = Presentation(str(saved)).slides[0]
+    need = next(s for s in kept.shapes if s.name == "Business Need Box").text_frame.text
+    assert need.startswith("Business Need: Something long")
+
     app.selectbox(key="design_choice:demo").select("camt-053").run()
     app.button(key="design:demo:camt-053:delete").click().run()
     app.button(key="design:demo:camt-053:delete:yes").click().run()

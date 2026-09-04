@@ -177,3 +177,18 @@ def test_carrier_deck_end_to_end(tmp_path):
     scope = next(s for s in deck.slides[4].walk() if s.kind == "table" and s.table.cells[0][0] == "Function")
     assert scope.table.cells == [["Function", "BU / Practice", "Operating Countries", "Carriers"], ["Finance", "AR", "ZA", "3 banks"]]
     assert not any("Carrier AP Invoice Integration" in s.title for s in deck.slides if s.title)
+
+
+def test_field_modes_keep_and_blank_override_content(sample_deck, tmp_path):
+    manifest = _fixture_manifest(sample_deck)
+    content = Content(fields={"business_need": "Fresh need text", "first_point": "- alpha"})
+    out = tmp_path / "modes.pptx"
+    result = render(sample_deck, manifest, content, out, field_modes={"business_need": "keep", "scope": "blank", "first_point": "blank"})
+    assert not result.errors
+    assert any("template content kept" in str(i) for i in result.issues)
+    slide = Presentation(str(out)).slides[0]
+    assert _shape_text(slide, "Business Need Box").startswith("Business Need: Something long")
+    table = next(s for s in slide.shapes if s.has_table).table
+    assert [[c.text for c in r.cells] for r in table.rows] == [["Function", "Countries"], ["", ""]]
+    body = slide.placeholders[1].text_frame.text
+    assert "alpha" not in body and "To be completed" not in body

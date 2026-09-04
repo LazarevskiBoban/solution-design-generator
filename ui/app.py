@@ -32,6 +32,7 @@ NEW_DESIGN = "New design"
 MAPPINGS = "Mappings"
 SAMPLE_TYPES = ["xml", "xsd", "edmx", "json", "csv"]
 EMPTY_FIELD_RE = re.compile(r"field '[^']+' \((.+)\) is empty$")
+SECTION_MODES = {"text": "Use the text below", "keep": "Keep the template text", "blank": "Leave the slide blank"}
 
 
 def registry() -> Registry:
@@ -401,6 +402,7 @@ def design_page() -> None:
         st.info("Draft the sections with AI, import a content file, or fill the sections below by hand.")
     content = load_markdown(design.content_markdown, manifest) if design.content_markdown.strip() else Content()
     edited: dict = {}
+    modes: dict[str, str] = {}
     for section in blueprint.sections:
         if section.kind in ("static", "divider"):
             continue
@@ -411,9 +413,22 @@ def design_page() -> None:
         with st.expander(section.title, expanded=bool(design.content_markdown.strip())):
             if section.ask:
                 st.caption(section.ask)
+            mode = st.radio(
+                "Slide content",
+                list(SECTION_MODES),
+                format_func=SECTION_MODES.get,
+                horizontal=True,
+                key=_init(f"{prefix}mode:{section.key}", design.modes.get(section.key, "text")),
+            )
+            modes[section.key] = mode
             for spec in fields:
-                value = _review_widget(spec, f"{prefix}f:{spec.key}", content.fields.get(spec.key))
-                if value is not None:
+                if mode == "text":
+                    value = _review_widget(spec, f"{prefix}f:{spec.key}", content.fields.get(spec.key))
+                elif mode == "keep":
+                    value = entry.original.fields.get(spec.key) if entry.original else None
+                else:
+                    value = None
+                if value not in (None, "", []):
                     edited[spec.key] = value
     col_save_c, col_export = st.columns(2)
     with col_save_c:
@@ -436,14 +451,31 @@ def design_page() -> None:
     with col_generate:
         generate = st.button("Generate document", type="primary", key=f"{state_key}:generate")
     if generate:
-        if not any(v not in ("", [], None) for v in edited.values()):
+        fields = dict(edited)
+        drafted_now = False
+        if not design.llm and provider != "mock" and not design.brief.is_empty:
+            try:
+                llm = get_llm(provider, **settings)
+                with st.spinner(f"Drafting the sections with {provider} before generating. This can take a minute."):
+                    result = draft_content(design.brief, blueprint, manifest, llm)
+            except (LLMNotConfigured, LLMError) as exc:
+                st.error(str(exc))
+                st.stop()
+            fields = {**result.content.fields, **fields}
+            design.llm = result.llm
+            drafted_now = True
+            st.session_state[f"{state_key}:draft_done"] = f"Drafted {len(result.content.fields)} fields with {result.llm} while generating. Text you typed yourself was kept."
+            st.session_state[f"{state_key}:draft_warnings"] = result.warnings
+        elif not any(v not in ("", [], None) for v in fields.values()):
             st.warning("No section text yet, so the document will only show placeholders. Draft the sections with AI first, or fill them under Review sections.")
+        design.modes = modes
         images = {k: v for k, v in store.content(design, manifest).fields.items() if manifest.field(k) and manifest.field(k).kind == "image"}
-        final = Content(globals=_globals(subject), fields={**edited, **images})
-        design.content_markdown = dump_markdown(Content(globals=_globals(subject), fields=edited), manifest)
+        final = Content(globals=_globals(subject), fields={**fields, **images})
+        design.content_markdown = dump_markdown(Content(globals=_globals(subject), fields=fields), manifest)
         store.save(design)
         out_dir = Path(tempfile.mkdtemp(prefix="sdgen-out-"))
         output = out_dir / f"{slugify(subject) or name}.pptx"
+        field_modes = {key: "blank" for section in blueprint.sections if modes.get(section.key) == "blank" for key in section.fields}
         response = render_document(
             RenderRequest(
                 template=str(entry.template_path),
@@ -452,9 +484,13 @@ def design_page() -> None:
                 output=str(output),
                 missing=missing,
                 continue_on=continuation_slides(blueprint),
+                field_modes=field_modes,
             )
         )
         st.session_state[f"{state_key}:output"] = (output.name, output.read_bytes(), [str(i) for i in response.issues], response.slides)
+        if drafted_now:
+            st.session_state[f"{state_key}:v"] = version + 1
+            st.rerun()
 
     stored = st.session_state.get(f"{state_key}:output")
     if stored:

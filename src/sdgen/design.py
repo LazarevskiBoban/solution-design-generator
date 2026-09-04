@@ -28,6 +28,7 @@ class Design(BaseModel):
     content_markdown: str = ""
     images: dict[str, list[str]] = Field(default_factory=dict)
     mapping: MappingSet | None = None
+    modes: dict[str, str] = Field(default_factory=dict)
     llm: str = ""
     updated: str = ""
 
@@ -77,6 +78,7 @@ class DesignStore:
             content_markdown=content_path.read_text(encoding="utf-8") if content_path.is_file() else "",
             images={k: list(v) for k, v in (data.get("images") or {}).items()},
             mapping=MappingSet.load(mapping_path) if mapping_path.is_file() else None,
+            modes={str(k): str(v) for k, v in (data.get("modes") or {}).items()},
             llm=data.get("llm", ""),
             updated=data.get("updated", ""),
         )
@@ -85,7 +87,7 @@ class DesignStore:
         folder = self.root / safe_name(design.name)
         folder.mkdir(parents=True, exist_ok=True)
         design.updated = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        meta = {"template": design.template, "images": design.images, "llm": design.llm, "updated": design.updated}
+        meta = {"template": design.template, "images": design.images, "modes": design.modes, "llm": design.llm, "updated": design.updated}
         (folder / DESIGN_FILE).write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), encoding="utf-8")
         (folder / BRIEF_FILE).write_text(dump_brief(design.brief), encoding="utf-8")
         (folder / CONTENT_FILE).write_text(design.content_markdown, encoding="utf-8")

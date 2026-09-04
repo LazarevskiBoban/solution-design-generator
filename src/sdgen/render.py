@@ -52,6 +52,7 @@ def render(
     output: str | Path,
     missing: MissingMode = "placeholder",
     continue_on: set[int] | list[int] | None = None,
+    field_modes: dict[str, MissingMode] | None = None,
 ) -> RenderResult:
     prs = Presentation(str(template))
     slides = list(prs.slides)
@@ -71,11 +72,18 @@ def render(
 
     for spec in manifest.fields:
         value = content.fields.get(spec.key)
+        mode = (field_modes or {}).get(spec.key)
+        if mode == "keep":
+            issues.append(RenderIssue(level="info", field=spec.key, message="template content kept"))
+            continue
+        if mode == "blank":
+            value = None
+        mode = mode or missing
         if value is None or value == "" or value == []:
-            if missing == "keep" or spec.kind == "image":
+            if mode == "keep" or spec.kind == "image":
                 issues.append(RenderIssue(field=spec.key, message="no value; template content left in place"))
                 continue
-            if missing == "blank":
+            if mode == "blank":
                 value = [] if spec.kind == "table" else ""
             else:
                 value = [[PLACEHOLDER_ROW]] if spec.kind == "table" else placeholder_text(spec.label)

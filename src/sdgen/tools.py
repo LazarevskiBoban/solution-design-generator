@@ -93,6 +93,7 @@ class RenderRequest(BaseModel):
     output: str
     missing: MissingMode = "placeholder"
     continue_on: list[int] | None = None
+    field_modes: dict[str, MissingMode] = Field(default_factory=dict)
 
 
 class RenderResponse(BaseModel):
@@ -108,5 +109,5 @@ def continuation_slides(blueprint: Blueprint | None) -> list[int] | None:
 
 
 def render_document(request: RenderRequest) -> RenderResponse:
-    result = render(request.template, request.manifest, request.content, request.output, request.missing, request.continue_on)
+    result = render(request.template, request.manifest, request.content, request.output, request.missing, request.continue_on, field_modes=request.field_modes)
     return RenderResponse(output=result.output, slides=result.slides, issues=result.issues)

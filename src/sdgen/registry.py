@@ -8,13 +8,15 @@ from pptx import Presentation
 from pydantic import BaseModel
 
 from sdgen.blueprint import Blueprint
+from sdgen.content import Content, dump_markdown, load_markdown_file
 from sdgen.diagrams import add_image_slots
 from sdgen.manifest import Manifest
-from sdgen.tokenize import tokenize_deck
+from sdgen.tokenize import capture_content, tokenize_deck
 
 MANIFEST_FILE = "manifest.yaml"
 BLUEPRINT_FILE = "blueprint.yaml"
 TEMPLATE_FILE = "template.pptx"
+ORIGINAL_FILE = "original.md"
 NAME_RE = re.compile(r"[^a-z0-9_-]+")
 
 
@@ -30,6 +32,7 @@ class TemplateEntry(BaseModel):
     directory: Path
     manifest: Manifest
     blueprint: Blueprint | None = None
+    original: Content | None = None
 
     @property
     def template_path(self) -> Path:
@@ -58,7 +61,10 @@ class Registry:
             raise FileNotFoundError(f"template '{name}' not found under {self.root}")
         blueprint_path = directory / BLUEPRINT_FILE
         blueprint = Blueprint.load(blueprint_path) if blueprint_path.is_file() else None
-        return TemplateEntry(name=name, directory=directory, manifest=Manifest.load(manifest_path), blueprint=blueprint)
+        manifest = Manifest.load(manifest_path)
+        original_path = directory / ORIGINAL_FILE
+        original = load_markdown_file(original_path, manifest) if original_path.is_file() else None
+        return TemplateEntry(name=name, directory=directory, manifest=manifest, blueprint=blueprint, original=original)
 
     def add(
         self,
@@ -72,19 +78,22 @@ class Registry:
         directory = self.root / name
         directory.mkdir(parents=True, exist_ok=True)
         manifest = manifest.model_copy(update={"name": name, "source": TEMPLATE_FILE})
+        original = None
         if tokenize:
             prs = Presentation(str(deck_path))
+            original = capture_content(prs, manifest)
             manifest = tokenize_deck(prs, manifest)
             if blueprint is not None:
                 manifest, blueprint = add_image_slots(prs, manifest, blueprint)
             prs.save(str(directory / TEMPLATE_FILE))
+            (directory / ORIGINAL_FILE).write_text(dump_markdown(original, manifest), encoding="utf-8")
         else:
             shutil.copyfile(deck_path, directory / TEMPLATE_FILE)
         manifest.save(directory / MANIFEST_FILE)
         if blueprint is not None:
             blueprint = blueprint.model_copy(update={"name": name})
             blueprint.save(directory / BLUEPRINT_FILE)
-        return TemplateEntry(name=name, directory=directory, manifest=manifest, blueprint=blueprint)
+        return TemplateEntry(name=name, directory=directory, manifest=manifest, blueprint=blueprint, original=original)
 
     def save_blueprint(self, name: str, blueprint: Blueprint) -> None:
         directory = self.root / name

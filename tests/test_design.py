@@ -21,6 +21,7 @@ def test_save_load_and_content(tmp_path):
     store = DesignStore(tmp_path / "designs")
     design = Design(name="CAMT 053", template="demo", brief=Brief(subject="CAMT.053", about="statements"))
     design.content_markdown = "## business_need\nDraft text\n"
+    design.modes = {"executive_overview": "keep"}
     store.add_image(design, "flow_diagram", "flow.png", _png())
     store.add_image(design, "flow_diagram", "flow2.png", _png())
     store.add_image(design, "flow_diagram", "flow.png", _png())
@@ -31,6 +32,7 @@ def test_save_load_and_content(tmp_path):
     assert loaded.template == "demo" and loaded.brief.subject == "CAMT.053" and loaded.brief.about == "statements"
     assert loaded.content_markdown == "## business_need\nDraft text\n"
     assert loaded.images == {"flow_diagram": ["flow.png", "flow2.png"]}
+    assert loaded.modes == {"executive_overview": "keep"}
     assert loaded.updated
 
     content = store.content(loaded, _manifest())

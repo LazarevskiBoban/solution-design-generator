@@ -58,3 +58,17 @@ def test_registry_can_keep_the_original_deck(sample_deck, tmp_path):
     entry = Registry(tmp_path / "templates").add("raw", sample_deck, _manifest(sample_deck), tokenize=False)
     stored = Presentation(str(entry.template_path)).slides[0]
     assert "{{" not in _shape_text(stored, "Business Need Box")
+
+
+def test_capture_content_reads_text_bullets_and_tables(sample_deck):
+    from pptx import Presentation
+
+    from sdgen.analyze import analyze_deck
+    from sdgen.inventory import inspect_deck
+    from sdgen.tokenize import capture_content
+
+    manifest = analyze_deck(inspect_deck(sample_deck)).to_manifest("demo")
+    original = capture_content(Presentation(str(sample_deck)), manifest)
+    assert original.fields["business_need"] == "Something long enough to be treated as a real content section.\nSecond paragraph."
+    assert original.fields["scope"] == [{"Function": "Finance", "Countries": "ZA"}]
+    assert original.fields["first_point"] == "- First point\n  - Sub point"
