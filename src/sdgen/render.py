@@ -15,6 +15,12 @@ from sdgen.inventory import find_shape, walk_shapes
 from sdgen.manifest import Binding, FieldSpec, Manifest
 
 CONTINUATION_SUFFIX = " (cont.)"
+MissingMode = Literal["keep", "blank", "placeholder"]
+PLACEHOLDER_ROW = "[To be completed]"
+
+
+def placeholder_text(label: str) -> str:
+    return f"[To be completed: {label}]"
 
 
 class RenderIssue(BaseModel):
@@ -44,7 +50,7 @@ def render(
     manifest: Manifest,
     content: Content,
     output: str | Path,
-    blank_missing: bool = False,
+    missing: MissingMode = "placeholder",
 ) -> RenderResult:
     prs = Presentation(str(template))
     slides = list(prs.slides)
@@ -63,10 +69,14 @@ def render(
     for spec in manifest.fields:
         value = content.fields.get(spec.key)
         if value is None or value == "" or value == []:
-            if not blank_missing or spec.kind == "image":
+            if missing == "keep" or spec.kind == "image":
                 issues.append(RenderIssue(field=spec.key, message="no value; template content left in place"))
                 continue
-            value = [] if spec.kind == "table" else ""
+            if missing == "blank":
+                value = [] if spec.kind == "table" else ""
+            else:
+                value = [[PLACEHOLDER_ROW]] if spec.kind == "table" else placeholder_text(spec.label)
+                issues.append(RenderIssue(level="info", field=spec.key, message="no value; placeholder shown"))
         for binding in spec.bindings:
             if not 1 <= binding.slide <= len(slides):
                 issues.append(RenderIssue(level="error", field=spec.key, slide=binding.slide, message="slide does not exist"))
@@ -187,7 +197,7 @@ def _as_text(value: Any) -> str:
     return str(value)
 
 
-def _as_rows(value: Any) -> list[dict[str, Any]]:
+def _as_rows(value: Any) -> list:
     if isinstance(value, list):
         return value
     if isinstance(value, ImageValue):

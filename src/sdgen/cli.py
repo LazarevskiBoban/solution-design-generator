@@ -108,9 +108,15 @@ def skeleton(template: str, output: Path | None, templates: Path) -> None:
 @click.argument("template")
 @click.argument("content", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("-o", "--output", required=True, type=click.Path(dir_okay=False, path_type=Path), help="Output document path.")
-@click.option("--blank-missing", is_flag=True, help="Clear fields that have no value instead of keeping template text.")
+@click.option(
+    "--missing",
+    type=click.Choice(["placeholder", "keep", "blank"]),
+    default="placeholder",
+    show_default=True,
+    help="What to show for sections without content.",
+)
 @TEMPLATES_OPTION
-def render(template: str, content: Path, output: Path, blank_missing: bool, templates: Path) -> None:
+def render(template: str, content: Path, output: Path, missing: str, templates: Path) -> None:
     """Fill a template with a Markdown content file."""
     entry = _resolve_template(template, templates)
     validation = validate_content(
@@ -124,7 +130,7 @@ def render(template: str, content: Path, output: Path, blank_missing: bool, temp
             manifest=entry.manifest,
             content=validation.content,
             output=str(output),
-            blank_missing=blank_missing,
+            missing=missing,
         )
     )
     for issue in result.issues:

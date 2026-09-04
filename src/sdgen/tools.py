@@ -7,7 +7,7 @@ from sdgen.blueprint import Blueprint, derive_blueprint
 from sdgen.content import Content, load_markdown, skeleton_markdown, validate_content as _validate
 from sdgen.inventory import DeckInfo, inspect_deck
 from sdgen.manifest import Manifest
-from sdgen.render import RenderIssue, render
+from sdgen.render import MissingMode, RenderIssue, render
 
 
 class InspectRequest(BaseModel):
@@ -91,7 +91,7 @@ class RenderRequest(BaseModel):
     manifest: Manifest
     content: Content
     output: str
-    blank_missing: bool = False
+    missing: MissingMode = "placeholder"
 
 
 class RenderResponse(BaseModel):
@@ -101,5 +101,5 @@ class RenderResponse(BaseModel):
 
 
 def render_document(request: RenderRequest) -> RenderResponse:
-    result = render(request.template, request.manifest, request.content, request.output, request.blank_missing)
+    result = render(request.template, request.manifest, request.content, request.output, request.missing)
     return RenderResponse(output=result.output, slides=result.slides, issues=result.issues)

@@ -286,7 +286,12 @@ def generate_page() -> None:
     with col_export:
         st.download_button("Export content (.md)", data=dump_markdown(content, manifest), file_name=f"{name}-content.md")
     with col_blank:
-        blank = st.checkbox("Blank unfilled fields", key=f"{prefix}blank")
+        missing = st.selectbox(
+            "Unfilled sections",
+            ["placeholder", "keep", "blank"],
+            format_func={"placeholder": "show a placeholder", "keep": "keep template text", "blank": "leave blank"}.get,
+            key=f"{prefix}missing",
+        )
     with col_generate:
         generate = st.button("Generate document", type="primary", key=f"{prefix}generate")
 
@@ -295,7 +300,7 @@ def generate_page() -> None:
         stem = slugify(globals_.get(next(iter(globals_), ""), "") or name)
         output = out_dir / f"{stem}.pptx"
         response = render_document(
-            RenderRequest(template=str(entry.template_path), manifest=manifest, content=content, output=str(output), blank_missing=blank)
+            RenderRequest(template=str(entry.template_path), manifest=manifest, content=content, output=str(output), missing=missing)
         )
         st.session_state[f"{prefix}output"] = (output.name, output.read_bytes(), [str(i) for i in response.issues], response.slides)
 

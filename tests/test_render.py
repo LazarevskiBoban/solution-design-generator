@@ -60,20 +60,29 @@ def test_render_fills_all_kinds_and_excludes_slides(sample_deck, tmp_path):
     assert picture.image.size == (60, 30)
 
 
-def test_missing_values_are_reported_and_optionally_blanked(sample_deck, tmp_path):
+def test_missing_values_keep_blank_or_placeholder(sample_deck, tmp_path):
     manifest = _fixture_manifest(sample_deck)
-    result = render(sample_deck, manifest, Content(), tmp_path / "kept.pptx")
+    result = render(sample_deck, manifest, Content(), tmp_path / "kept.pptx", missing="keep")
     messages = [str(i) for i in result.issues]
     assert any("subject" in m and "left in place" in m for m in messages)
     assert any("business_need" in m for m in messages)
     kept = Presentation(str(tmp_path / "kept.pptx")).slides[0]
     assert _shape_text(kept, "Business Need Box").startswith("Business Need: Something long")
 
-    render(sample_deck, manifest, Content(), tmp_path / "blank.pptx", blank_missing=True)
+    render(sample_deck, manifest, Content(), tmp_path / "blank.pptx", missing="blank")
     blank = Presentation(str(tmp_path / "blank.pptx")).slides[0]
     assert _shape_text(blank, "Business Need Box") == "Business Need: "
     table = next(s for s in blank.shapes if s.has_table).table
     assert [[c.text for c in r.cells] for r in table.rows] == [["Function", "Countries"], ["", ""]]
+
+    result = render(sample_deck, manifest, Content(), tmp_path / "placeholder.pptx")
+    shown = Presentation(str(tmp_path / "placeholder.pptx")).slides[0]
+    assert _shape_text(shown, "Business Need Box") == "Business Need: [To be completed: Business Need]"
+    table = next(s for s in shown.shapes if s.has_table).table
+    assert [[c.text for c in r.cells] for r in table.rows] == [["Function", "Countries"], ["[To be completed]", ""]]
+    assert shown.placeholders[1].text_frame.text == "[To be completed: First point]"
+    assert any("placeholder shown" in str(i) for i in result.issues)
+    assert not result.errors
 
 
 def test_overflow_continues_on_cloned_slides(sample_deck, tmp_path):
