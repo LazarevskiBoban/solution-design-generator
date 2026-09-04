@@ -51,7 +51,10 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
 
     app.text_input(key=f"{state_key}:0:b:subject").input("Lockbox Integration")
     app.text_area(key=f"{state_key}:0:b:about").input("Bank statements arrive daily. They must be posted automatically.")
+    app.text_input(key=f"{state_key}:0:fact:countries").input("ZA, KE")
     app.run()
+    assert app.session_state[state_key].brief.facts == {"countries": "ZA, KE"}
+    assert (tmp_path / "designs" / "camt-053" / "brief.md").read_text(encoding="utf-8").rstrip().endswith("## fact:countries\nZA, KE")
     app.button(key=f"{state_key}:draft").click().run()
     assert not app.exception
     design = app.session_state[state_key]

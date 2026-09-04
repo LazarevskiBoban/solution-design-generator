@@ -11,7 +11,7 @@ import streamlit as st
 
 from sdgen.analyze import Analysis, slugify
 from sdgen.blueprint import Blueprint, derive_blueprint
-from sdgen.brief import BRIEF_FIELDS, Brief
+from sdgen.brief import BRIEF_FIELDS, DEVELOPER_FIELDS, Brief, fact_questions
 from sdgen.content import Content, dump_markdown, load_markdown
 from sdgen.design import Design, DesignStore
 from sdgen.inventory import DeckInfo
@@ -329,9 +329,34 @@ def design_page() -> None:
     with st.expander("1. Brief", expanded=design.brief.is_empty):
         subject = st.text_input("Integration name (used in slide titles)", key=_init(f"{prefix}b:subject", design.brief.subject))
         texts = {}
+        developer_shown = False
         for key, label, guidance in BRIEF_FIELDS:
+            if key in DEVELOPER_FIELDS and not developer_shown:
+                st.markdown("**For the developers**")
+                st.caption("What they need to build and test it. Empty boxes are fine; the draft marks gaps.")
+                developer_shown = True
             texts[key] = st.text_area(label, key=_init(f"{prefix}b:{key}", getattr(design.brief, key)), help=guidance, height=110)
-        design.brief = Brief(subject=subject.strip(), diagrams=design.brief.diagrams, **texts)
+        facts: dict[str, str] = {}
+        questions = fact_questions(blueprint, manifest)
+        if questions:
+            st.markdown("**Facts this template needs**")
+            st.caption("Short answers, used only in the slides named on each field. Leave unknown ones empty and the draft writes [TBC] there instead of guessing.")
+            columns = st.columns(2)
+            for index, question in enumerate(questions):
+                spec = question.spec
+                help_text = spec.guidance + (" Used by: " + ", ".join(question.used_by) + "." if question.used_by else "")
+                with columns[index % 2]:
+                    widget_key = _init(f"{prefix}fact:{spec.key}", design.brief.facts.get(spec.key, ""))
+                    if spec.multiline:
+                        facts[spec.key] = st.text_area(spec.label, key=widget_key, help=help_text, height=90)
+                    else:
+                        facts[spec.key] = st.text_input(spec.label, key=widget_key, help=help_text)
+        design.brief = Brief(
+            subject=subject.strip(),
+            diagrams=design.brief.diagrams,
+            facts={k: v.strip() for k, v in facts.items() if v.strip()},
+            **texts,
+        )
 
         col_draft, col_info = st.columns([1, 3], vertical_alignment="center")
         with col_draft:

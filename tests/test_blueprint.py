@@ -92,3 +92,18 @@ def test_carrier_outline():
     assert by_slide[28].kind == "references"
     assert by_slide[16].title.startswith("Integration Architecture (Request")
     assert "Internet Solutions offers Connectivity Services" in by_slide[5].example
+
+
+@pytest.mark.skipif(not CARRIER_DECK.exists(), reason="example deck not available")
+def test_carrier_fact_questions():
+    from sdgen.brief import fact_questions
+
+    deck = inspect_deck(CARRIER_DECK)
+    analysis = analyze_deck(deck)
+    manifest = analysis.to_manifest("ntt")
+    blueprint = derive_blueprint(deck, analysis, manifest, "ntt")
+    questions = {q.spec.key: q for q in fact_questions(blueprint, manifest)}
+    assert {"design_start", "design_end", "version", "author", "contributors", "effort", "investment", "parties", "countries", "targets", "sap_objects", "design_doc_url"} <= set(questions)
+    assert questions["parties"].spec.label == "Carriers"
+    assert "Document Version Control" in questions["author"].used_by
+    assert any(t.startswith("Effort Estimation") for t in questions["effort"].used_by)

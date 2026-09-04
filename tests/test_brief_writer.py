@@ -37,9 +37,25 @@ def test_brief_roundtrip_and_skeleton():
     assert text.startswith('---\nsubject: "Bank Statement (CAMT.053) Integration"\n---')
     assert load_brief(text) == BRIEF
     empty = load_brief(brief_skeleton())
-    assert empty.is_empty
+    assert empty.is_empty and empty.facts == {}
     by_label = load_brief("---\nsubject: X\n---\n## What the integration is about\ntext\n")
     assert by_label.about == "text" and by_label.subject == "X"
+
+    with_facts = BRIEF.model_copy(update={"facts": {"version": "0.1", "effort": "Architect | Design | 20 | 10 | 5"}, "acceptance_criteria": "1. Every file is posted once."})
+    dumped = dump_brief(with_facts)
+    assert "## fact:version\n0.1\n" in dumped and "## acceptance_criteria\n1. Every file is posted once." in dumped
+    assert load_brief(dumped) == with_facts
+    assert with_facts.facts_text().startswith("Document version: 0.1\nEffort by role:\nArchitect")
+
+
+def test_fact_questions_follow_the_template(sample_deck, tmp_path):
+    from sdgen.brief import fact_questions
+
+    entry = _template(sample_deck, tmp_path)
+    questions = {q.spec.key: q for q in fact_questions(entry.blueprint, entry.manifest)}
+    assert questions["countries"].used_by == ["Executive Overview"]
+    assert set(questions) >= {"systems", "volumes", "frequency", "environments"}
+    assert "effort" not in questions and "version" not in questions
 
 
 PROVIDER_VARS = ("SDGEN_LLM", "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_API_VERSION")

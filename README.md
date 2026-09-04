@@ -21,8 +21,12 @@ sdgen ui
   provide); confirm and save. The stored copy has every section replaced by a placeholder and
   every drawn diagram replaced by an image slot. Templates live under `templates/<name>/`.
 - **New design**: pick a template, write the brief (what it is about, problem and outcome,
-  approach, APIs and references, investigation notes), upload diagram images, draft the
-  sections, review them, generate. Designs are saved under `designs/<name>/`.
+  approach, APIs and references, investigation notes, plus acceptance criteria, operations,
+  non-functional facts and a decisions log for the developers) and answer the facts the
+  template needs (dates, version, people, systems, counterparts, countries, targets, effort,
+  investment, SAP objects); the app derives that list from the template's fields. Upload
+  diagram images, draft the sections, review them, generate. Designs are saved under
+  `designs/<name>/`; facts live in `brief.md` as `## fact:<key>` sections.
 - **Mappings**: upload the target API definition (EDMX metadata, XSD or a sample payload) and
   one sample per source; map fields in a grid per source; download the workbook; push the
   summary into the brief.
