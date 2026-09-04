@@ -391,41 +391,19 @@ def design_page() -> None:
             if st.session_state.get(f"{state_key}:facts_note"):
                 st.info(st.session_state[f"{state_key}:facts_note"])
 
+        st.markdown("**Write the slides**")
+        st.caption("This sends the brief and the facts to the model and fills every slide section (about a minute). Nothing appears under Review sections until it has run; Generate runs it on its own when nothing has been written yet.")
         col_draft, col_model, col_info = st.columns([1, 1, 2], vertical_alignment="center")
         with col_draft:
-            draft_clicked = st.button("Draft sections with AI", type="primary", key=f"{state_key}:draft")
+            draft_clicked = st.button("Write the slides from the brief", type="primary", key=f"{state_key}:draft", help="Fills every section from the brief and the facts. Sections you edited after the previous run are kept.")
         with col_model:
             if len(deployments) > 1:
-                settings["model"] = st.selectbox("Draft with", deployments, key=f"{state_key}:deployment", label_visibility="collapsed")
+                settings["model"] = st.selectbox("Draft with", deployments, key=f"{state_key}:deployment", label_visibility="collapsed", help="The deployment that writes the slides.")
                 model = settings["model"]
         with col_info:
             st.caption(f"Provider: {provider}" + (f" ({model})" if model else "") + ". Change it under AI provider in the sidebar. Changes are saved automatically.")
         if draft_clicked:
-            try:
-                llm = get_llm(provider, **settings)
-                if design.mapping is not None and not design.brief.mapping_summary.strip():
-                    design.brief.mapping_summary = _mapping_note(design)
-                with st.spinner(f"Drafting sections with {provider}. This can take a minute."):
-                    result = draft_content(design.brief, blueprint, manifest, llm, original=entry.original, skip_sections=set(design.hidden) | set(design.modes))
-            except (LLMNotConfigured, LLMError) as exc:
-                st.error(str(exc))
-            else:
-                if not result.content.fields:
-                    st.error("The reply did not use the expected section headings, so nothing was filled. Try again or choose another model.")
-                else:
-                    current = load_markdown(design.content_markdown, manifest) if design.content_markdown.strip() else Content()
-                    last = load_markdown(design.last_draft, manifest) if design.last_draft.strip() else Content()
-                    merged = _merge_draft(current.fields, last.fields, result.content.fields)
-                    design.content_markdown = dump_markdown(Content(globals=_globals(subject), fields=merged), manifest)
-                    design.last_draft = result.markdown
-                    design.llm = result.llm
-                    store.save(design)
-                    total = sum(len(s["fields"]) for s in writable_sections(blueprint, manifest))
-                    extra = f", {len(result.mechanical)} filled from facts and template" if result.mechanical else ""
-                    st.session_state[f"{state_key}:draft_done"] = f"Drafted {len(result.content.fields)} of {total} fields with {result.llm}{extra}. Review them in step 4, then generate."
-                    st.session_state[f"{state_key}:draft_warnings"] = result.warnings
-                    st.session_state[f"{state_key}:v"] = version + 1
-                    st.rerun()
+            _run_draft(state_key, entry, design, store, subject, version, provider, settings)
         if st.session_state.get(f"{state_key}:draft_done"):
             st.success(st.session_state[f"{state_key}:draft_done"])
         _show_draft_warnings(st.session_state.get(f"{state_key}:draft_warnings", []))
@@ -526,7 +504,9 @@ def design_page() -> None:
     content = load_markdown(design.content_markdown, manifest) if design.content_markdown.strip() else Content()
     sections = _writable(blueprint, manifest)
     if not design.content_markdown.strip():
-        st.info("Nothing drafted yet. Draft the sections in step 1, import a content file, or write them here. Generate also drafts on its own when nothing has been drafted.")
+        st.warning("Nothing written yet. The sections below stay empty until the model writes them from your brief.")
+        if st.button("Write the slides from the brief now", type="primary", key=f"{state_key}:draft2"):
+            _run_draft(state_key, entry, design, store, subject, version, provider, settings)
     if sections:
         labels = {s.key: f"{s.title}  ({_section_status(s, fields, design, content)})" for s, fields in sections}
         picked = st.selectbox("Section", [s.key for s, _ in sections], format_func=labels.get, key=f"{state_key}:section")
@@ -1154,6 +1134,35 @@ def _render_design(entry, store: DesignStore, design: Design, subject: str, name
         )
     )
     return output, response
+
+
+def _run_draft(state_key: str, entry, design: Design, store: DesignStore, subject: str, version: int, provider: str, settings: dict) -> None:
+    manifest, blueprint = entry.manifest, entry.blueprint
+    try:
+        llm = get_llm(provider, **settings)
+        if design.mapping is not None and not design.brief.mapping_summary.strip():
+            design.brief.mapping_summary = _mapping_note(design)
+        with st.spinner(f"Writing the slides with {provider}. This can take a minute."):
+            result = draft_content(design.brief, blueprint, manifest, llm, original=entry.original, skip_sections=set(design.hidden) | set(design.modes))
+    except (LLMNotConfigured, LLMError) as exc:
+        st.error(str(exc))
+        return
+    if not result.content.fields:
+        st.error("The reply did not use the expected section headings, so nothing was filled. Try again or choose another model.")
+        return
+    current = load_markdown(design.content_markdown, manifest) if design.content_markdown.strip() else Content()
+    last = load_markdown(design.last_draft, manifest) if design.last_draft.strip() else Content()
+    merged = _merge_draft(current.fields, last.fields, result.content.fields)
+    design.content_markdown = dump_markdown(Content(globals=_globals(subject), fields=merged), manifest)
+    design.last_draft = result.markdown
+    design.llm = result.llm
+    store.save(design)
+    total = sum(len(s["fields"]) for s in writable_sections(blueprint, manifest))
+    extra = f", {len(result.mechanical)} filled from facts and template" if result.mechanical else ""
+    st.session_state[f"{state_key}:draft_done"] = f"Drafted {len(result.content.fields)} of {total} fields with {result.llm}{extra}. Review them in step 4, then generate."
+    st.session_state[f"{state_key}:draft_warnings"] = result.warnings
+    st.session_state[f"{state_key}:v"] = version + 1
+    st.rerun()
 
 
 def _current_llm(state_key: str):
