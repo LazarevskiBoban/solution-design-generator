@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -53,6 +54,12 @@ class DesignStore:
                     continue
             names.append(folder.name)
         return names
+
+    def delete(self, name: str) -> None:
+        folder = self.root / name
+        if not (folder / DESIGN_FILE).is_file():
+            raise FileNotFoundError(f"design '{name}' not found under {self.root}")
+        shutil.rmtree(folder)
 
     def load(self, name: str) -> Design:
         folder = self.root / name

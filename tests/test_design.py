@@ -1,3 +1,4 @@
+import pytest
 from PIL import Image
 
 from sdgen.brief import Brief
@@ -66,3 +67,15 @@ def _png() -> bytes:
     buffer = io.BytesIO()
     Image.new("RGB", (4, 4), "red").save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def test_delete_removes_the_design_folder(tmp_path):
+    store = DesignStore(tmp_path / "designs")
+    design = Design(name="lockbox", template="demo", brief=Brief(subject="Lockbox"))
+    store.save(design)
+    store.add_image(design, "flow_diagram", "flow.png", b"png")
+    assert store.names() == ["lockbox"]
+    store.delete("lockbox")
+    assert store.names() == [] and not (tmp_path / "designs" / "lockbox").exists()
+    with pytest.raises(FileNotFoundError):
+        store.delete("lockbox")

@@ -101,6 +101,17 @@ def templates_page() -> None:
             entry = reg.load(n)
             rows.append({"template": n, "sections": len(entry.blueprint.sections) if entry.blueprint else 0, "fields": len(entry.manifest.fields)})
         st.dataframe(pd.DataFrame(rows), hide_index=True)
+        with st.expander("Remove a template", expanded=False):
+            target = st.selectbox("Template", names, key="template_remove_choice")
+            used_by = design_store().names(target)
+            question = f"Remove template '{target}' and its stored deck?"
+            if used_by:
+                question += f" {len(used_by)} design(s) built on it stay on disk but disappear from the New design page: {', '.join(used_by)}."
+            if _confirm_delete("template_remove", "Remove template", question):
+                reg.remove(target)
+                for key in ("template_remove_choice", "design_template"):
+                    st.session_state.pop(key, None)
+                st.rerun()
     else:
         st.caption("No templates yet.")
 
@@ -295,6 +306,13 @@ def design_page() -> None:
         name = safe_name(raw)
     else:
         name = choice
+        question = f"Delete design '{name}' with its brief, sections, images and mappings? This cannot be undone."
+        if _confirm_delete(f"design:{template}:{name}:delete", "Delete design", question):
+            store.delete(name)
+            for key in [k for k in st.session_state if str(k) == f"design:{template}:{name}" or str(k).startswith(f"design:{template}:{name}:")]:
+                del st.session_state[key]
+            st.session_state.pop(f"design_choice:{template}", None)
+            st.rerun()
 
     state_key = f"design:{template}:{name}"
     if state_key not in st.session_state:
@@ -625,6 +643,25 @@ def _show_draft_warnings(warnings: list[str]) -> None:
             st.warning(warning)
     if empty:
         st.warning(f"{len(empty)} fields came back empty: " + ", ".join(empty))
+
+
+def _confirm_delete(key: str, label: str, question: str) -> bool:
+    armed = f"{key}:armed"
+    if st.button(label, key=key):
+        st.session_state[armed] = True
+    if not st.session_state.get(armed):
+        return False
+    st.warning(question)
+    col_yes, col_no = st.columns([1, 5])
+    with col_yes:
+        confirmed = st.button("Yes, delete", type="primary", key=f"{key}:yes")
+    with col_no:
+        if st.button("Cancel", key=f"{key}:no"):
+            st.session_state[armed] = False
+            st.rerun()
+    if confirmed:
+        st.session_state[armed] = False
+    return confirmed
 
 
 def _init(key: str, value) -> str:

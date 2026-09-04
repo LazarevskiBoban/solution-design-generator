@@ -45,6 +45,12 @@ class Registry:
             return []
         return sorted(p.name for p in self.root.iterdir() if (p / MANIFEST_FILE).is_file())
 
+    def remove(self, name: str) -> None:
+        directory = self.root / name
+        if not (directory / MANIFEST_FILE).is_file():
+            raise FileNotFoundError(f"template '{name}' not found under {self.root}")
+        shutil.rmtree(directory)
+
     def load(self, name: str) -> TemplateEntry:
         directory = self.root / name
         manifest_path = directory / MANIFEST_FILE

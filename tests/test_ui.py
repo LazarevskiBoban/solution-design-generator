@@ -70,6 +70,19 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     need = next(s for s in slide.shapes if s.name == "Business Need Box").text_frame.text
     assert need.startswith("Business Need: [Draft] Bank statements arrive daily.")
 
+    app.selectbox(key="design_choice:demo").select("camt-053").run()
+    app.button(key="design:demo:camt-053:delete").click().run()
+    app.button(key="design:demo:camt-053:delete:yes").click().run()
+    assert not app.exception
+    assert not (tmp_path / "designs" / "camt-053").exists()
+    assert app.selectbox(key="design_choice:demo").value == "New design"
+
+    app.sidebar.radio[0].set_value("Templates").run()
+    app.button(key="template_remove").click().run()
+    app.button(key="template_remove:yes").click().run()
+    assert not app.exception
+    assert not (registry_with_demo / "demo").exists()
+
 
 def test_mappings_page_shows_grid_and_writes_workbook(registry_with_demo, tmp_path):
     from sdgen.design import Design, DesignStore

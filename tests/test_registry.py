@@ -41,3 +41,13 @@ def test_missing_template_raises(tmp_path):
         registry.load("nope")
     with pytest.raises(FileNotFoundError):
         registry.save("nope", Manifest(name="nope"))
+
+
+def test_remove_deletes_the_template_folder(tmp_path, sample_deck):
+    registry = Registry(tmp_path / "templates")
+    registry.add("demo", sample_deck, Manifest(name="demo"), tokenize=False)
+    assert registry.names() == ["demo"]
+    registry.remove("demo")
+    assert registry.names() == [] and not (tmp_path / "templates" / "demo").exists()
+    with pytest.raises(FileNotFoundError):
+        registry.remove("demo")
