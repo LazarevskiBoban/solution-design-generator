@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -48,8 +49,20 @@ def preview(pptx_path: str | Path, pdf_path: str | Path | None = None) -> Previe
             app.Quit()
 
 
-def export_slide_images(pptx_path: str | Path, out_dir: str | Path, width: int = 1280) -> list[Path]:
+def export_slide_images(pptx_path: str | Path, out_dir: str | Path, width: int = 1280, attempts: int = 2) -> list[Path]:
     """Exports one PNG per slide through PowerPoint; raises RuntimeError when that is not possible."""
+    # PowerPoint rejects automation calls while it shows a dialog, so a second attempt often succeeds.
+    for attempt in range(1, attempts + 1):
+        try:
+            return _export_slide_images(pptx_path, out_dir, width)
+        except RuntimeError:
+            if attempt == attempts:
+                raise
+            time.sleep(1.5)
+    return []
+
+
+def _export_slide_images(pptx_path: str | Path, out_dir: str | Path, width: int) -> list[Path]:
     try:
         import win32com.client  # type: ignore
     except ImportError as exc:
@@ -61,6 +74,10 @@ def export_slide_images(pptx_path: str | Path, out_dir: str | Path, width: int =
     app = None
     presentation = None
     try:
+        # Server frameworks call this from worker threads, which need their own COM initialisation.
+        import pythoncom  # type: ignore
+
+        pythoncom.CoInitialize()
         app = win32com.client.Dispatch("PowerPoint.Application")
         app.DisplayAlerts = PP_ALERTS_NONE
         presentation = app.Presentations.Open(str(path), ReadOnly=True, Untitled=False, WithWindow=False)

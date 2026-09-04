@@ -45,7 +45,7 @@ def test_export_slide_images_raises_on_unreadable_file(tmp_path):
     bad = tmp_path / "bad.pptx"
     bad.write_bytes(b"not a deck")
     with pytest.raises(RuntimeError):
-        export_slide_images(bad, tmp_path / "png")
+        export_slide_images(bad, tmp_path / "png", attempts=1)
 
 
 def test_preview_rows_describe_each_field(sample_deck):

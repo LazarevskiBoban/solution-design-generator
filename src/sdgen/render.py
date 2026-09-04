@@ -81,7 +81,8 @@ def render(
         mode = mode or missing
         if value is None or value == "" or value == []:
             if mode == "keep" or spec.kind == "image":
-                issues.append(RenderIssue(field=spec.key, message="no value; template content left in place"))
+                level = "info" if spec.kind == "image" else "warning"
+                issues.append(RenderIssue(level=level, field=spec.key, message="no value; template content left in place"))
                 continue
             if mode == "blank":
                 value = [] if spec.kind == "table" else ""

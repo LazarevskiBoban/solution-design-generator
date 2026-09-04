@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 import tempfile
@@ -460,9 +461,10 @@ def design_page() -> None:
                 pictures = [p.read_bytes() for p in export_slide_images(output, output.parent / "png")]
             _preview_dialog(pictures, notes)
         except RuntimeError as exc:
+            logging.getLogger("sdgen.ui").warning("slide preview fell back to the table: %s", exc)
             fields, _ = _render_fields(design, entry)
             rows = preview_rows(blueprint, manifest, Content(fields=fields), design.modes)
-            _preview_table_dialog(rows, [f"Slide pictures are not available ({exc}); this is what each slide will contain."] + notes)
+            _preview_table_dialog(rows, [f"Slide pictures are not available: {exc}. This is what each slide will contain."] + notes)
     if generate:
         drafted_now = False
         if not design.llm and provider != "mock" and not design.brief.is_empty:
@@ -578,7 +580,9 @@ def _preview_dialog(pictures: list[bytes], notes: list[str]) -> None:
 
 @st.dialog("Slide preview", width="large")
 def _preview_table_dialog(rows: list[dict], notes: list[str]) -> None:
-    for note in notes:
+    if notes:
+        st.error(notes[0])
+    for note in notes[1:]:
         st.warning(note)
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
