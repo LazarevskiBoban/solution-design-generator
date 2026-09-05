@@ -74,6 +74,17 @@ def test_reanalyze_keeps_section_and_field_edits(tmp_path, sample_deck):
         registry.reanalyze("demo")
 
 
+def test_carry_fields_tells_token_fields_on_one_shape_apart():
+    from sdgen.registry import _carry_fields
+
+    def token(key, name):
+        return FieldSpec(key=key, label=key, bindings=[Binding(slide=5, shape=ShapeRef(id=24), mode="token", token="{{" + name + "}}")])
+
+    stored = Manifest(name="t", fields=[token("internal_effort", "internal_effort"), token("external_effort", "external_effort")])
+    fresh = Manifest(name="t", fields=[token("initiative_1", "internal_effort"), token("initiative_2", "external_effort")])
+    assert [f.key for f in _carry_fields(fresh, stored).fields] == ["internal_effort", "external_effort"]
+
+
 def test_remove_deletes_the_template_folder(tmp_path, sample_deck):
     registry = Registry(tmp_path / "templates")
     registry.add("demo", sample_deck, Manifest(name="demo"), tokenize=False)

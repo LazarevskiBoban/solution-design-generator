@@ -135,14 +135,14 @@ class Registry:
 
 def _carry_fields(fresh: Manifest, stored: Manifest) -> Manifest:
     """Fresh analysis with the keys, labels and prefixes the user gave the same shapes before."""
-    by_shape = {(b.slide, b.shape.id): f for f in stored.fields for b in f.bindings}
+    by_place = {_place(b): f for f in stored.fields for b in f.bindings}
     used: set[str] = set()
     fields = []
     for spec in fresh.fields:
-        match = next((by_shape[(b.slide, b.shape.id)] for b in spec.bindings if (b.slide, b.shape.id) in by_shape), None)
+        match = next((by_place[_place(b)] for b in spec.bindings if _place(b) in by_place), None)
         if match is not None and match.key not in used:
-            prefixes = {(b.slide, b.shape.id): b.keep_prefix for b in match.bindings}
-            bindings = [b.model_copy(update={"keep_prefix": prefixes.get((b.slide, b.shape.id), b.keep_prefix)}) for b in spec.bindings]
+            prefixes = {_place(b): b.keep_prefix for b in match.bindings}
+            bindings = [b.model_copy(update={"keep_prefix": prefixes.get(_place(b), b.keep_prefix)}) for b in spec.bindings]
             spec = spec.model_copy(update={"key": match.key, "label": match.label, "bindings": bindings})
         elif spec.key in used:
             spec = spec.model_copy(update={"key": _free_key(spec.key, used)})
@@ -170,6 +170,11 @@ def _carry_sections(fresh: Blueprint, stored: Blueprint) -> Blueprint:
         used.add(section.key)
         sections.append(section)
     return fresh.model_copy(update={"sections": sections})
+
+
+def _place(binding) -> tuple:
+    """Where a binding lives; token bindings share a shape, so the token tells them apart."""
+    return (binding.slide, binding.shape.id, binding.token if binding.mode == "token" else None)
 
 
 def _free_key(key: str, used: set[str]) -> str:
