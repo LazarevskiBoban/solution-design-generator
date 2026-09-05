@@ -17,7 +17,10 @@ EXAMPLE_CHARS = 400
 FENCE_RE = re.compile(r"^```(?:markdown|md)?\s*\n(.*?)\n```\s*$", re.DOTALL)
 NUMBER_RE = re.compile(r"\d[\d,.]*\s?%?")
 INTEGRATION_RE = re.compile(r"integration|architecture|mapping|flow|interface|api|duplicate|file|format", re.IGNORECASE)
-QUALITY_RE = re.compile(r"deviation|success|criteria|report|analytic|effort|decision|acceptance|operation|test|risk", re.IGNORECASE)
+QUALITY_RE = re.compile(r"deviation|success|criteria|report|analytic|effort|decision|acceptance|operation|test|risk|build", re.IGNORECASE)
+SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
+MIN_DUPLICATE_WORDS = 8
+CHARS_PER_WORD = 6
 
 SYSTEM_PROMPT = """You are a senior SAP integration solution architect writing a solution-design document
 that developers will build and test from.
@@ -29,14 +32,21 @@ and in the same order, replace each <!-- hint --> with the content, and add noth
 headings, no commentary, no code fence.
 Under a heading: one paragraph per line; bullet lines start with "- " and are indented two spaces
 per level; use **bold** sparingly; do not repeat the field label at the start of the content.
-Each field states a character target: write between 70 and 100 percent of it, using the
-structure shown for the field. Fields marked as a few words get at most four words.
+Write sharp and short. Each field states a character target: write between 50 and 85 percent
+of it and never more, using the structure shown for the field. One idea per bullet, at most six
+bullets per field, at most fifteen words per bullet, no nested bullets unless the structure shows
+them. Prose: at most three sentences per paragraph; no filler such as "the design must ensure
+that" or "it is important to note". Fields marked as a few words get at most four words.
+Overview fields summarise for management: what, why and with which systems. Developer detail
+(steps, checks, parameters, cut-off times, naming) goes to the build notes field when the
+skeleton has one, never into an overview.
 A table keeps its header row and gets one row per entry, at least one row, with exactly the
-listed columns. Never write the same content into two fields."""
+listed columns. Never write the same sentence into two fields; each field adds something new."""
 
 ROUTING = {
     "overview": [
         "Business need follows the structure of the earlier document (problem, expected outcome, status) and uses the volumes from the facts.",
+        "Executive overview boxes are the management summary: three to five sentences each, no parameter lists.",
         "Solution overview labels each system keep, change or new, taken from the systems fact.",
         "Landscape fields list platforms and systems, not process steps.",
         "Scope rows use the counterparts, countries and company codes from the facts. If the facts name no counterparts, write one row with [TBC: names] and never use example company names.",
@@ -52,6 +62,7 @@ ROUTING = {
         "Success criteria and measures: one row per measurable target from the facts and the acceptance criteria; no invented percentages.",
         "Decisions and open questions come from the decisions log and the investigation details, numbered.",
         "Operations and error handling come from the operations text.",
+        "Build notes hold what a developer needs that fits nowhere else: file naming, cut-off times, reprocessing steps, configuration keys, as short labelled paragraphs (Label: text).",
     ],
 }
 
@@ -85,7 +96,8 @@ def draft_content(
     sections = writable_sections(blueprint, manifest, exclude=set(fixed.fields), skip_sections=skip_sections)
     content = Content(fields=dict(fixed.fields))
     calls = 0
-    for group, members in group_sections(sections):
+    groups = group_sections(sections)
+    for group, members in groups:
         system, user = build_prompt(brief, blueprint, manifest, include_context=_wants_context(llm), sections=members, group=group)
         drafted = _parse(llm.complete(system, user), manifest)
         calls += 1
@@ -107,11 +119,14 @@ def draft_content(
                 repaired = _parse(llm.complete(system, user), manifest)
                 calls += 1
                 content.fields.update({k: v for k, v in repaired.fields.items() if k in missing})
+    if repair:
+        calls += _repair_duplicates(brief, blueprint, manifest, llm, groups, content)
     strip_label_prefixes(content, manifest)
     if brief.subject.strip():
         content.globals["subject"] = brief.subject.strip()
     warnings = [w for w in validate_content(content, manifest) if "image" not in w]
     warnings += number_warnings(content, brief, manifest)
+    warnings += duplicate_warnings(content)
     return DraftResult(
         markdown=dump_markdown(content, manifest),
         content=content,
@@ -212,7 +227,7 @@ def answer_skeleton(brief: Brief, sections: list[dict]) -> str:
             if field["token"]:
                 hint += ", a few words only, it replaces a short placeholder"
             elif field["max_chars"]:
-                hint += f", target {field['max_chars']} characters (write 70 to 100 percent of it)"
+                hint += f", target {field['max_chars']} characters (about {max(1, field['max_chars'] // CHARS_PER_WORD)} words; write 50 to 85 percent of it)"
             if field["guidance"]:
                 hint += f". {field['guidance']}"
             lines.append(f"## {field['key']}")
@@ -313,6 +328,51 @@ def number_warnings(content: Content, brief: Brief, manifest: Manifest) -> list[
         if strange:
             warnings.append(f"field '{key}' ({spec.label}) uses numbers not found in the brief: {', '.join(strange[:5])}")
     return warnings
+
+
+def duplicate_fields(content: Content) -> dict[str, str]:
+    """Fields that repeat a sentence of an earlier field, mapped to that field."""
+    seen: dict[str, str] = {}
+    repeats: dict[str, str] = {}
+    for key, value in content.fields.items():
+        for sentence in _sentences_of(value):
+            normalised = " ".join(sentence.lower().split())
+            if len(normalised.split()) < MIN_DUPLICATE_WORDS:
+                continue
+            owner = seen.setdefault(normalised, key)
+            if owner != key:
+                repeats.setdefault(key, owner)
+    return repeats
+
+
+def duplicate_warnings(content: Content) -> list[str]:
+    return [f"field '{key}' repeats a sentence of '{owner}'" for key, owner in duplicate_fields(content).items()]
+
+
+def _sentences_of(value) -> list[str]:
+    if isinstance(value, list):
+        texts = [str(v) for row in value if isinstance(row, dict) for v in row.values()]
+    elif isinstance(value, str):
+        texts = [line.lstrip("-*• ").strip() for line in value.splitlines()]
+    else:
+        return []
+    return [s.strip() for text in texts for s in SENTENCE_RE.split(text) if s.strip()]
+
+
+def _repair_duplicates(brief: Brief, blueprint: Blueprint, manifest: Manifest, llm: LLMClient, groups: list, content: Content) -> int:
+    """One call per group whose fields repeat another field; returns the number of calls made."""
+    repeats = duplicate_fields(content)
+    calls = 0
+    for group, members in groups:
+        keys = {k for k in repeats if any(k == f["key"] for s in members for f in s["fields"])}
+        if not keys:
+            continue
+        note = "A previous answer repeated sentences across fields. Rewrite exactly these fields so each adds something new: " + "; ".join(f"{k} repeats {repeats[k]}" for k in sorted(keys)) + "."
+        system, user = build_prompt(brief, blueprint, manifest, include_context=_wants_context(llm), sections=_restrict(members, keys), group=group, note=note)
+        repaired = _parse(llm.complete(system, user), manifest)
+        calls += 1
+        content.fields.update({k: v for k, v in repaired.fields.items() if k in keys})
+    return calls
 
 
 def strip_label_prefixes(content: Content, manifest: Manifest) -> None:

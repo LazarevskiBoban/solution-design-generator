@@ -140,3 +140,14 @@ def test_extras_avoid_the_version_control_slide_as_prototype(sample_deck, tmp_pa
     )
     assert _prototype(blueprint, "table", ["Ref", "Scenario", "Expected result", "Evidence"], manifest) == "criteria"
     assert _prototype(blueprint, "table", ["Ref", "Item", "Owner", "Status", "Due", "Notes", "Risk", "Link"], manifest) == "effort"
+
+
+def test_build_notes_extra_is_a_text_slide(sample_deck, tmp_path):
+    entry = _template(sample_deck, tmp_path)
+    first = entry.blueprint.sections[0]
+    llm = _JsonLLM({"decisions": [], "extras": [{"key": "build_notes", "title": "Build Notes", "kind": "text", "columns": [], "before": ""}]})
+    plan = plan_sections(BRIEF, entry.blueprint, entry.manifest, llm)
+    extra = plan.extras[0]
+    assert extra.key == "extra_build_notes" and extra.kind == "text" and extra.columns == [] and extra.prototype == first.key
+    assert "build notes" in llm.prompts[0][0].lower()
+

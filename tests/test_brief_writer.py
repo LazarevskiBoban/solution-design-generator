@@ -183,7 +183,7 @@ def test_prompt_lists_sections_fields_and_brief(sample_deck, tmp_path):
     keys = {f["key"] for f in sections[0]["fields"]}
     assert keys == {"business_need", "scope", "first_point"}
     system, user = build_prompt(BRIEF, entry.blueprint, entry.manifest)
-    assert "instead of inventing" in system and "skeleton" in system and "70 and 100 percent" in system
+    assert "instead of inventing" in system and "skeleton" in system and "50 and 85 percent" in system
     assert "## Executive Overview (" in user
     fields_line = next(line for line in user.splitlines() if line.startswith("Fields: "))
     assert set(fields_line[8:].split(", ")) == keys
@@ -287,7 +287,7 @@ def test_draft_repairs_missing_fields_and_flags_numbers(sample_deck, tmp_path):
     assert "left these fields empty" in llm.prompts[1] and "## first_point" in llm.prompts[1] and "## business_need" not in llm.prompts[1]
     assert any("80%" in w and "business_need" in w for w in result.warnings)
     assert "# Facts" in llm.prompts[0] and "# How to use the brief" in llm.prompts[0] and "target 2450" not in llm.prompts[0]
-    assert "write 70 to 100 percent" in llm.prompts[0]
+    assert "write 50 to 85 percent" in llm.prompts[0]
 
 
 def test_example_outline_keeps_structure():
@@ -395,3 +395,22 @@ def test_draft_content_writes_extra_sections(sample_deck, tmp_path):
     rows = result.content.fields["extra_acceptance"]
     assert isinstance(rows, list) and rows and set(rows[0]) == {"Ref", "Scenario"}
     assert "## extra_acceptance" in result.markdown
+
+
+def test_duplicate_sentences_across_fields_are_reported():
+    from sdgen.content import Content
+    from sdgen.writer import duplicate_fields, duplicate_warnings
+
+    shared = "The lockbox file arrives daily from three banks and is posted automatically in the morning run."
+    content = Content(fields={"a": shared + " More here.", "b": "- " + shared, "c": [{"Ref": "1", "Text": shared}], "d": "Short one."})
+    assert duplicate_fields(content) == {"b": "a", "c": "a"}
+    assert duplicate_warnings(content) == ["field 'b' repeats a sentence of 'a'", "field 'c' repeats a sentence of 'a'"]
+
+
+def test_skeleton_states_words_and_the_budget_band():
+    from sdgen.brief import Brief
+    from sdgen.writer import answer_skeleton
+
+    section = {"title": "S", "fields": [{"key": "k", "label": "L", "kind": "text", "token": False, "max_chars": 300, "guidance": "", "columns": []}]}
+    assert "target 300 characters (about 50 words; write 50 to 85 percent of it)" in answer_skeleton(Brief(subject="X"), [section])
+

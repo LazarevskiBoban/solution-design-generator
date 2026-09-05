@@ -25,6 +25,7 @@ EXTRA_DEFAULTS = {
     "acceptance_criteria": ("Acceptance Criteria and Test Scenarios", "table", ["Ref", "Scenario", "Expected result", "Evidence"]),
     "operations": ("Error Handling, Monitoring and Operations", "text", []),
     "decisions_log": ("Decisions and Open Questions", "table", ["Ref", "Question or decision", "Owner", "Status"]),
+    "build_notes": ("Build Notes", "text", []),
 }
 
 PLAN_SCHEMA = {
@@ -98,8 +99,10 @@ When several sections share a title, the template repeats a slide type; keep onl
 of them as the brief needs and mark the rest not used, so the document has no duplicates.
 Propose extra slides only when the brief has content for them: an acceptance criteria table
 (columns Ref, Scenario, Expected result, Evidence), an operations text slide, a decisions and
-open questions table (columns Ref, Question or decision, Owner, Status). Place extras before
-the effort estimation.
+open questions table (columns Ref, Question or decision, Owner, Status), and a build notes text
+slide (key build_notes) for developer detail such as file naming, cut-off times, reprocessing
+steps and configuration keys, when the brief carries operations, investigation or non-functional
+detail. Place extras before the effort estimation.
 For every diagram section in use without an uploaded image, add a flow entry with the title
 and purpose of the diagram to draw from the brief.
 The outline may end with template texts that belong to no field. List in "clear" the ones
@@ -417,6 +420,10 @@ def _prototype(blueprint: Blueprint, kind: str, columns: list[str] | None = None
             if spec is None or VERSION_TITLE_RE.search(" ".join(spec.columns)):
                 continue
             score = abs(len(spec.columns) - len(columns or [])) if columns else 0
+        elif manifest is not None:
+            # The roomiest text box makes the best prototype for a text slide.
+            spec = next((manifest.field(k) for k in section.fields if manifest.field(k) and manifest.field(k).kind in ("text", "bullets")), None)
+            score = -max((b.max_chars or 0) for b in spec.bindings) if spec is not None and spec.bindings else 0
         if best_score is None or score < best_score:
             best, best_score = section.key, score
     return best or next((s.key for s in blueprint.sections if s.kind == "composite"), "")
