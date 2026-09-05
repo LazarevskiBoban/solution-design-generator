@@ -22,7 +22,7 @@ from sdgen.mapping.model import MappingEntry, MappingSet, SourceSpec, TargetSpec
 from sdgen.mapping.workbook import write_workbook
 from sdgen.flow import plan_flows, to_mermaid
 from sdgen.plan import SOURCES, FlowRequest, SectionDecision, SectionPlan, active_extras, apply_plan, extended_blueprint, extended_manifest, extra_slides, leftover_texts, plan_sections
-from sdgen.preview import export_slide_images
+from sdgen.preview import export_slides
 from sdgen.registry import Registry, safe_name
 from sdgen.tools import AnalyzeRequest, RenderRequest, analyze_template, continuation_slides, render_document
 from sdgen.writer import draft_content, extract_facts, redraft_section, writable_sections
@@ -555,9 +555,13 @@ def design_page() -> None:
         if preview_clicked:
             output, response = _render_design(entry, store, design, subject, name, missing)
             notes = [str(i) for i in response.issues if not str(i).startswith("info")]
+            overflows: dict[int, list[str]] = {}
             try:
                 with st.spinner("Rendering slide pictures with PowerPoint."):
-                    pictures: list = [p.read_bytes() for p in export_slide_images(output, output.parent / "png")]
+                    exported = export_slides(output, output.parent / "png", interest=_overflow_interest(entry, response))
+                pictures: list = [p.read_bytes() for p in exported.files]
+                for item in exported.overflows:
+                    overflows.setdefault(item.slide, []).append(item.shape)
             except RuntimeError as exc:
                 logging.getLogger("sdgen.ui").warning("slide preview without pictures: %s", exc)
                 notes.insert(0, f"Slide pictures are not available: {exc}. The board shows the slide texts instead.")
@@ -567,7 +571,7 @@ def design_page() -> None:
             keys = response.slide_keys or [""] * len(response.slide_map)
             current, _ = _render_fields(design, entry)
             entries = []
-            for number, slide_key, png in zip(response.slide_map, keys, pictures):
+            for position, (number, slide_key, png) in enumerate(zip(response.slide_map, keys, pictures), 1):
                 section = by_key.get(slide_key) if slide_key else by_slide.get(number)
                 entries.append(
                     {
@@ -575,9 +579,10 @@ def design_page() -> None:
                         "title": design.titles.get(section.key, section.title) if section else f"Slide {number}",
                         "png": png,
                         "text": _slide_text(section, current) if section else "",
+                        "overflow": overflows.get(position, []),
                     }
                 )
-            st.session_state[f"{state_key}:board"] = (entries, notes)
+            st.session_state[f"{state_key}:board"] = (entries, _with_overflow_note(entries, notes))
             st.session_state.pop(f"{state_key}:stale", None)
             st.session_state[f"{state_key}:viewer"] = 0
             _slide_viewer(state_key, entry)
@@ -761,6 +766,8 @@ def _slide_viewer(state_key: str, entry) -> None:
             st.write(item["text"] or "No text on this slide yet.")
             st.caption("No picture for this slide yet. Press Refresh slide.")
     st.caption(f"Slide {index + 1} of {len(shown)}: {item['title']}" + (". Edited since the picture was taken, press Refresh slide." if item["section"] in stale else ""))
+    if item.get("overflow"):
+        st.error("PowerPoint lays out more text than fits the box: " + ", ".join(item["overflow"]) + ". Shorten the text or split it.")
     if section is None:
         return
 
@@ -865,9 +872,12 @@ def _refresh_section_pictures(state_key: str, entry, design: Design, store: Desi
     targets = [i for i, (number, k) in enumerate(zip(response.slide_map, keys), 1) if (k == key if is_extra else (not k and number == section.slide))]
     entries, notes = st.session_state[f"{state_key}:board"]
     pictures: dict[int, bytes] = {}
+    overflows: dict[int, list[str]] = {}
     try:
-        files = export_slide_images(output, output.parent / "png", only=targets)
-        pictures = {target: f.read_bytes() for target, f in zip(targets, files)}
+        exported = export_slides(output, output.parent / "png", only=targets, interest=_overflow_interest(entry, response))
+        pictures = {target: f.read_bytes() for target, f in zip(targets, exported.files)}
+        for item in exported.overflows:
+            overflows.setdefault(item.slide, []).append(item.shape)
         notes = [n for n in notes if not n.startswith("Slide pictures")]
     except RuntimeError as exc:
         logging.getLogger("sdgen.ui").warning("slide picture refresh failed: %s", exc)
@@ -879,7 +889,7 @@ def _refresh_section_pictures(state_key: str, entry, design: Design, store: Desi
         slide_section = by_key.get(k) if k else by_slide.get(number)
         slide_key = slide_section.key if slide_section else f"slide-{number}"
         if slide_key == key:
-            rebuilt.append({"section": key, "title": design.titles.get(key, section.title), "png": pictures.get(position), "text": _slide_text(section, current)})
+            rebuilt.append({"section": key, "title": design.titles.get(key, section.title), "png": pictures.get(position), "text": _slide_text(section, current), "overflow": overflows.get(position, [])})
             continue
         match = next((e for e in cached if e["section"] == slide_key), None)
         if match is not None:
@@ -888,10 +898,28 @@ def _refresh_section_pictures(state_key: str, entry, design: Design, store: Desi
         else:
             rebuilt.append({"section": slide_key, "title": slide_section.title if slide_section else f"Slide {number}", "png": None, "text": _slide_text(slide_section, current) if slide_section else ""})
     rebuilt.extend(cached)
-    st.session_state[f"{state_key}:board"] = (rebuilt, notes)
+    st.session_state[f"{state_key}:board"] = (rebuilt, _with_overflow_note(rebuilt, notes))
     stale = set(st.session_state.get(f"{state_key}:stale", set()))
     stale.discard(key)
     st.session_state[f"{state_key}:stale"] = stale
+
+
+def _overflow_interest(entry, response) -> dict[int, set[str]]:
+    """The filled text boxes on each output slide, so the overflow check ignores untouched template shapes."""
+    by_slide: dict[int, set[str]] = {}
+    for spec in entry.manifest.fields:
+        if spec.kind == "image":
+            continue
+        for binding in spec.bindings:
+            if binding.mode == "replace" and binding.shape.name:
+                by_slide.setdefault(binding.slide, set()).add(binding.shape.name)
+    return {position: by_slide.get(number, set()) for position, number in enumerate(response.slide_map, 1)}
+
+
+def _with_overflow_note(entries: list[dict], notes: list[str]) -> list[str]:
+    kept = [n for n in notes if not n.startswith("Text overflows")]
+    count = sum(1 for e in entries if e.get("overflow"))
+    return kept + ([f"Text overflows its box on {count} slide(s); the viewer names the boxes in red under those slides."] if count else [])
 
 
 def _section_order(design: Design, blueprint: Blueprint) -> list[str]:

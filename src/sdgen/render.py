@@ -89,6 +89,7 @@ def render(
     prototypes = set(manifest.slides.prototypes.values())
     if continue_on is not None:
         prototypes |= set(continue_on)
+    theme = theme_fonts(slides[0].part) if slides else ("Arial", "Arial")
 
     for spec in manifest.globals:
         value = content.globals.get(spec.key, "")
@@ -109,6 +110,7 @@ def render(
             continue
         current = shape.text_frame.text
         set_rich_text(shape, f"{title.strip()}: {subject}" if subject and subject in current else title.strip())
+        fit_text_shape(shape, theme=theme)
 
     # Cleared before anything is filled or copied, so continuation copies inherit the cleared state.
     for number, shape_id in clear_shapes or []:
@@ -124,7 +126,6 @@ def render(
     skipped_slides = hidden_slides | {n for n in manifest.slides.exclude if 1 <= n <= len(slides)}
     drawn = _draw_flows(slides, manifest, content, flows or {}, skipped_slides, issues)
     kept = {k for k, m in (field_modes or {}).items() if m == "keep"} | {f.key for f in manifest.fields if f.static}
-    theme = theme_fonts(slides[0].part) if slides else ("Arial", "Arial")
     layouts = _layouts(prs, slides, manifest, skipped_slides, issues)
     pending: dict[int, dict] = {}
     for spec in manifest.fields:
@@ -235,6 +236,7 @@ def _add_extras(prs, slides: list, extras: list[ExtraSlide], subject: str, issue
         if title_shape is not None:
             current = title_shape.text_frame.text
             set_rich_text(title_shape, f"{extra.title}: {subject}" if subject and subject in current else extra.title)
+            fit_text_shape(title_shape, theme=theme)
         shape = find_shape(clone, binding.shape.id)
         copies: list = []
         if shape is None:
