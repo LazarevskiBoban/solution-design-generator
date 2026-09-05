@@ -1,4 +1,5 @@
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,8 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     app.text_input(key="design_name:demo").input("CAMT 053").run()
     state_key = "design:demo:camt-053"
     assert state_key in app.session_state
+    steps = [e.label.split(":")[0] for e in app.expander if e.label[:1].isdigit()]
+    assert steps[:3] == ["1. Brief", "2. Section plan", "3. Write the slides"] and steps[-2:] == ["5. Review sections", "6. Generate"]
 
     app.text_input(key=f"{state_key}:0:b:subject").input("Lockbox Integration")
     app.text_area(key=f"{state_key}:0:b:about").input("Bank statements arrive daily. They must be posted automatically.")
@@ -61,6 +64,9 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     assert "[Draft] Bank statements" in design.content_markdown
     assert any(s.value.startswith("Drafted 3 of 3 fields with mock") for s in app.success)
     assert (tmp_path / "designs" / "camt-053" / "content.md").is_file()
+    labels = [e.label for e in app.expander]
+    assert "3. Write the slides: written with mock" in labels
+    assert any(re.fullmatch(r"5\. Review sections: (\d+) of \1 written", label) for label in labels)
 
     app.button(key=f"{state_key}:generate").click().run()
     assert not app.exception
@@ -118,6 +124,10 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     assert [e["section"] for e in ui._visible_entries(entries, fresh, blueprint)] == keys
     fresh.hidden = [keys[1]]
     assert [e["section"] for e in ui._visible_entries(entries, fresh, blueprint)] == [keys[0]]
+    twice = entries + [dict(entries[0])]
+    assert [e["title"] for e in ui._visible_entries(twice, fresh, blueprint)] == ["A", "A (cont.)"]
+    assert ui.SHORTCUTS == {"previous": "Left", "next": "Right", "up": "Up", "down": "Down", "hide": "Delete"}
+    assert "max-height" in ui.VIEWER_CSS and ui._write_title(fresh) == "3. Write the slides"
 
     ui._delete_design(DesignStore(tmp_path / "designs"), "demo", "camt-053")
     assert not (tmp_path / "designs" / "camt-053").exists()
