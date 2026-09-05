@@ -4,10 +4,12 @@ import copy
 import re
 
 from lxml import etree
+from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from pptx.oxml.ns import qn
 from pydantic import BaseModel, Field
 
 from sdgen.inventory import walk_shapes
+from sdgen.textmetrics import FontSpec, capacity_chars, line_height_pt, wrapped_lines
 
 BULLET_RE = re.compile(r"^(\s*)[-*•]\s+(.*)$")
 INLINE_RE = re.compile(r"(\*\*[^*]+\*\*|\*[^*\s][^*]*\*)")
@@ -339,37 +341,92 @@ def _first(items, predicate):
 
 
 EMU_PER_PT = 12700
-CHAR_WIDTH_EM = 0.55
-LINE_HEIGHT_EM = 1.3
-PARAGRAPH_GAP_EM = 0.35
 MIN_FONT_SCALE = 0.8
 DEFAULT_FONT_PT = 14.0
+DEFAULT_INSETS_EMU = (91440, 45720, 91440, 45720)  # left, top, right, bottom
+A_NS = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
 
 
-def fit_text_shape(shape, default_pt: float = DEFAULT_FONT_PT) -> float:
-    """Estimates whether the text overflows its box and stores a PowerPoint font scale so it shrinks to fit.
+class Measurement(BaseModel):
+    needed_pt: float
+    usable_width_pt: float
+    usable_height_pt: float
+    lines: int
+
+    @property
+    def ratio(self) -> float:
+        return self.needed_pt / self.usable_height_pt if self.usable_height_pt > 0 else 0.0
+
+
+def theme_fonts(part) -> tuple[str, str]:
+    """(major, minor) latin typefaces behind a slide part; Arial when the theme cannot be read."""
+    try:
+        theme = part.slide_layout.slide_master.part.part_related_by(RT.THEME)
+        root = etree.fromstring(theme.blob)
+    except Exception:
+        return ("Arial", "Arial")
+    major = root.find(".//a:majorFont/a:latin", A_NS)
+    minor = root.find(".//a:minorFont/a:latin", A_NS)
+    return ((major.get("typeface") if major is not None else None) or "Arial", (minor.get("typeface") if minor is not None else None) or "Arial")
+
+
+def measure_shape(shape, default_pt: float = DEFAULT_FONT_PT, theme: tuple[str, str] | None = None) -> Measurement | None:
+    """Height the text needs against the height the box offers, with the deck fonts and paragraph spacing."""
+    if not getattr(shape, "has_text_frame", False) or shape.width is None or shape.height is None:
+        return None
+    frame = shape.text_frame
+    usable_w, usable_h = _usable_pt(shape, frame)
+    if usable_w <= 0 or usable_h <= 0:
+        return None
+    theme = theme or theme_fonts(shape.part)
+    tx_body = frame._txBody
+    needed, lines = 0.0, 0
+    for paragraph in frame.paragraphs:
+        p = paragraph._p
+        ppr = p.find(qn("a:pPr"))
+        spec = _font_spec(p, default_pt, theme, tx_body)
+        if ppr is not None and ppr.get("marL"):
+            indent = int(ppr.get("marL")) / EMU_PER_PT
+        else:
+            indent = DEFAULT_INDENT_EMU * (paragraph.level + 1) / EMU_PER_PT if _has_bullet(p) else 0.0
+        text = " ".join(paragraph.text.split())
+        count = wrapped_lines(text, usable_w - indent, spec) if text else 1
+        lines += count
+        needed += count * line_height_pt(spec, _spacing_pct(ppr)) + _space_pt(ppr, "a:spcBef", spec.size_pt) + _space_pt(ppr, "a:spcAft", spec.size_pt)
+    return Measurement(needed_pt=needed, usable_width_pt=usable_w, usable_height_pt=usable_h, lines=lines)
+
+
+def overflow_ratio(shape, theme: tuple[str, str] | None = None) -> float:
+    measure = measure_shape(shape, theme=theme)
+    return measure.ratio if measure is not None else 0.0
+
+
+def capacity_chars_of(shape, theme: tuple[str, str] | None = None, prefix_len: int = 0, default_pt: float = DEFAULT_FONT_PT) -> int | None:
+    """Characters that fit the box comfortably, judged by the font and spacing of its first paragraph."""
+    if not getattr(shape, "has_text_frame", False) or shape.width is None or shape.height is None:
+        return None
+    frame = shape.text_frame
+    usable_w, usable_h = _usable_pt(shape, frame)
+    if usable_w <= 0 or usable_h <= 0:
+        return 0
+    theme = theme or theme_fonts(shape.part)
+    p = frame.paragraphs[0]._p
+    ppr = p.find(qn("a:pPr"))
+    spec = _font_spec(p, default_pt, theme, frame._txBody)
+    return capacity_chars(usable_w, usable_h, spec, _spacing_pct(ppr), _space_pt(ppr, "a:spcAft", spec.size_pt), prefix_len)
+
+
+def fit_text_shape(shape, default_pt: float = DEFAULT_FONT_PT, theme: tuple[str, str] | None = None) -> float:
+    """Measures whether the text overflows its box and stores a PowerPoint font scale so it shrinks to fit.
 
     PowerPoint only recomputes shrink-to-fit when a user edits the text, so the scale is written explicitly.
     Returns the scale applied (1.0 when the text fits).
     """
-    if not getattr(shape, "has_text_frame", False) or shape.width is None or shape.height is None:
+    measure = measure_shape(shape, default_pt, theme)
+    if measure is None:
         return 1.0
-    frame = shape.text_frame
-    font_pt = _font_pt(frame) or default_pt
-    usable_width = shape.width - (frame.margin_left or 0) - (frame.margin_right or 0)
-    usable_height = shape.height - (frame.margin_top or 0) - (frame.margin_bottom or 0)
-    if usable_width <= 0 or usable_height <= 0:
-        return 1.0
-    per_line = max(8, int(usable_width / (font_pt * CHAR_WIDTH_EM * EMU_PER_PT)))
-    lines = 0
-    for paragraph in frame.paragraphs:
-        text = " ".join(paragraph.text.split())
-        indent = 3 * (paragraph.level or 0) + 2
-        lines += max(1, -(-(len(text) + indent) // per_line)) if text else 1
-    paragraphs = max(1, len(frame.paragraphs))
-    needed = (lines * LINE_HEIGHT_EM + (paragraphs - 1) * PARAGRAPH_GAP_EM) * font_pt * EMU_PER_PT
-    scale = 1.0 if needed <= usable_height else max(MIN_FONT_SCALE, usable_height / needed)
-    body = frame._txBody.bodyPr
+    scale = 1.0 if measure.needed_pt <= measure.usable_height_pt else max(MIN_FONT_SCALE, measure.usable_height_pt / measure.needed_pt)
+    body = shape.text_frame._txBody.bodyPr
     existing = body.find(qn("a:normAutofit"))
     if scale >= 1.0 and existing is None:
         return 1.0
@@ -384,15 +441,55 @@ def fit_text_shape(shape, default_pt: float = DEFAULT_FONT_PT) -> float:
     return scale
 
 
-def _font_pt(frame) -> float | None:
-    for paragraph in frame.paragraphs:
-        for run in paragraph.runs:
-            if run.font.size is not None:
-                return run.font.size.pt
-        end = paragraph._p.find(qn("a:endParaRPr"))
-        if end is not None and end.get("sz"):
-            return int(end.get("sz")) / 100
-    return None
+def _usable_pt(shape, frame) -> tuple[float, float]:
+    left, top, right, bottom = (
+        frame.margin_left if frame.margin_left is not None else DEFAULT_INSETS_EMU[0],
+        frame.margin_top if frame.margin_top is not None else DEFAULT_INSETS_EMU[1],
+        frame.margin_right if frame.margin_right is not None else DEFAULT_INSETS_EMU[2],
+        frame.margin_bottom if frame.margin_bottom is not None else DEFAULT_INSETS_EMU[3],
+    )
+    return (shape.width - left - right) / EMU_PER_PT, (shape.height - top - bottom) / EMU_PER_PT
+
+
+def _font_spec(p: etree._Element, default_pt: float, theme: tuple[str, str], tx_body=None) -> FontSpec:
+    """Size, weight and typeface of a paragraph: its first run, else the paragraph or list defaults, else the theme."""
+    ppr = p.find(qn("a:pPr"))
+    candidates = [_run_rpr(p), ppr.find(qn("a:defRPr")) if ppr is not None else None]
+    lst = tx_body.find(qn("a:lstStyle")) if tx_body is not None else None
+    if lst is not None:
+        level = int(ppr.get("lvl", "0")) + 1 if ppr is not None else 1
+        lvl = lst.find(qn(f"a:lvl{level}pPr"))
+        candidates.append(lvl.find(qn("a:defRPr")) if lvl is not None else None)
+    present = [c for c in candidates if c is not None]
+    size = next((int(c.get("sz")) / 100 for c in present if c.get("sz")), default_pt)
+    bold = next((c.get("b") == "1" for c in present if c.get("b") is not None), False)
+    latin = next((c.find(qn("a:latin")).get("typeface") for c in present if c.find(qn("a:latin")) is not None and c.find(qn("a:latin")).get("typeface")), "")
+    if latin.startswith("+mj"):
+        family = theme[0]
+    elif not latin or latin.startswith("+mn"):
+        family = theme[1]
+    else:
+        family = latin
+    return FontSpec(family=family, size_pt=size, bold=bold)
+
+
+def _spacing_pct(ppr) -> float:
+    node = ppr.find(qn("a:lnSpc")) if ppr is not None else None
+    pct = node.find(qn("a:spcPct")) if node is not None else None
+    return int(pct.get("val")) / 1000 if pct is not None and pct.get("val") else 100.0
+
+
+def _space_pt(ppr, tag: str, size_pt: float) -> float:
+    node = ppr.find(qn(tag)) if ppr is not None else None
+    if node is None:
+        return 0.0
+    pts = node.find(qn("a:spcPts"))
+    if pts is not None and pts.get("val"):
+        return int(pts.get("val")) / 100
+    pct = node.find(qn("a:spcPct"))
+    if pct is not None and pct.get("val"):
+        return int(pct.get("val")) / 100000 * size_pt
+    return 0.0
 
 
 def _order_body_children(body, autofit) -> None:

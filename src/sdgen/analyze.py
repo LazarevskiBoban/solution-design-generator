@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from sdgen.inventory import DeckInfo, ShapeInfo, SlideInfo
 from sdgen.manifest import Binding, FieldKind, FieldSpec, GlobalSpec, Manifest, ShapeRef, SlideRules
+from sdgen.textmetrics import FontSpec, capacity_chars
 
 LONG_TEXT = 80
 DIAGRAM_LONG_TEXT = 120
@@ -367,12 +368,12 @@ def _max_chars(shape: ShapeInfo, prefix_len: int = 0) -> int | None:
         return None
     size = next((p.font_size for p in shape.paragraphs if p.font_size), None)
     size = size or (PLACEHOLDER_FONT_PT if shape.placeholder_type else DEFAULT_FONT_PT)
-    # Conservative: proportional fonts average about 0.55 em per character, lines take 1.3 em,
-    # and bullets, paragraph spacing and ragged line ends waste roughly a quarter of the box.
-    columns = shape.width * 72 / (0.55 * size)
-    rows = shape.height * 72 / (1.3 * size)
-    estimate = int(columns * rows * 0.7) - prefix_len
-    return max(0, estimate // 10 * 10)
+    name = next((p.font_name for p in shape.paragraphs if p.font_name), None) or "Arial"
+    bold = bool(next((p.bold for p in shape.paragraphs if p.bold is not None), False))
+    spacing = next((p.line_spacing for p in shape.paragraphs if p.line_spacing), None) or 1.0
+    after = next((p.space_after for p in shape.paragraphs if p.space_after), None) or 0.0
+    # Measured against PowerPoint's default insets of 0.1 in left and right, 0.05 in top and bottom.
+    return capacity_chars(shape.width * 72 - 14.4, shape.height * 72 - 7.2, FontSpec(name, size, bold), spacing * 100, after, prefix_len)
 
 
 def _detect_subject(deck: DeckInfo) -> list[GlobalSpec]:

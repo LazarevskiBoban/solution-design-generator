@@ -127,3 +127,22 @@ def test_short_text_under_a_label_is_a_field(tmp_path):
     by_key = {c.key: c for c in analysis.candidates}
     assert by_key["data_architecture"].include and by_key["data_architecture"].reason == "named after nearby label"
     assert not any(c.include for c in analysis.candidates if c.preview.startswith("Just a remark"))
+
+
+def test_max_chars_uses_font_metrics():
+    import pytest
+
+    from sdgen.analyze import _max_chars
+    from sdgen.inventory import ParagraphInfo, ShapeInfo
+    from sdgen.textmetrics import load_font
+
+    def shape(**kw):
+        return ShapeInfo(id=1, name="box", kind="text", left=1, top=1, width=4, height=1.5, paragraphs=[ParagraphInfo(text="x", font_size=10, **kw)])
+
+    arial = _max_chars(shape(font_name="Arial"))
+    assert arial and arial % 10 == 0
+    assert _max_chars(shape(font_name="Arial", line_spacing=1.5)) < arial
+    assert _max_chars(shape(font_name="Arial"), prefix_len=20) == arial - 20
+    if load_font("Arial") is not None:
+        assert _max_chars(shape(font_name="Arial", bold=True)) < arial
+

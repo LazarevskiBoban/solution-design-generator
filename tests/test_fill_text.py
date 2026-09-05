@@ -1,5 +1,6 @@
 import copy
 
+import pytest
 from lxml import etree
 from pptx import Presentation
 from pptx.dml.color import RGBColor
@@ -244,3 +245,24 @@ def test_fit_text_shape_scales_overflowing_text_only():
     assert 0.8 <= scale < 1.0
     autofit = long_box.text_frame._txBody.bodyPr.find(qn("a:normAutofit"))
     assert autofit is not None and int(autofit.get("fontScale")) == int(round(scale * 100000)) and autofit.get("lnSpcReduction") == "10000"
+
+
+def test_measure_shape_uses_theme_fonts_and_spacing():
+    from sdgen.fill.text import capacity_chars_of, fit_text_shape, measure_shape, overflow_ratio, theme_fonts
+
+    prs, slide = _slide()
+    assert theme_fonts(slide.part) == ("Calibri", "Calibri")
+    box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(3), Inches(1))
+    box.text_frame.text = "Integration files arrive daily from three banks and are posted automatically in the morning run."
+    single = measure_shape(box)
+    assert single is not None and single.lines >= 2 and single.usable_width_pt == pytest.approx(3 * 72 - 14.4)
+    assert fit_text_shape(box) == 1.0
+    box.text_frame.paragraphs[0].line_spacing = 2.0
+    double = measure_shape(box)
+    assert double.needed_pt > single.needed_pt * 1.8
+    assert overflow_ratio(box) == pytest.approx(double.ratio)
+    box.text_frame.paragraphs[0].line_spacing = 3.0
+    assert fit_text_shape(box) < 1.0
+    wide = slide.shapes.add_textbox(Inches(1), Inches(3), Inches(6), Inches(2))
+    assert capacity_chars_of(box) is not None and 0 < capacity_chars_of(box) < capacity_chars_of(wide)
+

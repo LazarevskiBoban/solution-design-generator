@@ -26,6 +26,9 @@ class ParagraphInfo(BaseModel):
     has_bullet: bool = False
     bold: bool | None = None
     font_size: float | None = None
+    font_name: str | None = None
+    line_spacing: float | None = None  # multiplier, 1.5 for 150 percent
+    space_after: float | None = None  # points
 
 
 class TableInfo(BaseModel):
@@ -199,13 +202,26 @@ def _paragraph_info(paragraph) -> ParagraphInfo:
     )
     bold = None
     size = None
+    name = None
     for run in paragraph.runs:
         if run.text.strip():
             bold = run.font.bold
             size = run.font.size.pt if run.font.size is not None else None
+            name = run.font.name
             break
+    spacing = paragraph.line_spacing
+    if spacing is not None and not isinstance(spacing, float):
+        spacing = spacing.pt / size if size else None
+    after = paragraph.space_after
     return ParagraphInfo(
-        text=paragraph.text, level=paragraph.level, has_bullet=has_bullet, bold=bold, font_size=size
+        text=paragraph.text,
+        level=paragraph.level,
+        has_bullet=has_bullet,
+        bold=bold,
+        font_size=size,
+        font_name=name,
+        line_spacing=spacing,
+        space_after=after.pt if after is not None else None,
     )
 
 
