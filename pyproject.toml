@@ -28,5 +28,8 @@ sdgen = "sdgen.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+sdgen = ["icons.yaml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

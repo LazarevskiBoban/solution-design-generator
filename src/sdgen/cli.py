@@ -286,3 +286,15 @@ def _resolve_template(template: str, templates: Path) -> TemplateEntry:
         manifest = Manifest.load(path)
         return TemplateEntry(name=manifest.name, directory=path.parent, manifest=manifest)
     return Registry(templates).load(template)
+
+
+@main.command()
+def icons() -> None:
+    """Builds the PNG renditions of the diagram icons through PowerPoint."""
+    from sdgen.icons import build_pngs, icon_dir
+
+    try:
+        built = build_pngs()
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"{len(built)} icon(s) built under {icon_dir() / 'png'}")

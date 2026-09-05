@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from sdgen.brief import Brief, dump_brief, load_brief
 from sdgen.content import Content, ImageValue, load_markdown
+from sdgen.drawio import to_drawio
 from sdgen.manifest import Manifest
 from sdgen.flow import FlowSpec, to_mermaid
 from sdgen.mapping.model import MappingSet
@@ -38,6 +39,8 @@ class Design(BaseModel):
     order: list[str] = Field(default_factory=list)
     titles: dict[str, str] = Field(default_factory=dict)
     plan: SectionPlan | None = None
+    diagram_format: str = "shapes"  # shapes, drawio or mermaid
+    diagram_formats: dict[str, str] = Field(default_factory=dict)  # per-section overrides
     last_draft: str = ""  # the draft as the model returned it, to tell edited sections apart
     llm: str = ""
     updated: str = ""
@@ -91,6 +94,8 @@ class DesignStore:
             mapping=MappingSet.load(mapping_path) if mapping_path.is_file() else None,
             plan=SectionPlan.load(plan_path) if plan_path.is_file() else None,
             titles={str(k): str(v) for k, v in (data.get("titles") or {}).items()},
+            diagram_format=str(data.get("diagram_format") or "shapes"),
+            diagram_formats={str(k): str(v) for k, v in (data.get("diagram_formats") or {}).items()},
             last_draft=(folder / DRAFT_FILE).read_text(encoding="utf-8") if (folder / DRAFT_FILE).is_file() else "",
             modes={str(k): str(v) for k, v in (data.get("modes") or {}).items()},
             hidden=[str(k) for k in (data.get("hidden") or [])],
@@ -110,6 +115,8 @@ class DesignStore:
             "hidden": design.hidden,
             "order": design.order,
             "titles": design.titles,
+            "diagram_format": design.diagram_format,
+            "diagram_formats": design.diagram_formats,
             "llm": design.llm,
             "updated": design.updated,
         }
@@ -152,6 +159,7 @@ class DesignStore:
         target = folder / f"{section_key}.yaml"
         spec.save(target)
         (folder / f"{section_key}.mmd").write_text(to_mermaid(spec), encoding="utf-8")
+        (folder / f"{section_key}.drawio").write_text(to_drawio(spec), encoding="utf-8")
         return target
 
     def flows(self, design: Design) -> dict[str, FlowSpec]:
@@ -162,7 +170,7 @@ class DesignStore:
 
     def delete_flow(self, design: Design, section_key: str) -> None:
         folder = self.root / safe_name(design.name) / FLOWS_DIR
-        for suffix in (".yaml", ".mmd"):
+        for suffix in (".yaml", ".mmd", ".drawio"):
             path = folder / f"{section_key}{suffix}"
             if path.is_file():
                 path.unlink()

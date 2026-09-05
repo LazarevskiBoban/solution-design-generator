@@ -9,4 +9,5 @@ out/
 ~$*
 templates/
 designs/
+assets/icons/sap/
 .streamlit/secrets.toml

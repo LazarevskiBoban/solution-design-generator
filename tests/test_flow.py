@@ -101,3 +101,55 @@ def test_plan_flows_keeps_known_sections_and_cleans_edges():
     assert plan_flows(Brief(subject="S"), [Request("level_2", "", "")], MockLLM()) == {}
     assert plan_flows(Brief(subject="S"), [], MockLLM()) == {}
     assert clean_flow(FlowSpec(nodes=[FlowNode(id="x", label=" ", lane="source")])).nodes == []
+
+
+def test_sap_detection_and_icon_keys(tmp_path):
+    from sdgen.brief import Brief
+    from sdgen.flow import clean_flow, plan_flows, uses_sap
+    from sdgen.icons import icon_keys
+    from sdgen.plan import FlowRequest
+
+    assert uses_sap(Brief(subject="Lockbox", about="Files go from the bank to SAP S/4HANA."))
+    assert not uses_sap(Brief(subject="Payroll", about="Files go from the bank to the payroll provider."))
+    spec = FlowSpec(nodes=[FlowNode(id="s4", label="S/4HANA", icon="s4hana"), FlowNode(id="x", label="X", icon="nonsense")])
+    cleaned = clean_flow(spec)
+    assert [n.icon for n in cleaned.nodes] == ["s4hana", ""]
+    cleaned.save(tmp_path / "f.yaml")
+    assert FlowSpec.load(tmp_path / "f.yaml") == cleaned
+
+    class Catcher:
+        name = "fake"
+
+        def complete(self, system, user):
+            return ""
+
+        def complete_json(self, system, user, schema, name="result"):
+            self.user, self.schema = user, schema
+            return {"flows": [{"section": "level_2", "nodes": [{"id": "a", "label": "A", "lane": "source", "icon": "bank"}, {"id": "b", "label": "B", "lane": "target", "icon": "s4hana"}], "edges": [{"source": "a", "target": "b"}]}]}
+
+    request = FlowRequest(section="level_2", title="L2", purpose="")
+    llm = Catcher()
+    flows = plan_flows(Brief(subject="x"), [request], llm, icons=icon_keys())
+    node_schema = llm.schema["properties"]["flows"]["items"]["properties"]["nodes"]["items"]["properties"]
+    assert "Icon keys" in llm.user and node_schema["icon"]["enum"] == icon_keys()
+    assert [n.icon for n in flows["level_2"].nodes] == ["bank", "s4hana"]
+    plain = Catcher()
+    plan_flows(Brief(subject="x"), [request], plain)
+    assert "Icon keys" not in plain.user and "icon" not in plain.schema["properties"]["flows"]["items"]["properties"]["nodes"]["items"]["properties"]
+
+
+def test_draw_flow_places_icon_pictures(tmp_path, monkeypatch):
+    from PIL import Image
+    from pptx.util import Inches
+
+    import sdgen.flow as flow_module
+
+    png = tmp_path / "icon.png"
+    Image.new("RGB", (32, 32), "blue").save(png)
+    monkeypatch.setattr(flow_module, "icon_png", lambda key: png if key == "s4hana" else None)
+    spec = FlowSpec(nodes=[FlowNode(id="s4", label="S/4HANA", lane="target", icon="s4hana"), FlowNode(id="bank", label="Bank", lane="source")], edges=[FlowEdge(source="bank", target="s4")])
+    created = draw_flow(_blank_slide()[1], (Inches(1), Inches(1), Inches(10), Inches(4)), spec, prefix="Flow x")
+    names = [s.name for s in created]
+    assert "Flow x icon s4" in names and "Flow x icon bank" not in names
+    node = next(s for s in created if s.name == "Flow x node s4")
+    assert node.text_frame.margin_left > Inches(0.3)

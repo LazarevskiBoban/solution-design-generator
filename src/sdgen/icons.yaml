@@ -1,0 +1,60 @@
+# Icon catalogue for flow diagrams. Keys are what the model assigns to nodes; files are SVGs from the
+# SAP BTP Solution Diagrams set (github.com/SAP/btp-solution-diagrams, Apache-2.0), copied into
+# assets/icons/sap/. A key without a file, or a missing file, draws as a plain shape.
+s4hana:
+  label: SAP S/4HANA
+  file: ""
+ecc:
+  label: SAP ECC
+  file: ""
+btp:
+  label: SAP BTP
+  file: ""
+btp_integration_suite:
+  label: SAP Integration Suite
+  file: 32086-sap-integration-suite_sd.svg
+cloud_integration:
+  label: Cloud Integration
+  file: 32134-sap-integration-suite_cloud-integration_sd.svg
+api_management:
+  label: API Management
+  file: 32133-sap-integration-suite_api-management_sd.svg
+edge_integration_cell:
+  label: Edge Integration Cell
+  file: 32136-edge-integration-cell_sd.svg
+cloud_connector:
+  label: SAP Cloud Connector
+  file: 20077-sap-connectivity-service_sd.svg
+hana:
+  label: SAP HANA Cloud
+  file: 20083-sap-hana-cloud_sd.svg
+identity:
+  label: SAP Cloud Identity Services
+  file: 32129-sap-cloud-identity-services_sd.svg
+sftp:
+  label: SFTP server
+  file: ""
+file_share:
+  label: File share
+  file: ""
+database:
+  label: Database
+  file: ""
+bank:
+  label: Bank
+  file: ""
+swift:
+  label: SWIFT
+  file: ""
+azure:
+  label: Microsoft Azure
+  file: ""
+mulesoft:
+  label: MuleSoft
+  file: ""
+user:
+  label: User
+  file: ""
+generic:
+  label: System
+  file: ""

@@ -15,6 +15,7 @@ from pptx.util import Inches, Pt
 from pydantic import BaseModel, Field, ValidationError
 
 from sdgen.brief import Brief, dump_brief
+from sdgen.icons import icon_keys, icon_png
 from sdgen.llm import LLMClient
 
 Lane = Literal["source", "middleware", "target"]
@@ -22,6 +23,9 @@ NodeKind = Literal["system", "step", "store", "external"]
 EdgeKind = Literal["sync", "async", "file"]
 LANES: tuple[str, ...] = ("source", "middleware", "target")
 LANE_TITLES = {"source": "Source", "middleware": "Middleware", "target": "Target"}
+SAP_RE = re.compile(r"\bSAP\b|S/4|S4HANA|\bECC\b|\bBTP\b|Integration Suite|\bCPI\b|PI/PO|Cloud Connector|IDoc|\bRFC\b|OData", re.IGNORECASE)
+ICON_PAD = Inches(0.06)
+ICON_MAX = Inches(0.45)
 
 NODE_HEIGHT = Inches(0.7)
 NODE_WIDTH = Inches(3.0)
@@ -109,6 +113,7 @@ class FlowNode(BaseModel):
     label: str
     kind: NodeKind = "system"
     lane: Lane = "middleware"
+    icon: str = ""  # a key of the icon catalogue, empty for a plain shape
 
 
 class FlowEdge(BaseModel):
@@ -132,15 +137,27 @@ class FlowSpec(BaseModel):
         return cls.model_validate(yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {})
 
 
-def plan_flows(brief: Brief, requests: list, llm: LLMClient) -> dict[str, FlowSpec]:
-    """One model call for all requested diagrams; each request has section, title and purpose."""
+def uses_sap(brief: Brief) -> bool:
+    """Whether the brief talks about an SAP landscape, which turns the SAP icon set on."""
+    return bool(SAP_RE.search(dump_brief(brief)))
+
+
+def plan_flows(brief: Brief, requests: list, llm: LLMClient, icons: list[str] | None = None) -> dict[str, FlowSpec]:
+    """One model call for all requested diagrams; each request has section, title and purpose.
+
+    With `icons`, every node also gets the closest key of that catalogue.
+    """
     if not requests:
         return {}
     lines = ["# Diagrams to design (section key | title | purpose)"]
     for request in requests:
         lines.append(f"- {request.section} | {request.title or request.section} | {request.purpose or ''}")
+    schema = FLOW_SCHEMA
+    if icons:
+        schema = _schema_with_icons(icons)
+        lines += ["", "# Icon keys: give every node the closest one, generic when none fits", ", ".join(icons)]
     lines += ["", "# Facts", brief.facts_text() or "(none)", "", "# Brief", dump_brief(brief)]
-    data = llm.complete_json(SYSTEM_PROMPT, "\n".join(lines), FLOW_SCHEMA, name="flows")
+    data = llm.complete_json(SYSTEM_PROMPT, "\n".join(lines), schema, name="flows")
     wanted = {request.section for request in requests}
     result: dict[str, FlowSpec] = {}
     for item in data.get("flows") or []:
@@ -157,15 +174,24 @@ def plan_flows(brief: Brief, requests: list, llm: LLMClient) -> dict[str, FlowSp
     return result
 
 
+def _schema_with_icons(icons: list[str]) -> dict:
+    import copy
+
+    schema = copy.deepcopy(FLOW_SCHEMA)
+    schema["properties"]["flows"]["items"]["properties"]["nodes"]["items"]["properties"]["icon"] = {"type": "string", "enum": list(icons)}
+    return schema
+
+
 def clean_flow(spec: FlowSpec) -> FlowSpec:
     seen: set[str] = set()
+    known = set(icon_keys())
     nodes = []
     for node in spec.nodes:
         node_id = _ident(node.id)
         if not node_id or node_id in seen or not node.label.strip():
             continue
         seen.add(node_id)
-        nodes.append(node.model_copy(update={"id": node_id, "label": " ".join(node.label.split())}))
+        nodes.append(node.model_copy(update={"id": node_id, "label": " ".join(node.label.split()), "icon": node.icon if node.icon in known else ""}))
     edges = []
     for edge in spec.edges:
         source, target = _ident(edge.source), _ident(edge.target)
@@ -218,7 +244,7 @@ def draw_flow(slide, box: tuple[int, int, int, int], spec: FlowSpec, prefix: str
             node_height, gap = _fit(len(members), height - HEADER - PAD, NODE_HEIGHT, GAP)
             y = top + HEADER + PAD
             for position, node in enumerate(members):
-                shape = _node(slide, node, x0 + (lane_width - node_width) // 2, y, node_width, node_height, prefix)
+                shape = _node(slide, node, x0 + (lane_width - node_width) // 2, y, node_width, node_height, prefix, created)
                 placed[node.id] = (shape, index, position)
                 created.append(shape)
                 y += node_height + gap
@@ -232,7 +258,7 @@ def draw_flow(slide, box: tuple[int, int, int, int], spec: FlowSpec, prefix: str
             node_height = max(MIN_NODE, min(NODE_HEIGHT, lane_height - HEADER - PAD))
             x = left + PAD
             for position, node in enumerate(members):
-                shape = _node(slide, node, x, y0 + HEADER, node_width, node_height, prefix)
+                shape = _node(slide, node, x, y0 + HEADER, node_width, node_height, prefix, created)
                 placed[node.id] = (shape, index, position)
                 created.append(shape)
                 x += node_width + gap
@@ -281,7 +307,7 @@ def _header(slide, x: int, y: int, width: int, height: int, text: str, name: str
     return box
 
 
-def _node(slide, node: FlowNode, x: int, y: int, width: int, height: int, prefix: str):
+def _node(slide, node: FlowNode, x: int, y: int, width: int, height: int, prefix: str, created: list | None = None):
     shape = slide.shapes.add_shape(SHAPES.get(node.kind, MSO_SHAPE.ROUNDED_RECTANGLE), x, y, width, height)
     shape.name = f"{prefix} node {node.id}"
     shape.fill.solid()
@@ -295,6 +321,14 @@ def _node(slide, node: FlowNode, x: int, y: int, width: int, height: int, prefix
     frame.vertical_anchor = MSO_ANCHOR.MIDDLE
     frame.margin_left = frame.margin_right = Inches(0.05)
     frame.margin_top = frame.margin_bottom = Inches(0.03)
+    png = icon_png(node.icon) if node.icon else None
+    if png is not None:
+        size = max(Inches(0.2), min(ICON_MAX, height - 2 * ICON_PAD))
+        picture = slide.shapes.add_picture(str(png), x + ICON_PAD, y + (height - size) // 2, size, size)
+        picture.name = f"{prefix} icon {node.id}"
+        frame.margin_left = size + 2 * ICON_PAD
+        if created is not None:
+            created.append(picture)
     paragraph = frame.paragraphs[0]
     paragraph.text = node.label
     paragraph.alignment = PP_ALIGN.CENTER

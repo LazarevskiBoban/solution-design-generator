@@ -101,9 +101,9 @@ def test_flows_are_saved_next_to_the_design(tmp_path):
     store.save_flow(design, "level_2", spec)
     folder = tmp_path / "designs" / "lockbox" / "flows"
     assert (folder / "level_2.yaml").is_file() and (folder / "level_2.mmd").read_text(encoding="utf-8").startswith("flowchart LR")
-    assert store.flows(design) == {"level_2": spec}
+    assert store.flows(design) == {"level_2": spec} and (folder / "level_2.drawio").is_file()
     store.delete_flow(design, "level_2")
-    assert store.flows(design) == {} and not (folder / "level_2.mmd").exists()
+    assert store.flows(design) == {} and not (folder / "level_2.mmd").exists() and not (folder / "level_2.drawio").exists()
 
 
 def test_last_draft_is_persisted(tmp_path):
@@ -112,3 +112,12 @@ def test_last_draft_is_persisted(tmp_path):
     store.save(design)
     assert (tmp_path / "designs" / "lockbox" / "draft.md").read_text(encoding="utf-8") == "## business_need\nModel text\n"
     assert store.load("lockbox").last_draft == design.last_draft
+
+
+def test_diagram_format_is_persisted(tmp_path):
+    from sdgen.design import Design, DesignStore
+
+    store = DesignStore(tmp_path / "designs")
+    store.save(Design(name="d", template="t", diagram_format="drawio", diagram_formats={"level_2": "mermaid"}))
+    loaded = store.load("d")
+    assert loaded.diagram_format == "drawio" and loaded.diagram_formats == {"level_2": "mermaid"}
