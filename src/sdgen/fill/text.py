@@ -9,7 +9,7 @@ from pptx.oxml.ns import qn
 from pydantic import BaseModel, Field
 
 from sdgen.inventory import walk_shapes
-from sdgen.textmetrics import FontSpec, capacity_chars, line_height_pt, wrapped_lines
+from sdgen.textmetrics import FontSpec, capacity_chars, line_chars, line_height_pt, wrapped_lines
 
 BULLET_RE = re.compile(r"^(\s*)[-*•]\s+(.*)$")
 INLINE_RE = re.compile(r"(\*\*[^*]+\*\*|\*[^*\s][^*]*\*)")
@@ -414,6 +414,18 @@ def capacity_chars_of(shape, theme: tuple[str, str] | None = None, prefix_len: i
     ppr = p.find(qn("a:pPr"))
     spec = _font_spec(p, default_pt, theme, frame._txBody)
     return capacity_chars(usable_w, usable_h, spec, _spacing_pct(ppr), _space_pt(ppr, "a:spcAft", spec.size_pt), prefix_len)
+
+
+def line_chars_of(shape, theme: tuple[str, str] | None = None, default_pt: float = DEFAULT_FONT_PT) -> int:
+    """Characters on one line of the box, judged by its first paragraph."""
+    if not getattr(shape, "has_text_frame", False) or shape.width is None or shape.height is None:
+        return 0
+    frame = shape.text_frame
+    usable_w, _ = _usable_pt(shape, frame)
+    if usable_w <= 0:
+        return 0
+    theme = theme or theme_fonts(shape.part)
+    return line_chars(usable_w, _font_spec(frame.paragraphs[0]._p, default_pt, theme, frame._txBody))
 
 
 def fit_text_shape(shape, default_pt: float = DEFAULT_FONT_PT, theme: tuple[str, str] | None = None) -> float:

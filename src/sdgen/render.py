@@ -12,8 +12,9 @@ from sdgen.fill.image import replace_picture
 from sdgen.flow import FlowSpec, draw_flow
 from sdgen.fill.slides import clone_slide, move_slide, remove_slide
 from sdgen.fill.table import clear_table_body, fill_table
-from sdgen.fill.text import Block, fit_text_shape, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text
+from sdgen.fill.text import Block, capacity_chars_of, fit_text_shape, line_chars_of, overflow_ratio, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text, theme_fonts
 from sdgen.inventory import find_shape, walk_shapes
+from sdgen.layout import CONTAIN_TOL, SlideLayout, analyse_slide, shift_shapes
 from sdgen.manifest import Binding, FieldSpec, Manifest
 
 CONTINUATION_SUFFIX = " (cont.)"
@@ -120,6 +121,8 @@ def render(
     skipped_slides = hidden_slides | {n for n in manifest.slides.exclude if 1 <= n <= len(slides)}
     drawn = _draw_flows(slides, manifest, content, flows or {}, skipped_slides, issues)
     kept = {k for k, m in (field_modes or {}).items() if m == "keep"} | {f.key for f in manifest.fields if f.static}
+    theme = theme_fonts(slides[0].part) if slides else ("Arial", "Arial")
+    layouts = _layouts(prs, slides, manifest, skipped_slides, issues)
     pending: dict[int, dict] = {}
     for spec in manifest.fields:
         if spec.key in drawn:
@@ -157,16 +160,16 @@ def render(
                 continue
             try:
                 allow = binding.slide in prototypes or (continue_on is None and shape.is_placeholder)
-                remaining = _apply(prs, slide, shape, spec, binding, value, issues, allow, spill=spill)
+                remaining = _apply(prs, slide, shape, spec, binding, value, issues, allow, spill=spill, theme=theme)
                 if remaining:
                     pending.setdefault(binding.slide, {})[spec.key] = (spec, binding, remaining)
             except Exception as exc:  # keep rendering the rest of the document
                 issues.append(RenderIssue(level="error", field=spec.key, slide=binding.slide, message=str(exc)))
 
     for number, fields_pending in pending.items():
-        _continue_composite(prs, slides[number - 1], manifest, number, fields_pending, issues, kept)
+        _continue_slide(prs, slides[number - 1], layouts.get(number), manifest, number, fields_pending, theme, issues, kept)
 
-    extra_ids = _add_extras(prs, slides, extras or [], subject, issues)
+    extra_ids = _add_extras(prs, slides, extras or [], subject, issues, theme)
 
     for index in sorted(set(manifest.slides.exclude) | hidden_slides, reverse=True):
         if 1 <= index <= len(slides):
@@ -216,7 +219,7 @@ def _draw_flows(slides: list, manifest: Manifest, content: Content, flows: dict[
     return drawn
 
 
-def _add_extras(prs, slides: list, extras: list[ExtraSlide], subject: str, issues: list[RenderIssue]) -> dict[int, str]:
+def _add_extras(prs, slides: list, extras: list[ExtraSlide], subject: str, issues: list[RenderIssue], theme: tuple[str, str] | None = None) -> dict[int, str]:
     ids: dict[int, str] = {}
     for extra in extras:
         binding = extra.spec.bindings[0] if extra.spec.bindings else None
@@ -230,6 +233,7 @@ def _add_extras(prs, slides: list, extras: list[ExtraSlide], subject: str, issue
             current = title_shape.text_frame.text
             set_rich_text(title_shape, f"{extra.title}: {subject}" if subject and subject in current else extra.title)
         shape = find_shape(clone, binding.shape.id)
+        copies: list = []
         if shape is None:
             issues.append(RenderIssue(level="error", field=extra.key, message=f"shape {binding.shape.id} not found on the prototype slide"))
         else:
@@ -240,15 +244,21 @@ def _add_extras(prs, slides: list, extras: list[ExtraSlide], subject: str, issue
             try:
                 if extra.spec.kind == "table" and extra.spec.columns and getattr(shape, "has_table", False):
                     _set_header(shape, extra.spec.columns)
-                _apply(prs, clone, shape, extra.spec, binding, value, issues, False)
+                remaining = _apply(prs, clone, shape, extra.spec, binding, value, issues, False, spill=True, theme=theme)
+                if remaining:
+                    layout = analyse_slide(clone, {binding.shape.id: extra.key}, prs.slide_height)
+                    copies = _continue_slide(prs, clone, layout, None, binding.slide, {extra.key: (extra.spec, binding, remaining)}, theme, issues, set())
             except Exception as exc:
                 issues.append(RenderIssue(level="error", field=extra.key, message=str(exc)))
+        chain = [clone] + copies
+        for copy in copies:
+            ids[copy.slide_id] = extra.key
+        chain_ids = {s.slide_id for s in chain}
         target = slides[extra.before - 1] if 1 <= extra.before <= len(slides) else None
-        if target is not None:
-            others = [s.slide_id for s in prs.slides if s.slide_id != clone.slide_id]
-            move_slide(prs, clone, others.index(target.slide_id))
-        else:
-            move_slide(prs, clone, len(prs.slides) - 1)
+        others = [s.slide_id for s in prs.slides if s.slide_id not in chain_ids]
+        position = others.index(target.slide_id) if target is not None else len(others)
+        for offset, member in enumerate(chain):
+            move_slide(prs, member, position + offset)
     return ids
 
 
@@ -285,7 +295,7 @@ def _locate(slide, binding: Binding):
     return shape
 
 
-def _apply(prs, slide, shape, spec: FieldSpec, binding: Binding, value: Any, issues: list[RenderIssue], prototype: bool, spill: bool = False) -> list:
+def _apply(prs, slide, shape, spec: FieldSpec, binding: Binding, value: Any, issues: list[RenderIssue], prototype: bool, spill: bool = False, theme: tuple[str, str] | None = None) -> list:
     if spec.kind == "table":
         if not getattr(shape, "has_table", False):
             raise ValueError("bound shape is not a table")
@@ -324,27 +334,176 @@ def _apply(prs, slide, shape, spec: FieldSpec, binding: Binding, value: Any, iss
         return
 
     blocks = parse_blocks(text)
-    chunks = [blocks]
-    if binding.max_chars and len(text) > binding.max_chars:
-        # Shrinking covers up to a quarter more text; beyond that the box continues on a copy of the slide.
-        if prototype or (spill and len(text) > binding.max_chars * SPILL_RATIO):
-            chunks = _split_blocks(blocks, binding.max_chars)
-            issues.append(RenderIssue(level="info", field=spec.key, slide=binding.slide, message=f"continued on {len(chunks) - 1} extra slide(s)"))
-        else:
-            issues.append(RenderIssue(level="info", field=spec.key, slide=binding.slide, message=f"text is {len(text)} characters, about {binding.max_chars} fit; shrunk to fit"))
-
-    set_rich_text(shape, chunks[0], keep_prefix=binding.keep_prefix)
-    _shrink(shape, spec, binding, issues)
-    if not prototype:
-        return chunks[1:]
-    current = slide
-    for chunk in chunks[1:]:
-        current = clone_slide(prs, current)
-        _mark_continuation(current)
-        target = find_shape(current, shape.shape_id)
-        set_rich_text(target, chunk, keep_prefix=binding.keep_prefix)
-        _shrink(target, spec, binding, issues)
+    set_rich_text(shape, blocks, keep_prefix=binding.keep_prefix)
+    capacity = binding.max_chars or capacity_chars_of(shape, theme, len(binding.keep_prefix or ""))
+    over = bool(capacity and len(text) > capacity * SPILL_RATIO) or overflow_ratio(shape, theme) > SPILL_RATIO
+    if over and prototype:
+        chunks = _split_blocks(blocks, capacity or len(text), line_chars_of(shape, theme))
+        issues.append(RenderIssue(level="info", field=spec.key, slide=binding.slide, message=f"continued on {len(chunks) - 1} extra slide(s)"))
+        set_rich_text(shape, chunks[0], keep_prefix=binding.keep_prefix)
+        _shrink(shape, spec, binding, issues, theme)
+        current = slide
+        for chunk in chunks[1:]:
+            current = clone_slide(prs, current)
+            _mark_continuation(current)
+            target = find_shape(current, shape.shape_id)
+            set_rich_text(target, chunk, keep_prefix=binding.keep_prefix)
+            _shrink(target, spec, binding, issues, theme)
+        return []
+    if over and spill:
+        return blocks
+    if capacity and len(text) > capacity:
+        issues.append(RenderIssue(level="info", field=spec.key, slide=binding.slide, message=f"text is {len(text)} characters, about {capacity} fit; shrunk to fit"))
+    _shrink(shape, spec, binding, issues, theme)
     return []
+
+
+def _layouts(prs, slides: list, manifest: Manifest, skipped: set[int], issues: list[RenderIssue]) -> dict[int, SlideLayout]:
+    """Block layout per slide, taken before filling because tables grow while they are filled."""
+    bound: dict[int, dict[int, str]] = {}
+    for spec in manifest.fields:
+        if spec.kind == "image":
+            continue
+        for binding in spec.bindings:
+            if binding.mode == "replace" and binding.slide not in skipped and 1 <= binding.slide <= len(slides):
+                bound.setdefault(binding.slide, {})[binding.shape.id] = spec.key
+    layouts: dict[int, SlideLayout] = {}
+    for number, shapes in bound.items():
+        try:
+            layouts[number] = analyse_slide(slides[number - 1], shapes, prs.slide_height)
+        except Exception as exc:
+            issues.append(RenderIssue(slide=number, message=f"layout not analysed: {exc}"))
+    return layouts
+
+
+def _continue_slide(prs, slide, layout: SlideLayout | None, manifest: Manifest | None, number: int, pending: dict, theme, issues: list[RenderIssue], kept: set[str]) -> list:
+    """Continues the boxes that overflowed: grow and push when the top block overflowed, else cleaned copies."""
+    try:
+        blocks = {key: layout.block_of(binding.shape.id) for key, (_, binding, _) in pending.items()} if layout is not None else {}
+        if layout is None or layout.content is None or any(block is None for block in blocks.values()):
+            if manifest is None:
+                raise ValueError("no block layout for the slide")
+            _continue_composite(prs, slide, manifest, number, _chunk_pending(slide, pending, theme, {}, False, issues), issues, kept)
+            return []
+        top = layout.top_block()
+        if top is not None and all(block is top for block in blocks.values()) and layout.is_full_width(top):
+            return _expand_and_push(prs, slide, layout, top, pending, number, theme, issues)
+        return _continue_cleaned(prs, slide, layout, pending, number, theme, issues)
+    except Exception as exc:
+        issues.append(RenderIssue(level="error", slide=number, message=f"could not continue the slide, text shrunk instead: {exc}"))
+        for spec, binding, blocks in pending.values():
+            shape = find_shape(slide, binding.shape.id)
+            if shape is not None:
+                set_rich_text(shape, blocks, keep_prefix=binding.keep_prefix)
+                _shrink(shape, spec, binding, issues, theme)
+        return []
+
+
+def _expand_and_push(prs, slide, layout: SlideLayout, top, pending: dict, number: int, theme, issues: list[RenderIssue]) -> list:
+    """Grows the top block to the bottom of the slide and moves every other block to a copy that follows."""
+    others = [b for b in layout.blocks if b is not top]
+    other_ids = [i for b in others for i in b.members]
+    pushed = clone_slide(prs, slide) if others else None
+    remove_shapes(slide, _shapes(slide, other_ids))
+    delta = layout.content.bottom - top.box.bottom
+    scales: dict[int, float] = {}
+    for shape_id in top.members:
+        shape = find_shape(slide, shape_id)
+        if shape is not None and shape.height and abs(shape.top + shape.height - top.box.bottom) <= CONTAIN_TOL:
+            scales[shape_id] = (shape.height + delta) / shape.height
+            shape.height = shape.height + delta
+    if pushed is not None:
+        remove_shapes(pushed, _shapes(pushed, top.members))
+        shift_shapes(pushed, other_ids, top.box.top - min(b.box.top for b in others))
+        _mark_continuation(pushed)
+    chunked = _chunk_pending(slide, pending, theme, {key: scales.get(binding.shape.id, 1.0) for key, (_, binding, _) in pending.items()}, True, issues)
+    copies = _spread(prs, slide, chunked, theme, issues)
+    note = f"top block grown to the slide bottom, {len(others)} block(s) moved to the next slide"
+    issues.append(RenderIssue(level="info", slide=number, message=note + (f", continued on {len(copies)} extra slide(s)" if copies else "")))
+    return copies + ([pushed] if pushed is not None else [])
+
+
+def _continue_cleaned(prs, slide, layout: SlideLayout, pending: dict, number: int, theme, issues: list[RenderIssue]) -> list:
+    """Copies keep only the continued blocks, moved to the top of the content area and grown to its bottom."""
+    keep: list = []
+    for _, binding, _ in pending.values():
+        block = layout.block_of(binding.shape.id)
+        if not any(block is b for b in keep):
+            keep.append(block)
+    keep_ids = [i for b in keep for i in b.members]
+    drop_ids = [i for b in layout.blocks if not any(b is k for k in keep) for i in b.members]
+    shift = min(b.box.top for b in keep) - layout.content.top
+    growth: dict[int, int] = {}
+    for b in keep:
+        below = any(o is not b and o.box.top >= b.box.bottom - CONTAIN_TOL and o.box.overlap_x(b.box) > 0 for o in keep)
+        growth[id(b)] = 0 if below else layout.content.bottom - (b.box.bottom - shift)
+    scales: dict[str, float] = {}
+    for key, (_, binding, _) in pending.items():
+        block = layout.block_of(binding.shape.id)
+        shape = find_shape(slide, binding.shape.id)
+        grows = shape is not None and shape.height and growth[id(block)] > 0 and abs(shape.top + shape.height - block.box.bottom) <= CONTAIN_TOL
+        scales[key] = (shape.height + growth[id(block)]) / shape.height if grows else 1.0
+
+    def prepare(copy) -> None:
+        remove_shapes(copy, _shapes(copy, drop_ids))
+        shift_shapes(copy, keep_ids, -shift)
+        for b in keep:
+            for shape_id in b.members:
+                shape = find_shape(copy, shape_id)
+                if shape is not None and growth[id(b)] > 0 and abs(shape.top + shape.height - (b.box.bottom - shift)) <= CONTAIN_TOL:
+                    shape.height = shape.height + growth[id(b)]
+
+    chunked = _chunk_pending(slide, pending, theme, scales, False, issues)
+    copies = _spread(prs, slide, chunked, theme, issues, prepare)
+    issues.append(RenderIssue(level="info", slide=number, message=f"continued on {len(copies)} extra slide(s) that show only the continued block(s)"))
+    return copies
+
+
+def _chunk_pending(slide, pending: dict, theme, scales: dict[str, float], grow_first: bool, issues: list[RenderIssue]) -> dict:
+    """Splits each overflowing field into chunks and writes the first chunk into its box."""
+    chunked: dict = {}
+    for key, (spec, binding, blocks) in pending.items():
+        shape = find_shape(slide, binding.shape.id)
+        if shape is None:
+            continue
+        capacity = _capacity(shape, binding, blocks, theme)
+        grown = max(1, int(capacity * scales.get(key, 1.0)))
+        chunks = _split_blocks(blocks, grown if grow_first else capacity, line_chars_of(shape, theme), grown)
+        set_rich_text(shape, chunks[0], keep_prefix=binding.keep_prefix)
+        _shrink(shape, spec, binding, issues, theme)
+        chunked[key] = (spec, binding, chunks)
+    return chunked
+
+
+def _spread(prs, slide, chunked: dict, theme, issues: list[RenderIssue], prepare=None) -> list:
+    """One copy per extra chunk; the first copy is prepared once, later copies clone it."""
+    count = max((len(chunks) for _, _, chunks in chunked.values()), default=1)
+    copies: list = []
+    source = slide
+    for index in range(1, count):
+        copy = clone_slide(prs, source)
+        if index == 1 and prepare is not None:
+            prepare(copy)
+        _mark_continuation(copy)
+        for spec, binding, chunks in chunked.values():
+            target = find_shape(copy, binding.shape.id)
+            if target is None:
+                continue
+            set_rich_text(target, chunks[index] if index < len(chunks) else "", keep_prefix=binding.keep_prefix)
+            if index < len(chunks):
+                _shrink(target, spec, binding, issues, theme)
+        copies.append(copy)
+        source = copy
+    return copies
+
+
+def _capacity(shape, binding: Binding, blocks: list[Block], theme) -> int:
+    measured = capacity_chars_of(shape, theme, len(binding.keep_prefix or ""))
+    return binding.max_chars or measured or max(1, sum(len(b.text) + 1 for b in blocks))
+
+
+def _shapes(slide, shape_ids) -> list:
+    return [s for s in (find_shape(slide, i) for i in shape_ids) if s is not None]
 
 
 def _continue_composite(prs, slide, manifest: Manifest, number: int, pending: dict, issues: list[RenderIssue], kept: set[str] | None = None) -> None:
@@ -373,20 +532,23 @@ def _continue_composite(prs, slide, manifest: Manifest, number: int, pending: di
                     set_rich_text(target, "", keep_prefix=binding.keep_prefix)
 
 
-def _shrink(shape, spec: FieldSpec, binding: Binding, issues: list[RenderIssue]) -> None:
-    scale = fit_text_shape(shape)
+def _shrink(shape, spec: FieldSpec, binding: Binding, issues: list[RenderIssue], theme: tuple[str, str] | None = None) -> None:
+    scale = fit_text_shape(shape, theme=theme)
     if scale < 1.0:
         issues.append(RenderIssue(level="info", field=spec.key, slide=binding.slide, message=f"text shrunk to {int(scale * 100)} percent to fit the box"))
 
 
-def _split_blocks(blocks: list[Block], max_chars: int) -> list[list[Block]]:
+def _split_blocks(blocks: list[Block], first: int, line_chars: int = 0, rest: int | None = None) -> list[list[Block]]:
+    """Cuts paragraphs into chunks; every paragraph costs at least one line so short bullets count."""
     chunks: list[list[Block]] = [[]]
     used = 0
+    limit = first
     for block in blocks:
-        size = len(block.text) + 1
-        if chunks[-1] and used + size > max_chars:
+        size = max(len(block.text) + 1, line_chars)
+        if chunks[-1] and used + size > limit:
             chunks.append([])
             used = 0
+            limit = rest if rest is not None else first
         chunks[-1].append(block)
         used += size
     return chunks

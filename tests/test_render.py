@@ -297,31 +297,36 @@ def test_flows_are_drawn_into_the_image_slot(sample_deck, tmp_path):
     assert not any("diagram drawn" in str(i) for i in kept.issues)
 
 
-def test_composite_box_spills_onto_a_copy_with_other_boxes_blank(sample_deck, tmp_path):
+def test_composite_box_spills_onto_cleaned_copies(sample_deck, tmp_path):
     manifest = _fixture_manifest(sample_deck)
     manifest.slides.exclude = []
     manifest.field("business_need").bindings[0].max_chars = 60
     manifest.field("first_point").bindings[0].max_chars = 20
-    need = "\n".join(f"Paragraph number {i} with enough words to matter." for i in range(1, 7))
-    points = "- alpha\n- beta gamma delta\n- epsilon zeta eta theta"
+    need = chr(10).join(f"Paragraph number {i} with enough words to matter." for i in range(1, 7))
+    points = "- alpha" + chr(10) + "- beta gamma delta" + chr(10) + "- epsilon zeta eta theta"
     content = Content(fields={"business_need": need, "scope": [{"Function": "Finance", "Countries": "ZA"}], "first_point": points})
 
     kept = render(sample_deck, manifest, content, tmp_path / "shrunk.pptx", continue_on=[])
     assert kept.slides == 2 and any("shrunk to fit" in str(i) for i in kept.issues)
 
     spilled = render(sample_deck, manifest, content, tmp_path / "spill.pptx", continue_on=[], spill=True)
-    assert spilled.slides == 7 and any("continued on 5 extra" in str(i) for i in spilled.issues)  # copies are shared by both long boxes
-    assert spilled.slide_map == [1, 1, 1, 1, 1, 1, 2]
     prs = Presentation(str(tmp_path / "spill.pptx"))
-    copy = prs.slides[1]
-    assert copy.shapes.title.text.endswith("(cont.)")
-    assert _shape_text(copy, "Business Need Box") == "Business Need: Paragraph number 2 with enough words to matter."
-    table = next(s for s in copy.shapes if s.has_table).table
-    assert [[c.text for c in r.cells] for r in table.rows] == [["Function", "Countries"], ["", ""]]
-    assert copy.placeholders[1].text_frame.text != "" and prs.slides[4].placeholders[1].text_frame.text == ""
+    copies = len(prs.slides) - 2
+    assert copies >= 1 and spilled.slide_map == [1] * (copies + 1) + [2]
+    assert any(f"continued on {copies} extra" in str(i) for i in spilled.issues)
     original = prs.slides[0]
     assert [c.text for c in next(s for s in original.shapes if s.has_table).table.rows[1].cells] == ["Finance", "ZA"]
     assert _shape_text(original, "Business Need Box") == "Business Need: Paragraph number 1 with enough words to matter."
+    need_box = next(s for s in original.shapes if s.name == "Business Need Box")
+    copy = prs.slides[1]
+    assert copy.shapes.title.text.endswith("(cont.)")
+    names = {s.name for s in copy.shapes}
+    assert not any(s.has_table for s in copy.shapes) and not any(hasattr(s, "image") for s in copy.shapes) and "Scope Label" not in names
+    box = next(s for s in copy.shapes if s.name == "Business Need Box")
+    assert box.top < need_box.top and box.height > need_box.height
+    assert _shape_text(copy, "Business Need Box").startswith("Business Need: Paragraph number 2")
+    texts = [_shape_text(s, "Business Need Box").removeprefix("Business Need: ") for s in list(prs.slides)[: copies + 1]]
+    assert chr(10).join(t for t in texts if t) == need
 
 
 def test_clear_shapes_empties_template_text_before_copies(sample_deck, tmp_path):
@@ -331,3 +336,50 @@ def test_clear_shapes_empties_template_text_before_copies(sample_deck, tmp_path)
     result = render(sample_deck, manifest, Content(fields={"business_need": "Need"}), out, clear_shapes=[(1, label_id), (1, 9999)])
     assert not result.errors and any("template text cleared" in str(i) for i in result.issues) and any("not found" in str(i) for i in result.issues)
     assert _shape_text(Presentation(str(out)).slides[0], "Scope Label") == ""
+
+
+def _overview_manifest(shapes) -> Manifest:
+    def spec(key, shape, max_chars=None):
+        return FieldSpec(key=key, label=key, bindings=[Binding(slide=1, shape=ShapeRef(id=shape.shape_id), max_chars=max_chars)])
+
+    return Manifest(name="overview", fields=[spec("need", shapes["need"], 60), spec("left", shapes["left"]), spec("inner", shapes["inner"])])
+
+
+def test_top_block_expands_and_pushes_the_rest(tmp_path):
+    from pptx.util import Inches
+    from test_layout import overview_deck
+
+    prs, _, shapes = overview_deck()
+    deck = tmp_path / "overview.pptx"
+    prs.save(deck)
+    need = "Lockbox files arrive daily from three banks over SWIFT and must be posted automatically without manual work."
+    content = Content(fields={"need": need, "left": "Left text", "inner": "Inner text"})
+    result = render(deck, _overview_manifest(shapes), content, tmp_path / "out.pptx", spill=True)
+    assert result.slides == 2 and result.slide_map == [1, 1] and not result.errors
+    assert any("top block grown" in i.message and "1 block(s) moved" not in i.message for i in result.issues)
+    first, second = Presentation(str(tmp_path / "out.pptx")).slides
+    on_first = {s.name: s for s in first.shapes}
+    assert {"Need Bar", "Need Box", "Footer"} <= set(on_first) and not {"Left Bar", "Left Box", "Right Inner"} & set(on_first)
+    assert on_first["Need Box"].top + on_first["Need Box"].height == Inches(5.65) and on_first["Need Box"].text_frame.text == need
+    assert not first.shapes.title.text.endswith("(cont.)")
+    on_second = {s.name: s for s in second.shapes}
+    assert {"Left Bar", "Left Box", "Right Bar", "Right Container", "Right Inner", "Footer"} <= set(on_second) and "Need Box" not in on_second
+    assert on_second["Left Bar"].top == Inches(1.2) and on_second["Left Box"].top == Inches(1.55) and on_second["Footer"].top == Inches(7.0)
+    assert second.shapes.title.text.endswith("(cont.)") and on_second["Left Box"].text_frame.text == "Left text"
+
+
+def test_expand_continues_on_copies_before_the_pushed_slide(tmp_path):
+    from test_layout import overview_deck
+
+    prs, _, shapes = overview_deck()
+    deck = tmp_path / "overview.pptx"
+    prs.save(deck)
+    need = "\n".join(f"Paragraph {i}: lockbox files arrive daily and are posted automatically." for i in range(1, 9))
+    content = Content(fields={"need": need, "left": "Left text", "inner": "Inner text"})
+    result = render(deck, _overview_manifest(shapes), content, tmp_path / "out.pptx", spill=True)
+    slides = list(Presentation(str(tmp_path / "out.pptx")).slides)
+    assert len(slides) >= 3 and result.slide_map == [1] * len(slides)
+    boxes = [{s.name: s for s in sl.shapes}.get("Need Box") for sl in slides]
+    assert all(box is not None for box in boxes[:-1]) and boxes[-1] is None
+    assert "\n".join(box.text_frame.text for box in boxes[:-1]) == need
+    assert all(sl.shapes.title.text.endswith("(cont.)") for sl in slides[1:]) and "Left Box" in {s.name for s in slides[-1].shapes}
