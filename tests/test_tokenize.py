@@ -72,3 +72,44 @@ def test_capture_content_reads_text_bullets_and_tables(sample_deck):
     assert original.fields["business_need"] == "Something long enough to be treated as a real content section.\nSecond paragraph."
     assert original.fields["scope"] == [{"Function": "Finance", "Countries": "ZA"}]
     assert original.fields["first_point"] == "- First point\n  - Sub point"
+
+
+def _static_outline(sample_deck, manifest):
+    from sdgen.blueprint import derive_blueprint
+
+    deck = inspect_deck(sample_deck)
+    blueprint = derive_blueprint(deck, analyze_deck(deck), manifest, "demo")
+    first = blueprint.sections[0].model_copy(update={"kind": "static"})
+    return blueprint, blueprint.model_copy(update={"sections": [first] + blueprint.sections[1:]})
+
+
+def test_static_fields_keep_their_template_content(sample_deck):
+    from sdgen.blueprint import mark_static_fields
+
+    manifest = _manifest(sample_deck)
+    blueprint, static_outline = _static_outline(sample_deck, manifest)
+    marked = mark_static_fields(manifest, static_outline)
+    assert marked.field("scope").static and marked.field("business_need").static
+    assert not mark_static_fields(manifest, blueprint).field("scope").static
+
+    manifest.field("scope").static = True
+    prs = Presentation(str(sample_deck))
+    tokenize_deck(prs, manifest)
+    slide = prs.slides[0]
+    table = next(s for s in slide.shapes if s.has_table).table
+    assert [[c.text for c in r.cells] for r in table.rows] == [["Function", "Countries"], ["Finance", "ZA"], ["", ""]]
+    assert _shape_text(slide, "Business Need Box") == "Business Need: {{business_need}}"
+    assert slide.shapes.title.text == "Executive Overview: {{subject}}"
+
+
+def test_registry_keeps_the_source_and_marks_static_fields(sample_deck, tmp_path):
+    manifest = _manifest(sample_deck)
+    _, static_outline = _static_outline(sample_deck, manifest)
+    registry = Registry(tmp_path / "templates")
+    entry = registry.add("demo", sample_deck, manifest, blueprint=static_outline)
+    assert entry.source_path.is_file() and entry.manifest.field("scope").static and entry.manifest.field("business_need").static
+    stored = Presentation(str(entry.template_path)).slides[0]
+    assert _shape_text(stored, "Business Need Box").startswith("Business Need: Something long")
+    assert stored.shapes.title.text == "Executive Overview: {{subject}}"
+    assert entry.original.fields["scope"] == [{"Function": "Finance", "Countries": "ZA"}]
+    assert registry.load("demo").manifest.field("scope").static

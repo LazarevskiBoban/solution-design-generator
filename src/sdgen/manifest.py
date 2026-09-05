@@ -35,6 +35,7 @@ class FieldSpec(BaseModel):
     guidance: str = ""
     columns: list[str] = Field(default_factory=list)
     bindings: list[Binding] = Field(default_factory=list)
+    static: bool = False  # template content stays in place unless the field is blanked
 
 
 class GlobalSpec(BaseModel):

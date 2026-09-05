@@ -122,6 +122,16 @@ def templates_page() -> None:
             if used_by:
                 question += f" {len(used_by)} design(s) built on it stay on disk but disappear from the New design page: {', '.join(used_by)}."
             _confirm_delete("template_remove", "Remove template", question, lambda: _remove_template(reg, target))
+        with st.expander("Re-analyze a template", expanded=False):
+            st.caption("Runs the analysis again on the stored original deck and keeps your section titles, kinds and field keys. Field detection and text budgets follow the current analyzer.")
+            again = st.selectbox("Template", names, key="template_reanalyze_choice")
+            if st.button("Re-analyze", key="template_reanalyze"):
+                try:
+                    entry = reg.reanalyze(again)
+                except FileNotFoundError as exc:
+                    st.error(str(exc))
+                else:
+                    st.success(f"Template '{entry.name}' analysed again: {len(entry.blueprint.sections)} sections, {len(entry.manifest.fields)} fields.")
     else:
         st.caption("No templates yet.")
 
@@ -933,12 +943,16 @@ def _render_fields(design: Design, entry) -> tuple[dict, dict[str, str]]:
         if mode == "text":
             continue
         for key in section.fields:
+            spec = manifest.field(key)
             if mode == "keep":
                 original = entry.original.fields.get(key) if entry.original else None
-                if original in (None, "", []):
+                if spec is not None and spec.static:
+                    fields.pop(key, None)
+                    field_modes[key] = "keep"
+                elif original in (None, "", []):
                     fields.pop(key, None)
                 else:
-                    fields[key] = original
+                    fields[key] = original  # the stored deck holds a marker here, so the captured text goes back in
             else:
                 fields.pop(key, None)
                 field_modes[key] = "blank"

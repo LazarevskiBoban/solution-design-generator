@@ -60,6 +60,32 @@ def test_render_fills_all_kinds_and_excludes_slides(sample_deck, tmp_path):
     assert picture.image.size == (60, 30)
 
 
+def test_static_fields_are_kept_even_with_values(sample_deck, tmp_path):
+    manifest = _fixture_manifest(sample_deck)
+    manifest.field("scope").static = True
+    content = Content(globals={"subject": "X"}, fields={"scope": [{"Function": "Ops", "Countries": "KE"}], "business_need": "Fresh"})
+    result = render(sample_deck, manifest, content, tmp_path / "static.pptx")
+    slide = Presentation(str(tmp_path / "static.pptx")).slides[0]
+    table = next(s for s in slide.shapes if s.has_table).table
+    assert [[c.text for c in r.cells] for r in table.rows] == [["Function", "Countries"], ["Finance", "ZA"], ["", ""]]
+    assert any(i.field == "scope" and "kept" in i.message for i in result.issues)
+    assert _shape_text(slide, "Business Need Box") == "Business Need: Fresh"
+
+    render(sample_deck, manifest, content, tmp_path / "blank.pptx", field_modes={"scope": "blank"})
+    table = next(s for s in Presentation(str(tmp_path / "blank.pptx")).slides[0].shapes if s.has_table).table
+    assert [[c.text for c in r.cells] for r in table.rows] == [["Function", "Countries"], ["", ""], ["", ""]]
+
+
+def test_excluded_slides_are_not_filled(sample_deck, tmp_path):
+    manifest = _fixture_manifest(sample_deck)
+    manifest.slides.exclude = [1]
+    manifest.field("business_need").bindings[0].max_chars = 40
+    content = Content(globals={"subject": "X"}, fields={"business_need": "word " * 60})
+    result = render(sample_deck, manifest, content, tmp_path / "ex.pptx", spill=True)
+    assert result.slides == 1 and result.slide_map == [2]
+    assert not any("continued" in i.message for i in result.issues)
+
+
 def test_missing_values_keep_blank_or_placeholder(sample_deck, tmp_path):
     manifest = _fixture_manifest(sample_deck)
     result = render(sample_deck, manifest, Content(), tmp_path / "kept.pptx", missing="keep")

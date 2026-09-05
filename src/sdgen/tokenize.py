@@ -71,7 +71,7 @@ def tokenize_deck(prs, manifest: Manifest) -> Manifest:
     for spec in manifest.fields:
         marker = placeholder(spec.key)
         for binding in spec.bindings:
-            if binding.mode == "token" or spec.kind == "image":
+            if binding.mode == "token" or spec.kind == "image" or spec.static:
                 continue
             if not 1 <= binding.slide <= len(slides):
                 continue

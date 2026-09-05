@@ -11,7 +11,7 @@ from sdgen.diagrams import remove_shapes
 from sdgen.fill.image import replace_picture
 from sdgen.flow import FlowSpec, draw_flow
 from sdgen.fill.slides import clone_slide, move_slide, remove_slide
-from sdgen.fill.table import fill_table
+from sdgen.fill.table import clear_table_body, fill_table
 from sdgen.fill.text import Block, fit_text_shape, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text
 from sdgen.inventory import find_shape, walk_shapes
 from sdgen.manifest import Binding, FieldSpec, Manifest
@@ -117,13 +117,17 @@ def render(
         set_rich_text(target, "")
         issues.append(RenderIssue(level="info", slide=number, message=f"template text cleared (shape {shape_id})"))
 
-    drawn = _draw_flows(slides, manifest, content, flows or {}, hidden_slides, issues)
+    skipped_slides = hidden_slides | {n for n in manifest.slides.exclude if 1 <= n <= len(slides)}
+    drawn = _draw_flows(slides, manifest, content, flows or {}, skipped_slides, issues)
+    kept = {k for k, m in (field_modes or {}).items() if m == "keep"} | {f.key for f in manifest.fields if f.static}
     pending: dict[int, dict] = {}
     for spec in manifest.fields:
         if spec.key in drawn:
             continue
         value = content.fields.get(spec.key)
         mode = (field_modes or {}).get(spec.key)
+        if spec.static and mode != "blank":
+            mode = "keep"
         if mode == "keep":
             issues.append(RenderIssue(level="info", field=spec.key, message="template content kept"))
             continue
@@ -141,7 +145,7 @@ def render(
                 value = [[PLACEHOLDER_ROW]] if spec.kind == "table" else placeholder_text(spec.label)
                 issues.append(RenderIssue(level="info", field=spec.key, message="no value; placeholder shown"))
         for binding in spec.bindings:
-            if binding.slide in hidden_slides:
+            if binding.slide in skipped_slides:
                 continue
             if not 1 <= binding.slide <= len(slides):
                 issues.append(RenderIssue(level="error", field=spec.key, slide=binding.slide, message="slide does not exist"))
@@ -160,7 +164,7 @@ def render(
                 issues.append(RenderIssue(level="error", field=spec.key, slide=binding.slide, message=str(exc)))
 
     for number, fields_pending in pending.items():
-        _continue_composite(prs, slides[number - 1], manifest, number, fields_pending, issues)
+        _continue_composite(prs, slides[number - 1], manifest, number, fields_pending, issues, kept)
 
     extra_ids = _add_extras(prs, slides, extras or [], subject, issues)
 
@@ -286,6 +290,9 @@ def _apply(prs, slide, shape, spec: FieldSpec, binding: Binding, value: Any, iss
         if not getattr(shape, "has_table", False):
             raise ValueError("bound shape is not a table")
         rows = _as_rows(value)
+        if spec.static and not rows:
+            clear_table_body(shape, binding.header_rows)
+            return
         fill_table(shape, rows, header_rows=binding.header_rows, keep_last_row_if=binding.keep_last_row_if, columns=spec.columns or None)
         return
     if spec.kind == "image":
@@ -340,7 +347,7 @@ def _apply(prs, slide, shape, spec: FieldSpec, binding: Binding, value: Any, iss
     return []
 
 
-def _continue_composite(prs, slide, manifest: Manifest, number: int, pending: dict, issues: list[RenderIssue]) -> None:
+def _continue_composite(prs, slide, manifest: Manifest, number: int, pending: dict, issues: list[RenderIssue], kept: set[str] | None = None) -> None:
     """Copies a slide as often as its longest box needs; every copy continues each long box and blanks the rest."""
     count = max(len(chunks) for _, _, chunks in pending.values())
     current = slide
@@ -348,7 +355,7 @@ def _continue_composite(prs, slide, manifest: Manifest, number: int, pending: di
         current = clone_slide(prs, current)
         _mark_continuation(current)
         for other in manifest.fields:
-            if other.kind == "image":
+            if other.kind == "image" or other.key in (kept or set()):
                 continue
             for binding in other.bindings:
                 if binding.slide != number or binding.mode == "token":

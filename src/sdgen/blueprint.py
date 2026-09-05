@@ -93,6 +93,17 @@ def derive_blueprint(deck: DeckInfo, analysis: Analysis, manifest: Manifest, nam
     return Blueprint(name=name, sections=sections)
 
 
+def mark_static_fields(manifest: Manifest, blueprint: Blueprint) -> Manifest:
+    """Flags fields that live only on static or divider slides, so their template content is left untouched."""
+    slides = {s.slide for s in blueprint.sections if s.kind in ("static", "divider")}
+    fields = []
+    for spec in manifest.fields:
+        replace = [b for b in spec.bindings if b.mode == "replace"]
+        static = spec.kind != "image" and bool(replace) and all(b.slide in slides for b in replace) and all(b.mode == "replace" for b in spec.bindings)
+        fields.append(spec.model_copy(update={"static": static}) if static != spec.static else spec)
+    return manifest.model_copy(update={"fields": fields})
+
+
 def clean_title(title: str | None, subject: str | None) -> str:
     if not title:
         return ""

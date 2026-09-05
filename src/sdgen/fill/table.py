@@ -49,6 +49,14 @@ def fill_table(
     graphic_frame.height = sum(tr.h for tr in tbl.tr_lst)
 
 
+def clear_table_body(graphic_frame, header_rows: int = 1) -> None:
+    """Empties the body cells but keeps every row, so merged layouts stay intact."""
+    tbl = graphic_frame.table._tbl
+    for tr in tbl.tr_lst[header_rows:]:
+        for tc in tr.tc_lst:
+            set_rich_text(_Cell(tc, tbl), "")
+
+
 def _values(row: Row, names: list[str], width: int) -> list[str]:
     if isinstance(row, dict):
         lookup = {_norm(k): v for k, v in row.items()}

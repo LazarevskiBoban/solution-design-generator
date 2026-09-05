@@ -129,6 +129,14 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     assert ui.SHORTCUTS == {"previous": "Left", "next": "Right", "up": "Up", "down": "Down", "hide": "Delete"}
     assert "max-height" in ui.VIEWER_CSS and ui._write_title(fresh) == "3. Write the slides"
 
+    entry = Registry(registry_with_demo).load("demo")
+    entry.manifest.field("scope").static = True
+    kept_design = ui.Design(name="z", template="demo", modes={keys[0]: "keep"})
+    values, modes = ui._render_fields(kept_design, entry)
+    assert modes == {"scope": "keep"} and "scope" not in values and values["business_need"].startswith("Something long")
+    values, modes = ui._render_fields(ui.Design(name="z", template="demo", modes={keys[0]: "blank"}), entry)
+    assert modes["scope"] == "blank" and modes["business_need"] == "blank" and "scope" not in values
+
     ui._delete_design(DesignStore(tmp_path / "designs"), "demo", "camt-053")
     assert not (tmp_path / "designs" / "camt-053").exists()
     ui._remove_template(Registry(registry_with_demo), "demo")
