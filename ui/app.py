@@ -20,7 +20,9 @@ from sdgen.manifest import FieldSpec, GlobalSpec, Manifest
 from sdgen.mapping.extract import extract_fields
 from sdgen.mapping.model import MappingEntry, MappingSet, SourceSpec, TargetSpec
 from sdgen.mapping.workbook import write_workbook
-from sdgen.flow import plan_flows, to_mermaid
+from sdgen.drawio import to_drawio
+from sdgen.flow import plan_flows, to_mermaid, uses_sap
+from sdgen.icons import icon_keys
 from sdgen.plan import SOURCES, FlowRequest, SectionDecision, SectionPlan, active_extras, apply_plan, extended_blueprint, extended_manifest, extra_slides, leftover_texts, plan_sections
 from sdgen.preview import export_slides
 from sdgen.registry import Registry, safe_name
@@ -39,6 +41,11 @@ EMPTY_FIELD_RE = re.compile(r"field '[^']+' \((.+)\) is empty$")
 SECTION_MODES = {"text": "Use the text below", "keep": "Keep the template text", "blank": "Leave the slide blank"}
 VIEWER_CSS = "<style>div[data-testid='stDialog'] div[data-testid='stImage'] img{width:auto !important;max-width:100%;max-height:calc(100vh - 300px);display:block;margin:0 auto}</style>"
 SHORTCUTS = {"previous": "Left", "next": "Right", "up": "Up", "down": "Down", "hide": "Delete"}
+DIAGRAM_FORMATS = {
+    "shapes": "PowerPoint shapes, editable in the deck",
+    "drawio": "draw.io file next to the shapes, with SAP icons when the brief is about SAP",
+    "mermaid": "Mermaid text next to the shapes",
+}
 
 
 def registry() -> Registry:
@@ -473,11 +480,11 @@ def design_page() -> None:
         uploaded = sum(len(design.images.get(spec.key, [])) for _, spec in diagram_fields)
         drawn = sum(1 for section, _ in diagram_fields if section.key in flows)
         with st.expander(f"4. Diagrams: {uploaded} image(s) uploaded, {drawn} drawn from the brief, {len(diagram_fields)} slots", expanded=False):
-            st.caption("Draw from brief asks the model for the flow (systems, steps, arrows) and draws it as editable shapes on the slide; the Mermaid text is saved for draw.io. An uploaded image always wins over a drawing.")
+            st.caption("Draw asks the model for the flow (systems, steps, arrows), draws it as editable shapes on the slide and keeps a draw.io and a Mermaid file next to it; a popup lets you pick the format to work with. SAP icons are used when the brief is about SAP. An uploaded image always wins over a drawing.")
             requests = {f.section: f for f in (design.plan.flows if design.plan else [])}
             pending = [section for section, spec in diagram_fields if section.key not in flows and not design.images.get(spec.key) and section.key not in design.hidden]
             if pending and st.button(f"Draw {len(pending)} diagram(s) from the brief", key=f"{state_key}:draw_all"):
-                _draw_flows_for(state_key, design, store, pending, requests, provider, settings)
+                _diagram_format_dialog(state_key, pending, requests, provider, settings)
             if st.session_state.get(f"{state_key}:flow_note"):
                 st.info(st.session_state.pop(f"{state_key}:flow_note"))
             for section, spec in diagram_fields:
@@ -493,14 +500,17 @@ def design_page() -> None:
                         store.save(design)
                         st.rerun()
                 flow = flows.get(section.key)
-                col_draw, col_mermaid, col_remove = st.columns(3)
+                col_draw, col_drawio, col_mermaid, col_remove = st.columns(4)
                 if flow is not None:
-                    st.caption("Drawn from the brief: " + " → ".join(n.label for n in flow.nodes[:6]) + (" …" if len(flow.nodes) > 6 else ""))
+                    chosen = design.diagram_formats.get(section.key, design.diagram_format)
+                    st.caption("Drawn from the brief: " + " → ".join(n.label for n in flow.nodes[:6]) + (" …" if len(flow.nodes) > 6 else "") + f". Format: {DIAGRAM_FORMATS.get(chosen, chosen)}." + (" Open the file, adjust it, export a PNG and upload it above to replace the drawing." if chosen != "shapes" else ""))
                     with col_draw:
                         if st.button("Redraw from brief", key=f"{state_key}:draw:{section.key}"):
-                            _draw_flows_for(state_key, design, store, [section], requests, provider, settings)
+                            _diagram_format_dialog(state_key, [section], requests, provider, settings)
+                    with col_drawio:
+                        st.download_button("draw.io file", data=to_drawio(flow), file_name=f"{section.key}.drawio", key=f"{state_key}:drawio:{section.key}")
                     with col_mermaid:
-                        st.download_button("Mermaid for draw.io", data=to_mermaid(flow), file_name=f"{section.key}.mmd", key=f"{state_key}:mmd:{section.key}")
+                        st.download_button("Mermaid", data=to_mermaid(flow), file_name=f"{section.key}.mmd", key=f"{state_key}:mmd:{section.key}")
                     with col_remove:
                         if st.button("Remove drawing", key=f"{state_key}:undraw:{section.key}"):
                             store.delete_flow(design, section.key)
@@ -508,7 +518,7 @@ def design_page() -> None:
                 else:
                     with col_draw:
                         if st.button("Draw from brief", key=f"{state_key}:draw:{section.key}"):
-                            _draw_flows_for(state_key, design, store, [section], requests, provider, settings)
+                            _diagram_format_dialog(state_key, [section], requests, provider, settings)
 
     content = load_markdown(design.content_markdown, manifest) if design.content_markdown.strip() else Content()
     sections = _writable(blueprint, manifest)
@@ -1253,7 +1263,7 @@ def _draw_planned_flows(design: Design, store: DesignStore, llm) -> int:
     try:
         planner = llm.with_effort("medium") if hasattr(llm, "with_effort") else llm
         with st.spinner(f"Drawing {len(pending)} diagram(s) from the brief."):
-            specs = plan_flows(design.brief, pending, planner)
+            specs = plan_flows(design.brief, pending, planner, icons=_flow_icons(design))
     except (LLMNotConfigured, LLMError) as exc:
         st.warning(f"Diagrams were not drawn: {exc}")
         return 0
@@ -1287,7 +1297,7 @@ def _draw_flows_for(state_key: str, design: Design, store: DesignStore, sections
         planner = llm.with_effort("medium") if hasattr(llm, "with_effort") else llm
         wanted = [requests.get(s.key) or FlowRequest(section=s.key, title=design.titles.get(s.key, s.title), purpose=s.ask) for s in sections]
         with st.spinner("Designing the diagrams."):
-            specs = plan_flows(design.brief, wanted, planner)
+            specs = plan_flows(design.brief, wanted, planner, icons=_flow_icons(design))
     except (LLMNotConfigured, LLMError) as exc:
         st.error(str(exc))
         return
@@ -1296,6 +1306,31 @@ def _draw_flows_for(state_key: str, design: Design, store: DesignStore, sections
     missing = [design.titles.get(s.key, s.title) for s in sections if s.key not in specs]
     st.session_state[f"{state_key}:flow_note"] = f"Drew {len(specs)} diagram(s) from the brief." + (f" The model returned no flow for: {', '.join(missing)}." if missing else "")
     st.rerun()
+
+
+def _flow_icons(design: Design) -> list[str] | None:
+    """The icon catalogue when the brief is about SAP; the user is never asked."""
+    return icon_keys() if uses_sap(design.brief) else None
+
+
+@st.dialog("Draw diagrams", width="medium")
+def _diagram_format_dialog(state_key: str, sections: list, requests: dict, provider: str, settings: dict) -> None:
+    design: Design = st.session_state[state_key]
+    store = design_store()
+    names = ", ".join(design.titles.get(s.key, s.title) for s in sections)
+    st.caption(f"Diagrams: {names}. The deck always gets the shape drawing; draw.io and Mermaid add a file you can open, adjust and export as PNG, then upload to replace the drawing." + (" The brief is about SAP, so the SAP icon set is used." if uses_sap(design.brief) else ""))
+    current = design.diagram_format if design.diagram_format in DIAGRAM_FORMATS else "shapes"
+    choice = st.radio("Format", list(DIAGRAM_FORMATS), format_func=DIAGRAM_FORMATS.get, index=list(DIAGRAM_FORMATS).index(current), key=f"{state_key}:fmt:choice")
+    everywhere = st.checkbox("Use this format for all diagrams of this design", value=True, key=f"{state_key}:fmt:all")
+    if st.button("Draw", type="primary", key=f"{state_key}:fmt:go"):
+        if everywhere:
+            design.diagram_format = choice
+            design.diagram_formats = {}
+        else:
+            for section in sections:
+                design.diagram_formats[section.key] = choice
+        store.save(design)
+        _draw_flows_for(state_key, design, store, sections, requests, provider, settings)
 
 
 def _write_title(design: Design) -> str:

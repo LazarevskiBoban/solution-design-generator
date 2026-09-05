@@ -128,6 +128,9 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     assert [e["title"] for e in ui._visible_entries(twice, fresh, blueprint)] == ["A", "A (cont.)"]
     assert ui.SHORTCUTS == {"previous": "Left", "next": "Right", "up": "Up", "down": "Down", "hide": "Delete"}
     assert "max-height" in ui.VIEWER_CSS and ui._write_title(fresh) == "3. Write the slides"
+    assert list(ui.DIAGRAM_FORMATS) == ["shapes", "drawio", "mermaid"]
+    assert ui._flow_icons(ui.Design(name="s", template="demo", brief=ui.Brief(subject="x", about="SAP S/4HANA lockbox"))) == ui.icon_keys()
+    assert ui._flow_icons(fresh) is None
 
     entry = Registry(registry_with_demo).load("demo")
     entry.manifest.field("scope").static = True
