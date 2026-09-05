@@ -135,6 +135,20 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     assert not (registry_with_demo / "demo").exists()
 
 
+def test_design_page_picks_the_reasoning_deployment(registry_with_demo, monkeypatch):
+    monkeypatch.setenv("SDGEN_LLM", "azure")
+    monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1,gpt-5,gpt-4o-mini")
+    app = AppTest.from_file(str(APP), default_timeout=60).run()
+    assert not app.exception and app.selectbox(key="llm_provider").value == "azure"
+    assert app.session_state["llm"][1]["model"] == "gpt-5"
+    app.text_input(key="design_name:demo").input("Lockbox").run()
+    assert not app.exception
+    picker = app.selectbox(key="design:demo:lockbox:deployment")
+    assert picker.value == "gpt-5" and picker.options == ["gpt-4.1", "gpt-5", "gpt-4o-mini"]
+    picker.select("gpt-4.1").run()
+    assert not app.exception and app.selectbox(key="design:demo:lockbox:deployment").value == "gpt-4.1"
+
+
 def _app_module():
     spec = importlib.util.spec_from_file_location("sdgen_ui_app", APP)
     module = importlib.util.module_from_spec(spec)

@@ -114,6 +114,11 @@ class OpenAILLM:
         return choice.message.content or ""
 
 
+def default_deployment(deployments: list[str]) -> str:
+    """The first reasoning deployment when there is one, else the first entry."""
+    return next((d for d in deployments if REASONING_MODEL_RE.match(d)), deployments[0] if deployments else "")
+
+
 def parse_json(text: str) -> dict:
     body = text.strip()
     fence = re.match(r"^```(?:json)?\s*\n(.*?)\n```\s*$", body, re.DOTALL)

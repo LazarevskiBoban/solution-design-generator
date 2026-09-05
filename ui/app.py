@@ -15,7 +15,7 @@ from sdgen.brief import BRIEF_FIELDS, DEVELOPER_FIELDS, FACTS_BY_KEY, Brief, fac
 from sdgen.content import Content, dump_markdown, load_markdown
 from sdgen.design import Design, DesignStore
 from sdgen.inventory import DeckInfo
-from sdgen.llm import DEFAULT_AZURE_API_VERSION, DEFAULT_OPENAI_MODEL, LLMError, LLMNotConfigured, get_llm
+from sdgen.llm import DEFAULT_AZURE_API_VERSION, DEFAULT_OPENAI_MODEL, LLMError, LLMNotConfigured, default_deployment, get_llm
 from sdgen.manifest import FieldSpec, GlobalSpec, Manifest
 from sdgen.mapping.extract import extract_fields
 from sdgen.mapping.model import MappingEntry, MappingSet, SourceSpec, TargetSpec
@@ -64,10 +64,10 @@ def provider_settings() -> tuple[str, dict[str, str]]:
             raw = st.text_input(
                 "Deployments",
                 key=_init("llm_deployment", _secret("AZURE_OPENAI_DEPLOYMENT")),
-                help="Deployment names from Foundry, comma separated; the first is the default. For example gpt-4.1, gpt-5, gpt-4o-mini.",
+                help="Deployment names from Foundry, comma separated. gpt-5 is used by default when it is listed, otherwise the first one. For example gpt-4.1, gpt-5, gpt-4o-mini.",
             )
             deployments = [d.strip() for d in raw.split(",") if d.strip()]
-            settings["model"] = deployments[0] if deployments else ""
+            settings["model"] = default_deployment(deployments)
             settings["deployments"] = ",".join(deployments)
             settings["api_key"] = st.text_input("API key", type="password", key=_init("llm_azure_key", _secret("AZURE_OPENAI_API_KEY")))
             settings["api_version"] = st.text_input("API version", key=_init("llm_api_version", _secret("AZURE_OPENAI_API_VERSION") or DEFAULT_AZURE_API_VERSION))
@@ -342,6 +342,13 @@ def design_page() -> None:
     settings = dict(settings)
     deployments = [d for d in settings.get("deployments", "").split(",") if d]
     model = settings.get("model", "")
+    if len(deployments) > 1:
+        chosen_key = f"{state_key}:deployment"
+        if st.session_state.get(chosen_key) not in deployments:
+            remembered = design.llm.split(":", 1)[1] if design.llm.startswith(f"{provider}:") else ""
+            st.session_state[chosen_key] = remembered if remembered in deployments else default_deployment(deployments)
+        settings["model"] = st.selectbox("Model for this design", deployments, key=chosen_key, help="Used for the section plan, the facts, the writing and the diagrams. gpt-5 is picked by default when it is listed.")
+        model = settings["model"]
 
     with st.expander("1. Brief", expanded=design.brief.is_empty):
         subject = st.text_input("Integration name (used in slide titles)", key=_init(f"{prefix}b:subject", design.brief.subject))
@@ -431,15 +438,11 @@ def design_page() -> None:
     written = bool(design.content_markdown.strip())
     with st.expander(_write_title(design), expanded=not written or bool(st.session_state.get(f"{state_key}:draft_done"))):
         st.caption("This sends the brief and the facts to the model and fills every slide section (about a minute). Run it after the section plan. Nothing appears under Review sections until it has run; Generate runs it on its own when nothing has been written yet.")
-        col_draft, col_model, col_info = st.columns([1, 1, 2], vertical_alignment="center")
+        col_draft, col_info = st.columns([1, 3], vertical_alignment="center")
         with col_draft:
             draft_clicked = st.button("Write the slides from the brief", type="primary", key=f"{state_key}:draft", help="Fills every section from the brief and the facts. Sections you edited after the previous run are kept.")
-        with col_model:
-            if len(deployments) > 1:
-                settings["model"] = st.selectbox("Draft with", deployments, key=f"{state_key}:deployment", label_visibility="collapsed", help="The deployment that writes the slides.")
-                model = settings["model"]
         with col_info:
-            st.caption(f"Provider: {provider}" + (f" ({model})" if model else "") + ". Change it under AI provider in the sidebar. Changes are saved automatically.")
+            st.caption(f"Provider: {provider}" + (f" ({model})" if model else "") + ". Change the model above the brief or the provider under AI provider in the sidebar. Changes are saved automatically.")
         if draft_clicked:
             _run_draft(state_key, entry, design, store, subject, version, provider, settings)
         if st.session_state.get(f"{state_key}:draft_done"):
