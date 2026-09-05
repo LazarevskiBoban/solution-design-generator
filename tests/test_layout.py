@@ -43,7 +43,7 @@ def test_blocks_bands_and_headers():
     assert names[left.header] == "Left Bar" and not layout.is_full_width(left)
     right = layout.block_of(shapes["inner"].shape_id)
     assert sorted(names[i] for i in right.members) == ["Right Bar", "Right Container", "Right Inner"]
-    assert layout.content.top == top.box.top and layout.content.bottom == Inches(5.65)
+    assert layout.content.top == top.box.top and layout.content.bottom == Inches(5.65) and layout.floor == Inches(6.95)
 
 
 def test_side_by_side_top_row_is_not_full_width():

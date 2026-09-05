@@ -13,6 +13,7 @@ HEADER_GAP = Inches(0.15)
 GAP_TIE = Inches(0.05)
 CONTAIN_TOL = Inches(0.05)
 BOTTOM_BAND = Inches(0.6)
+BOTTOM_MARGIN = Inches(0.35)
 FULL_WIDTH = 0.8
 
 
@@ -61,6 +62,8 @@ class SlideLayout:
     bottom_band: list[int]
     blocks: list[Block]
     content: Box | None
+    bound: dict[int, str] = field(default_factory=dict)
+    floor: int = 0  # how far down a block may grow: above the footer band, else near the slide bottom
 
     def block_of(self, shape_id: int) -> Block | None:
         return next((b for b in self.blocks if shape_id in b.members), None)
@@ -123,7 +126,11 @@ def analyse_slide(slide, bound: dict[int, str], slide_height: int) -> SlideLayou
         header = next((h for h, t in attached.items() if t == s), None)
         blocks.append(Block(members=members, box=box, fields={bound[m] for m in members if m in bound}, header=header))
     content_box = reduce(Box.union, (b.box for b in blocks)) if blocks else None
-    return SlideLayout(title=title_id, top_band=top_band, bottom_band=bottom_band, blocks=blocks, content=content_box)
+    if bottom_band:
+        floor = min(boxes[i].top for i in bottom_band) - BAND_PAD
+    else:
+        floor = max(content_box.bottom if content_box else 0, slide_height - BOTTOM_MARGIN)
+    return SlideLayout(title=title_id, top_band=top_band, bottom_band=bottom_band, blocks=blocks, content=content_box, bound=dict(bound), floor=floor)
 
 
 def shift_shapes(slide, shape_ids: list[int], dy: int) -> None:

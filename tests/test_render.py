@@ -352,7 +352,7 @@ def test_top_block_expands_and_pushes_the_rest(tmp_path):
     prs, _, shapes = overview_deck()
     deck = tmp_path / "overview.pptx"
     prs.save(deck)
-    need = "Lockbox files arrive daily from three banks over SWIFT and must be posted automatically without manual work."
+    need = "Lockbox files arrive daily from three banks over SWIFT. They must be posted automatically without manual work."
     content = Content(fields={"need": need, "left": "Left text", "inner": "Inner text"})
     result = render(deck, _overview_manifest(shapes), content, tmp_path / "out.pptx", spill=True)
     assert result.slides == 2 and result.slide_map == [1, 1] and not result.errors
@@ -360,7 +360,7 @@ def test_top_block_expands_and_pushes_the_rest(tmp_path):
     first, second = Presentation(str(tmp_path / "out.pptx")).slides
     on_first = {s.name: s for s in first.shapes}
     assert {"Need Bar", "Need Box", "Footer"} <= set(on_first) and not {"Left Bar", "Left Box", "Right Inner"} & set(on_first)
-    assert on_first["Need Box"].top + on_first["Need Box"].height == Inches(5.65) and on_first["Need Box"].text_frame.text == need
+    assert on_first["Need Box"].top + on_first["Need Box"].height == Inches(6.95) and on_first["Need Box"].text_frame.text == need
     assert not first.shapes.title.text.endswith("(cont.)")
     on_second = {s.name: s for s in second.shapes}
     assert {"Left Bar", "Left Box", "Right Bar", "Right Container", "Right Inner", "Footer"} <= set(on_second) and "Need Box" not in on_second
@@ -383,3 +383,39 @@ def test_expand_continues_on_copies_before_the_pushed_slide(tmp_path):
     assert all(box is not None for box in boxes[:-1]) and boxes[-1] is None
     assert "\n".join(box.text_frame.text for box in boxes[:-1]) == need
     assert all(sl.shapes.title.text.endswith("(cont.)") for sl in slides[1:]) and "Left Box" in {s.name for s in slides[-1].shapes}
+
+
+def test_other_overflowing_block_continues_after_the_pushed_slide(tmp_path):
+    from test_layout import overview_deck
+
+    prs, _, shapes = overview_deck()
+    deck = tmp_path / "overview.pptx"
+    prs.save(deck)
+    manifest = _overview_manifest(shapes)
+    manifest.field("left").bindings[0].max_chars = 20
+    need = "Lockbox files arrive daily from three banks over SWIFT. They must be posted automatically without manual work."
+    left = chr(10).join(f"Left paragraph {i} with a few words." for i in range(1, 5))
+    content = Content(fields={"need": need, "left": left, "inner": "Inner text"})
+    result = render(deck, manifest, content, tmp_path / "out.pptx", spill=True)
+    slides = list(Presentation(str(tmp_path / "out.pptx")).slides)
+    assert result.slide_map == [1] * len(slides) and len(slides) >= 3 and not result.errors
+    first, pushed, tail = slides[0], slides[1], slides[2:]
+    assert "Need Box" in {s.name for s in first.shapes} and "Left Box" not in {s.name for s in first.shapes}
+    pushed_names = {s.name for s in pushed.shapes}
+    assert {"Left Bar", "Left Box", "Right Inner"} <= pushed_names and "Need Box" not in pushed_names
+    for copy in tail:
+        names = {s.name for s in copy.shapes}
+        assert "Left Box" in names and "Right Inner" not in names and "Need Box" not in names
+    texts = [{s.name: s for s in sl.shapes}["Left Box"].text_frame.text for sl in slides[1:]]
+    assert chr(10).join(t for t in texts if t) == left
+
+
+def test_long_paragraph_is_cut_at_sentence_ends():
+    from sdgen.fill.text import parse_blocks
+    from sdgen.render import _split_blocks
+
+    text = "First sentence of the story. Second sentence follows it. Third one is here. Fourth closes it."
+    chunks = _split_blocks(parse_blocks(text), 40)
+    assert [" ".join(b.text for b in chunk) for chunk in chunks] == ["First sentence of the story.", "Second sentence follows it.", "Third one is here. Fourth closes it."]
+    assert _split_blocks(parse_blocks("One sentence only that is long enough to exceed the limit by itself"), 40) == [parse_blocks("One sentence only that is long enough to exceed the limit by itself")]
+

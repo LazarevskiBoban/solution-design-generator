@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Literal
 
 from pptx import Presentation
+from pptx.enum.text import MSO_ANCHOR
 from pydantic import BaseModel, Field
 
 from sdgen.content import Content, ImageValue, images_of, parse_pipe_table
@@ -12,12 +14,13 @@ from sdgen.fill.image import replace_picture
 from sdgen.flow import FlowSpec, draw_flow
 from sdgen.fill.slides import clone_slide, move_slide, remove_slide
 from sdgen.fill.table import clear_table_body, fill_table
-from sdgen.fill.text import Block, capacity_chars_of, fit_text_shape, line_chars_of, overflow_ratio, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text, theme_fonts
+from sdgen.fill.text import Block, Span, capacity_chars_of, fit_text_shape, line_chars_of, overflow_ratio, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text, theme_fonts
 from sdgen.inventory import find_shape, walk_shapes
 from sdgen.layout import CONTAIN_TOL, SlideLayout, analyse_slide, shift_shapes
 from sdgen.manifest import Binding, FieldSpec, Manifest
 
 CONTINUATION_SUFFIX = " (cont.)"
+SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 SPILL_RATIO = 1.25
 MissingMode = Literal["keep", "blank", "placeholder"]
 PLACEHOLDER_ROW = "[To be completed]"
@@ -350,7 +353,7 @@ def _apply(prs, slide, shape, spec: FieldSpec, binding: Binding, value: Any, iss
             set_rich_text(target, chunk, keep_prefix=binding.keep_prefix)
             _shrink(target, spec, binding, issues, theme)
         return []
-    if over and spill:
+    if over and spill and (len(blocks) > 1 or len(SENTENCE_RE.split(text.strip())) > 1):
         return blocks
     if capacity and len(text) > capacity:
         issues.append(RenderIssue(level="info", field=spec.key, slide=binding.slide, message=f"text is {len(text)} characters, about {capacity} fit; shrunk to fit"))
@@ -386,8 +389,16 @@ def _continue_slide(prs, slide, layout: SlideLayout | None, manifest: Manifest |
             _continue_composite(prs, slide, manifest, number, _chunk_pending(slide, pending, theme, {}, False, issues), issues, kept)
             return []
         top = layout.top_block()
-        if top is not None and all(block is top for block in blocks.values()) and layout.is_full_width(top):
-            return _expand_and_push(prs, slide, layout, top, pending, number, theme, issues)
+        if top is not None and layout.is_full_width(top) and any(block is top for block in blocks.values()):
+            top_pending = {k: v for k, v in pending.items() if blocks[k] is top}
+            rest_pending = {k: v for k, v in pending.items() if blocks[k] is not top}
+            copies = _expand_and_push(prs, slide, layout, top, top_pending, number, theme, issues)
+            if rest_pending and copies:
+                # The other overflowing boxes now sit on the pushed slide and continue from there.
+                pushed = copies[-1]
+                pushed_layout = analyse_slide(pushed, {i: k for i, k in layout.bound.items() if i not in top.members}, prs.slide_height)
+                copies += _continue_slide(prs, pushed, pushed_layout, manifest, number, rest_pending, theme, issues, kept)
+            return copies
         return _continue_cleaned(prs, slide, layout, pending, number, theme, issues)
     except Exception as exc:
         issues.append(RenderIssue(level="error", slide=number, message=f"could not continue the slide, text shrunk instead: {exc}"))
@@ -405,13 +416,13 @@ def _expand_and_push(prs, slide, layout: SlideLayout, top, pending: dict, number
     other_ids = [i for b in others for i in b.members]
     pushed = clone_slide(prs, slide) if others else None
     remove_shapes(slide, _shapes(slide, other_ids))
-    delta = layout.content.bottom - top.box.bottom
+    delta = max(0, layout.floor - top.box.bottom)
     scales: dict[int, float] = {}
     for shape_id in top.members:
         shape = find_shape(slide, shape_id)
         if shape is not None and shape.height and abs(shape.top + shape.height - top.box.bottom) <= CONTAIN_TOL:
             scales[shape_id] = (shape.height + delta) / shape.height
-            shape.height = shape.height + delta
+            _grow(shape, delta)
     if pushed is not None:
         remove_shapes(pushed, _shapes(pushed, top.members))
         shift_shapes(pushed, other_ids, top.box.top - min(b.box.top for b in others))
@@ -436,7 +447,7 @@ def _continue_cleaned(prs, slide, layout: SlideLayout, pending: dict, number: in
     growth: dict[int, int] = {}
     for b in keep:
         below = any(o is not b and o.box.top >= b.box.bottom - CONTAIN_TOL and o.box.overlap_x(b.box) > 0 for o in keep)
-        growth[id(b)] = 0 if below else layout.content.bottom - (b.box.bottom - shift)
+        growth[id(b)] = 0 if below else max(0, layout.floor - (b.box.bottom - shift))
     scales: dict[str, float] = {}
     for key, (_, binding, _) in pending.items():
         block = layout.block_of(binding.shape.id)
@@ -451,11 +462,12 @@ def _continue_cleaned(prs, slide, layout: SlideLayout, pending: dict, number: in
             for shape_id in b.members:
                 shape = find_shape(copy, shape_id)
                 if shape is not None and growth[id(b)] > 0 and abs(shape.top + shape.height - (b.box.bottom - shift)) <= CONTAIN_TOL:
-                    shape.height = shape.height + growth[id(b)]
+                    _grow(shape, growth[id(b)])
 
     chunked = _chunk_pending(slide, pending, theme, scales, False, issues)
     copies = _spread(prs, slide, chunked, theme, issues, prepare)
-    issues.append(RenderIssue(level="info", slide=number, message=f"continued on {len(copies)} extra slide(s) that show only the continued block(s)"))
+    if copies:
+        issues.append(RenderIssue(level="info", slide=number, message=f"continued on {len(copies)} extra slide(s) that show only the continued block(s)"))
     return copies
 
 
@@ -506,6 +518,13 @@ def _shapes(slide, shape_ids) -> list:
     return [s for s in (find_shape(slide, i) for i in shape_ids) if s is not None]
 
 
+def _grow(shape, delta: int) -> None:
+    """A box that gets taller reads from the top, whatever the template anchored it to."""
+    shape.height = shape.height + delta
+    if getattr(shape, "has_text_frame", False):
+        shape.text_frame.vertical_anchor = MSO_ANCHOR.TOP
+
+
 def _continue_composite(prs, slide, manifest: Manifest, number: int, pending: dict, issues: list[RenderIssue], kept: set[str] | None = None) -> None:
     """Copies a slide as often as its longest box needs; every copy continues each long box and blanks the rest."""
     count = max(len(chunks) for _, _, chunks in pending.values())
@@ -540,10 +559,14 @@ def _shrink(shape, spec: FieldSpec, binding: Binding, issues: list[RenderIssue],
 
 def _split_blocks(blocks: list[Block], first: int, line_chars: int = 0, rest: int | None = None) -> list[list[Block]]:
     """Cuts paragraphs into chunks; every paragraph costs at least one line so short bullets count."""
+    widest = max(first, rest or first)
+    pieces: list[Block] = []
+    for block in blocks:
+        pieces.extend(_sentence_pieces(block, widest) if len(block.text) + 1 > widest else [block])
     chunks: list[list[Block]] = [[]]
     used = 0
     limit = first
-    for block in blocks:
+    for block in pieces:
         size = max(len(block.text) + 1, line_chars)
         if chunks[-1] and used + size > limit:
             chunks.append([])
@@ -554,15 +577,29 @@ def _split_blocks(blocks: list[Block], first: int, line_chars: int = 0, rest: in
     return chunks
 
 
+def _sentence_pieces(block: Block, limit: int) -> list[Block]:
+    """A paragraph longer than any box is cut at sentence ends; inline formatting is dropped in that case."""
+    sentences = [s for s in SENTENCE_RE.split(block.text.strip()) if s]
+    if len(sentences) < 2:
+        return [block]
+    groups: list[str] = []
+    for sentence in sentences:
+        if groups and len(groups[-1]) + 1 + len(sentence) <= limit:
+            groups[-1] = groups[-1] + " " + sentence
+        else:
+            groups.append(sentence)
+    return [Block(spans=[Span(text=group)], bullet=block.bullet, level=block.level) for group in groups]
+
+
 def _mark_continuation(slide) -> None:
     title = slide.shapes.title
     if title is None or title.text.endswith(CONTINUATION_SUFFIX):
         return
     paragraph = title.text_frame.paragraphs[-1]
     if paragraph.runs:
-        paragraph.runs[-1].text += CONTINUATION_SUFFIX
+        paragraph.runs[-1].text = paragraph.runs[-1].text.rstrip() + CONTINUATION_SUFFIX
     else:
-        paragraph.text = paragraph.text + CONTINUATION_SUFFIX
+        paragraph.text = paragraph.text.rstrip() + CONTINUATION_SUFFIX
 
 
 def _as_text(value: Any) -> str:
