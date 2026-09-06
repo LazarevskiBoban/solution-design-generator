@@ -83,6 +83,15 @@ def test_delete_removes_the_design_folder(tmp_path):
         store.delete("lockbox")
 
 
+def test_templates_lists_the_owner_of_every_design(tmp_path):
+    store = DesignStore(tmp_path / "designs")
+    assert store.templates() == {} and store.names() == []
+    store.save(Design(name="one", template="demo"))
+    store.save(Design(name="two", template="gone"))
+    assert store.templates() == {"one": "demo", "two": "gone"}
+    assert store.names("demo") == ["one"] and store.names() == ["one", "two"]
+
+
 def test_hidden_and_order_are_persisted(tmp_path):
     store = DesignStore(tmp_path / "designs")
     design = Design(name="lockbox", template="demo", hidden=["duplicate_checker"], order=["cover", "executive_overview"])

@@ -105,6 +105,10 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     app.sidebar.radio[0].set_value("Templates").run()
     app.button(key="template_remove").click().run()
     assert not app.exception
+    assert "Remove a design" in [e.label for e in app.expander]
+    assert app.selectbox(key="design_remove_choice").options == ["camt-053 (demo)"]
+    app.button(key="design_remove").click().run()
+    assert not app.exception
 
     ui = _app_module()
     blueprint = Registry(registry_with_demo).load("demo").blueprint
@@ -162,10 +166,11 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     assert ui._skipped_sections(ui.Design(name="s", template="demo", hidden=["a"], modes={"b": "blank", "c": "keep"})) == {"a", "b"}
     assert ui._kept_sections(ui.Design(name="s", template="demo", modes={"b": "blank", "c": "keep"})) == {"c"}
 
-    ui._delete_design(DesignStore(tmp_path / "designs"), "demo", "camt-053")
-    assert not (tmp_path / "designs" / "camt-053").exists()
-    ui._remove_template(Registry(registry_with_demo), "demo")
-    assert not (registry_with_demo / "demo").exists()
+    store.save(ui.Design(name="second", template="demo"))
+    ui._delete_design(store, "demo", "camt-053")
+    assert not (tmp_path / "designs" / "camt-053").exists() and store.names("demo") == ["second"]
+    ui._remove_template(Registry(registry_with_demo), store, "demo")
+    assert not (registry_with_demo / "demo").exists() and store.names() == [] and not (tmp_path / "designs" / "second").exists()
 
 
 def test_design_page_picks_the_reasoning_deployment(registry_with_demo, monkeypatch):

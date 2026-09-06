@@ -118,6 +118,7 @@ def main() -> None:
 def templates_page() -> None:
     st.header("Templates")
     reg = registry()
+    store = design_store()
     names = reg.names()
     if names:
         rows = []
@@ -127,11 +128,11 @@ def templates_page() -> None:
         st.dataframe(pd.DataFrame(rows), hide_index=True)
         with st.expander("Remove a template", expanded=False):
             target = st.selectbox("Template", names, key="template_remove_choice")
-            used_by = design_store().names(target)
+            used_by = store.names(target)
             question = f"Remove template '{target}' and its stored deck?"
             if used_by:
-                question += f" {len(used_by)} design(s) built on it stay on disk but disappear from the New design page: {', '.join(used_by)}."
-            _confirm_delete("template_remove", "Remove template", question, lambda: _remove_template(reg, target))
+                question += f" The {len(used_by)} design(s) built on it go with it, drawings included: {', '.join(used_by)}."
+            _confirm_delete("template_remove", "Remove template", question, lambda: _remove_template(reg, store, target))
         with st.expander("Re-analyze a template", expanded=False):
             st.caption("Runs the analysis again on the stored original deck and keeps your section titles, kinds and field keys. Field detection and text budgets follow the current analyzer.")
             again = st.selectbox("Template", names, key="template_reanalyze_choice")
@@ -144,6 +145,12 @@ def templates_page() -> None:
                     st.success(f"Template '{entry.name}' analysed again: {len(entry.blueprint.sections)} sections, {len(entry.manifest.fields)} fields.")
     else:
         st.caption("No templates yet.")
+    owners = store.templates()
+    if owners:
+        with st.expander("Remove a design", expanded=False):
+            st.caption("Deletes the design with its brief, sections, images, drawings and mappings. The template stays.")
+            victim = st.selectbox("Design", list(owners), format_func=lambda n: f"{n} ({owners[n]})" + ("" if owners[n] in names else ", template removed"), key="design_remove_choice")
+            _confirm_delete("design_remove", "Remove design", f"Delete design '{victim}' with its brief, sections, images, drawings and mappings? This cannot be undone.", lambda: _delete_design(store, owners[victim], victim))
 
     st.subheader("Add a template")
     upload = st.file_uploader("PowerPoint deck", type=["pptx"], key="template_upload")
@@ -341,7 +348,7 @@ def design_page() -> None:
         with col_delete:
             _confirm_delete(
                 f"design:{template}:{name}:delete",
-                "Delete design",
+                "Delete this design",
                 f"Delete design '{name}' with its brief, sections, images and mappings? This cannot be undone.",
                 lambda: _delete_design(store, template, name),
             )
@@ -971,12 +978,22 @@ def _slide_text(section, fields: dict) -> str:
 
 def _delete_design(store: DesignStore, template: str, name: str) -> None:
     store.delete(name)
+    _forget_design(template, name)
+
+
+def _forget_design(template: str, name: str) -> None:
     for key in [k for k in st.session_state if str(k) == f"design:{template}:{name}" or str(k).startswith(f"design:{template}:{name}:")]:
         del st.session_state[key]
-    st.session_state.pop(f"design_choice:{template}", None)
+    if f"design_choice:{template}" in st.session_state:
+        st.session_state[f"design_choice:{template}"] = NEW_DESIGN
+    for key in (f"mapping_design:{template}", "design_remove_choice"):
+        st.session_state.pop(key, None)
 
 
-def _remove_template(reg: Registry, target: str) -> None:
+def _remove_template(reg: Registry, store: DesignStore, target: str) -> None:
+    for name in store.names(target):
+        store.delete(name)
+        _forget_design(target, name)
     reg.remove(target)
     for key in ("template_remove_choice", "design_template"):
         st.session_state.pop(key, None)

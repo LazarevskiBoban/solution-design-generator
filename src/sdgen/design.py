@@ -55,19 +55,19 @@ class DesignStore:
         self.root = Path(root)
 
     def names(self, template: str | None = None) -> list[str]:
+        return [name for name, owner in self.templates().items() if template is None or owner == template]
+
+    def templates(self) -> dict[str, str]:
+        """The template every stored design was built on, by design name."""
         if not self.root.is_dir():
-            return []
-        names = []
+            return {}
+        found = {}
         for folder in sorted(self.root.iterdir()):
             meta = folder / DESIGN_FILE
-            if not meta.is_file():
-                continue
-            if template is not None:
+            if meta.is_file():
                 data = yaml.safe_load(meta.read_text(encoding="utf-8")) or {}
-                if data.get("template") != template:
-                    continue
-            names.append(folder.name)
-        return names
+                found[folder.name] = str(data.get("template") or "")
+        return found
 
     def delete(self, name: str) -> None:
         folder = self.root / name
