@@ -151,3 +151,43 @@ def test_build_notes_extra_is_a_text_slide(sample_deck, tmp_path):
     assert extra.key == "extra_build_notes" and extra.kind == "text" and extra.columns == [] and extra.prototype == first.key
     assert "build notes" in llm.prompts[0][0].lower()
 
+
+
+def test_walkthrough_extras_follow_diagram_only_slides():
+    from sdgen.blueprint import Blueprint, Section
+    from sdgen.design import Design
+    from sdgen.flow import FlowEdge, FlowNode, FlowSpec
+    from sdgen.manifest import Binding, FieldSpec, Manifest, ShapeRef
+    from sdgen.plan import extended_blueprint, walkthrough_extras
+
+    manifest = Manifest(
+        name="t",
+        fields=[
+            FieldSpec(key="flow_img", label="Flow", kind="image", bindings=[Binding(slide=2, shape=ShapeRef(id=5))]),
+            FieldSpec(key="arch_img", label="Arch", kind="image", bindings=[Binding(slide=3, shape=ShapeRef(id=6))]),
+            FieldSpec(key="arch_note", label="Note", kind="bullets", bindings=[Binding(slide=3, shape=ShapeRef(id=7), max_chars=500)]),
+            FieldSpec(key="body", label="Body", kind="text", bindings=[Binding(slide=4, shape=ShapeRef(id=8), max_chars=900)]),
+        ],
+    )
+    blueprint = Blueprint(
+        name="t",
+        sections=[
+            Section(key="flow", title="Level 2 Flows", kind="diagram", slide=2, fields=["flow_img"]),
+            Section(key="arch", title="Architecture", kind="diagram", slide=3, fields=["arch_img", "arch_note"]),
+            Section(key="notes", title="Notes", kind="text", slide=4, fields=["body"]),
+        ],
+    )
+    spec = FlowSpec(nodes=[FlowNode(id="a", label="A"), FlowNode(id="b", label="B")], edges=[FlowEdge(source="a", target="b", label="x")], steps=["A sends B."])
+    flows = {"flow": spec, "arch": spec}
+    design = Design(name="d", template="t", titles={"flow": "Inbound path"})
+    extras = walkthrough_extras(design, blueprint, manifest, flows, ["flow", "arch", "notes"])
+    assert [e.key for e in extras] == ["flow_walkthrough"]
+    extra = extras[0]
+    assert extra.title == "Inbound path: how it works" and extra.before == "arch" and extra.prototype == "notes" and extra.generated and extra.kind == "text"
+    extended = extended_blueprint(blueprint, extras)
+    assert [s.key for s in extended.sections] == ["flow", "flow_walkthrough", "arch", "notes"] and extended.section("flow_walkthrough").generated
+
+    design.modes["arch"] = "blank"
+    assert [(e.key, e.before) for e in walkthrough_extras(design, blueprint, manifest, flows, ["arch", "flow", "notes"])] == [("flow_walkthrough", "notes"), ("arch_walkthrough", "flow")]
+    design.hidden = ["flow"]
+    assert [e.key for e in walkthrough_extras(design, blueprint, manifest, flows)] == ["arch_walkthrough"]

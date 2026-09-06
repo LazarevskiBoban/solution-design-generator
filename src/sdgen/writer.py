@@ -284,7 +284,7 @@ def writable_sections(
     """Sections and fields to write; `token_only` sections are kept as they are except for their placeholder tokens."""
     result = []
     for section in blueprint.sections:
-        if section.kind in SKIP_KINDS or section.key in (skip_sections or set()):
+        if section.kind in SKIP_KINDS or section.key in (skip_sections or set()) or section.generated:
             continue
         fields = [manifest.field(k) for k in section.fields]
         fields = [f for f in fields if f is not None and f.kind != "image" and f.key not in (exclude or set())]

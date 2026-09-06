@@ -99,6 +99,7 @@ FLOW_SCHEMA = {
                         },
                     },
                     "notes": {"type": "string"},
+                    "steps": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": ["section", "nodes", "edges"],
             },
@@ -115,6 +116,8 @@ the data: source, middleware or target. Steps that happen inside a system go in 
 lane, right after it. Small drawing areas get at most two lanes and few nodes.
 Edges: from node to node in flow order, each with a short label (at most three words) naming
 the protocol, format or trigger, and a kind: sync, async or file.
+Steps: three to eight numbered sentences a developer reads next to the diagram, one per edge in
+flow order: what is sent, over what, and what happens when it fails where the brief says so.
 Use only systems, protocols and steps named in the brief and the facts; never example names.
 Return only JSON matching the schema."""
 
@@ -139,6 +142,7 @@ class FlowSpec(BaseModel):
     nodes: list[FlowNode] = Field(default_factory=list)
     edges: list[FlowEdge] = Field(default_factory=list)
     notes: str = ""
+    steps: list[str] = Field(default_factory=list)  # what happens along the edges, in order
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(yaml.safe_dump(self.model_dump(mode="json"), sort_keys=False, allow_unicode=True, width=100), encoding="utf-8")
@@ -176,7 +180,7 @@ def plan_flows(brief: Brief, requests: list, llm: LLMClient, icons: list[str] | 
         if key not in wanted:
             continue
         try:
-            spec = FlowSpec.model_validate({k: item.get(k) or ([] if k in ("nodes", "edges") else "") for k in ("title", "nodes", "edges", "notes")})
+            spec = FlowSpec.model_validate({k: item.get(k) or ([] if k in ("nodes", "edges", "steps") else "") for k in ("title", "nodes", "edges", "notes", "steps")})
         except ValidationError:
             continue
         spec = clean_flow(spec)
@@ -221,7 +225,26 @@ def clean_flow(spec: FlowSpec) -> FlowSpec:
         source, target = _ident(edge.source), _ident(edge.target)
         if source in seen and target in seen and source != target:
             edges.append(edge.model_copy(update={"source": source, "target": target, "label": " ".join(edge.label.split())}))
-    return spec.model_copy(update={"nodes": nodes, "edges": edges})
+    steps = [" ".join(str(s).split()) for s in spec.steps if str(s).strip()]
+    return spec.model_copy(update={"nodes": nodes, "edges": edges, "steps": steps})
+
+
+def flow_steps(spec: FlowSpec) -> list[str]:
+    """The model's steps, else one sentence per edge in order."""
+    stored = [s.strip() for s in spec.steps if s.strip()]
+    if stored:
+        return stored
+    labels = {n.id: n.label for n in spec.nodes}
+    steps = []
+    for edge in spec.edges:
+        if edge.source not in labels or edge.target not in labels:
+            continue
+        steps.append(f"{labels[edge.source]} to {labels[edge.target]}" + (f": {edge.label}." if edge.label else "."))
+    return steps
+
+
+def walkthrough_text(spec: FlowSpec) -> str:
+    return "\n".join(f"{number}. {step}" for number, step in enumerate(flow_steps(spec), 1))
 
 
 def to_mermaid(spec: FlowSpec) -> str:

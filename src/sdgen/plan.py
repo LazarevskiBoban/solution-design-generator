@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from sdgen.analyze import slugify
 from sdgen.blueprint import Blueprint, Section
 from sdgen.brief import Brief, dump_brief
+from sdgen.flow import FlowSpec
 from sdgen.llm import LLMClient
 from sdgen.manifest import FieldSpec, Manifest
 from sdgen.render import ExtraSlide
@@ -20,6 +21,7 @@ SOURCES = ("draft", "keep", "blank", "diagram", "mechanical")
 EFFORT_RE = re.compile(r"effort", re.IGNORECASE)
 VERSION_TITLE_RE = re.compile(r"version|author|contributor", re.IGNORECASE)
 GIST_CHARS = 200
+WALKTHROUGH_SUFFIX = "_walkthrough"
 
 EXTRA_DEFAULTS = {
     "acceptance_criteria": ("Acceptance Criteria and Test Scenarios", "table", ["Ref", "Scenario", "Expected result", "Evidence"]),
@@ -129,6 +131,7 @@ class ExtraSection(BaseModel):
     before: str = ""
     reason: str = ""
     include: bool = True
+    generated: bool = False  # built from a drawing, never written by the model
 
 
 class FlowRequest(BaseModel):
@@ -347,7 +350,7 @@ def extended_blueprint(blueprint: Blueprint, extras: list[ExtraSection]) -> Blue
         if proto is None or any(s.key == extra.key for s in sections):
             continue
         ask = ("table: " + ", ".join(extra.columns)) if extra.columns else "text"
-        section = Section(key=extra.key, title=extra.title, kind="table" if extra.kind == "table" else "text", slide=proto.slide, fields=[extra.key], ask=ask)
+        section = Section(key=extra.key, title=extra.title, kind="table" if extra.kind == "table" else "text", slide=proto.slide, fields=[extra.key], ask=ask, generated=extra.generated)
         position = next((i for i, s in enumerate(sections) if s.key == extra.before), len(sections))
         sections.insert(position, section)
     return blueprint.model_copy(update={"sections": sections})
@@ -364,6 +367,30 @@ def extra_slides(plan: SectionPlan | None, manifest: Manifest, blueprint: Bluepr
         before = sections[extra.before].slide if extra.before in sections else 0
         slides.append(ExtraSlide(key=extra.key, title=extra.title, spec=spec, value=fields.get(extra.key), before=before))
     return slides
+
+
+def walkthrough_extras(design, blueprint: Blueprint, manifest: Manifest, flows: dict[str, FlowSpec], order: list[str] | None = None) -> list[ExtraSection]:
+    """A "how it works" text slide after every drawn diagram whose slide has no written text or table of its own."""
+    prototype = _prototype(blueprint, "text", manifest=manifest)
+    if not prototype:
+        return []
+    template_keys = [s.key for s in blueprint.sections if not s.generated]
+    keys = [k for k in (order or template_keys) if k in template_keys]
+    extras = []
+    for section in blueprint.sections:
+        flow = flows.get(section.key)
+        if flow is None or not flow.nodes or section.generated or section.key in design.hidden:
+            continue
+        if any(design.images.get(k) for k in section.fields):
+            continue
+        written = design.modes.get(section.key, "text") == "text"
+        if written and any(f is not None and f.kind != "image" for f in (manifest.field(k) for k in section.fields)):
+            continue  # the slide's own text explains the drawing
+        position = keys.index(section.key) if section.key in keys else -1
+        following = keys[position + 1] if 0 <= position < len(keys) - 1 else ""
+        title = design.titles.get(section.key, section.title)
+        extras.append(ExtraSection(key=f"{section.key}{WALKTHROUGH_SUFFIX}", title=f"{title}: how it works", kind="text", prototype=prototype, before=following, reason="numbered steps taken from the drawing", generated=True))
+    return extras
 
 
 def _prototype_section(blueprint: Blueprint, extra: ExtraSection) -> Section | None:
@@ -415,7 +442,7 @@ def _prototype(blueprint: Blueprint, kind: str, columns: list[str] | None = None
     wanted = "table" if kind == "table" else "text"
     best, best_score = "", None
     for section in blueprint.sections:
-        if section.kind != wanted or not section.fields or VERSION_TITLE_RE.search(section.title):
+        if section.kind != wanted or not section.fields or section.generated or VERSION_TITLE_RE.search(section.title):
             continue
         score = 0
         if wanted == "table" and manifest is not None:

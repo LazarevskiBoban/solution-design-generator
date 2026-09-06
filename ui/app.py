@@ -23,9 +23,9 @@ from sdgen.mapping.extract import extract_fields
 from sdgen.mapping.model import MappingEntry, MappingSet, SourceSpec, TargetSpec
 from sdgen.mapping.workbook import write_workbook
 from sdgen.drawio import to_drawio
-from sdgen.flow import plan_flows, to_mermaid, uses_sap
+from sdgen.flow import plan_flows, to_mermaid, uses_sap, walkthrough_text
 from sdgen.icons import icon_keys
-from sdgen.plan import SOURCES, FlowRequest, SectionDecision, SectionPlan, active_extras, apply_plan, extended_blueprint, extended_manifest, extra_slides, leftover_texts, plan_sections
+from sdgen.plan import SOURCES, WALKTHROUGH_SUFFIX, FlowRequest, SectionDecision, SectionPlan, active_extras, apply_plan, extended_blueprint, extended_manifest, extra_slides, leftover_texts, plan_sections, walkthrough_extras
 from sdgen.preview import export_slides
 from sdgen.registry import Registry, safe_name
 from sdgen.tools import AnalyzeRequest, RenderRequest, analyze_template, continuation_slides, render_document
@@ -351,7 +351,8 @@ def design_page() -> None:
         st.session_state[state_key] = store.load(name) if name in existing else Design(name=name, template=template)
         st.session_state[f"{state_key}:v"] = 0
     design: Design = st.session_state[state_key]
-    extras = active_extras(design.plan)
+    extras = active_extras(design.plan) + walkthrough_extras(design, entry.blueprint, entry.manifest, store.flows(design), _section_order(design, entry.blueprint))
+    walked = {e.key[: -len(WALKTHROUGH_SUFFIX)] for e in extras if e.generated}
     if extras:
         entry = entry.model_copy(update={"manifest": extended_manifest(entry.manifest, entry.blueprint, extras), "blueprint": extended_blueprint(entry.blueprint, extras)})
         manifest, blueprint = entry.manifest, entry.blueprint
@@ -487,7 +488,7 @@ def design_page() -> None:
         uploaded = sum(len(design.images.get(spec.key, [])) for _, spec in diagram_fields)
         drawn = sum(1 for section, _ in diagram_fields if section.key in flows)
         with st.expander(f"4. Diagrams: {uploaded} image(s) uploaded, {drawn} drawn from the brief, {len(diagram_fields)} slots", expanded=False):
-            st.caption("Draw asks the model for the flow (systems, steps, arrows), draws it as editable shapes on the slide and keeps a draw.io and a Mermaid file next to it; a popup lets you pick the format to work with. SAP icons are used when the brief is about SAP. An uploaded image always wins over a drawing.")
+            st.caption("Draw asks the model for the flow (systems, steps, arrows), draws it as editable shapes on the slide and keeps a draw.io and a Mermaid file next to it; a popup lets you pick the format to work with. SAP icons are used when the brief is about SAP. An uploaded image always wins over a drawing. A drawing on a slide without a text box of its own gets a 'how it works' slide after it with the numbered steps.")
             requests = {f.section: f for f in (design.plan.flows if design.plan else [])}
             pending = [section for section, spec in diagram_fields if section.key not in flows and not design.images.get(spec.key) and section.key not in design.hidden]
             if pending and st.button(f"Draw {len(pending)} diagram(s) from the brief", key=f"{state_key}:draw_all"):
@@ -510,7 +511,7 @@ def design_page() -> None:
                 col_draw, col_drawio, col_mermaid, col_remove = st.columns(4)
                 if flow is not None:
                     chosen = design.diagram_formats.get(section.key, design.diagram_format)
-                    st.caption("Drawn from the brief: " + " → ".join(n.label for n in flow.nodes[:6]) + (" …" if len(flow.nodes) > 6 else "") + f". Format: {DIAGRAM_FORMATS.get(chosen, chosen)}." + (" Open the file, adjust it, export a PNG and upload it above to replace the drawing." if chosen != "shapes" else ""))
+                    st.caption("Drawn from the brief: " + " → ".join(n.label for n in flow.nodes[:6]) + (" …" if len(flow.nodes) > 6 else "") + f". Format: {DIAGRAM_FORMATS.get(chosen, chosen)}." + (" Open the file, adjust it, export a PNG and upload it above to replace the drawing." if chosen != "shapes" else "") + (" A how-it-works slide follows it." if section.key in walked else " The slide's own text explains it."))
                     with col_draw:
                         if st.button("Redraw from brief", key=f"{state_key}:draw:{section.key}"):
                             _diagram_format_dialog(state_key, [section], requests, provider, settings)
@@ -657,7 +658,7 @@ def design_page() -> None:
 def _writable(blueprint: Blueprint, manifest: Manifest) -> list[tuple]:
     result = []
     for section in blueprint.sections:
-        if section.kind in ("static", "divider"):
+        if section.kind in ("static", "divider") or section.generated:
             continue
         fields = [f for f in (manifest.field(k) for k in section.fields) if f is not None and f.kind != "image"]
         if fields:
@@ -1195,15 +1196,20 @@ def _show_draft_warnings(warnings: list[str]) -> None:
 def _render_design(entry, store: DesignStore, design: Design, subject: str, name: str, missing: str):
     manifest, blueprint = entry.manifest, entry.blueprint
     fields, field_modes = _render_fields(design, entry)
-    extra_keys = {e.key for e in active_extras(design.plan)}
-    slides_extra = extra_slides(design.plan, manifest, blueprint, fields, design.hidden)
+    drawn_flows = store.flows(design)
+    extras = active_extras(design.plan) + walkthrough_extras(design, blueprint, manifest, drawn_flows, _section_order(design, blueprint))
+    for extra in extras:
+        if extra.generated:
+            fields[extra.key] = walkthrough_text(drawn_flows[extra.key[: -len(WALKTHROUGH_SUFFIX)]])
+    extra_keys = {e.key for e in extras}
+    slides_extra = extra_slides(SectionPlan(extras=extras), manifest, blueprint, fields, design.hidden)
     base_manifest = manifest.model_copy(update={"fields": [f for f in manifest.fields if f.key not in extra_keys]})
     fields = {k: v for k, v in fields.items() if k not in extra_keys}
     images = {k: v for k, v in store.content(design, base_manifest).fields.items() if base_manifest.field(k) and base_manifest.field(k).kind == "image"}
     final = Content(globals=_globals(subject), fields={**fields, **images})
     sections = {s.key: s for s in blueprint.sections if s.key not in extra_keys}
     flows = {}
-    for section_key, flow in store.flows(design).items():
+    for section_key, flow in drawn_flows.items():
         section = sections.get(section_key)
         for key in (section.fields if section else []):
             if base_manifest.field(key) is not None and base_manifest.field(key).kind == "image":

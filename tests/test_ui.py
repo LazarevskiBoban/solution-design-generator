@@ -138,6 +138,7 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
         planned.hidden = [slot.key]
         assert ui._pending_flow_sections(planned, loaded, store) == []
     assert ui._pending_flow_sections(fresh, loaded, store) == []
+    assert ui.WALKTHROUGH_SUFFIX == "_walkthrough" and callable(ui.walkthrough_text)
     sizes = ui.slot_sizes(loaded)
     assert set(sizes) == {f.key for f in loaded.manifest.fields if f.kind == "image"}
     if slot is not None:

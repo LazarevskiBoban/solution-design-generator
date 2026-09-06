@@ -257,3 +257,27 @@ def test_plan_flows_tells_the_model_the_drawing_area():
     assert "drawing area 6.3 x 2.6 in, at most 4 nodes, two lanes at most" in llm.user
     assert "size unknown, at most 9 nodes" in llm.user
     assert node_cap(12.7, 5.5) == 9 and node_cap(6.3, 2.6) == 4 and node_cap(7, 4) == 8
+
+
+def test_steps_are_kept_or_derived_from_the_edges():
+    from sdgen.flow import flow_steps, walkthrough_text
+    from sdgen.plan import FlowRequest
+
+    assert flow_steps(SPEC)[:2] == ["Bank (SWIFT FileAct) to AutoClient VM: lockbox file.", "AutoClient VM to Azure Blob SFTP: SFTP put."]
+    told = SPEC.model_copy(update={"steps": ["First.", " Second step. ", ""]})
+    assert walkthrough_text(told) == "1. First.\n2. Second step."
+    assert walkthrough_text(SPEC).startswith("1. Bank (SWIFT FileAct) to AutoClient VM: lockbox file.\n2. ")
+    assert clean_flow(FlowSpec(nodes=[FlowNode(id="a", label="A")], steps=["  two   words ", " "])).steps == ["two words"]
+
+    class Catcher:
+        name = "fake"
+
+        def complete(self, system, user):
+            return ""
+
+        def complete_json(self, system, user, schema, name="result"):
+            assert "steps" in schema["properties"]["flows"]["items"]["properties"]
+            return {"flows": [{"section": "x", "nodes": [{"id": "a", "label": "A", "lane": "source"}], "edges": [], "steps": ["A starts.", "A ends."]}]}
+
+    flows = plan_flows(Brief(subject="s"), [FlowRequest(section="x", title="X", purpose="")], Catcher())
+    assert flows["x"].steps == ["A starts.", "A ends."]

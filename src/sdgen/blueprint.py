@@ -34,6 +34,7 @@ class Section(BaseModel):
     example: str = ""
     optional: bool = False
     images: int = 0
+    generated: bool = False  # filled from a drawing, never written by the model
 
     @property
     def writable(self) -> bool:
