@@ -24,7 +24,7 @@ edge_integration_cell:
   file: 32136-edge-integration-cell_sd.svg
 cloud_connector:
   label: SAP Cloud Connector
-  file: 20077-sap-connectivity-service_sd.svg
+  file: 32148-cloud-connector_sd.svg
 hana:
   label: SAP HANA Cloud
   file: 20083-sap-hana-cloud_sd.svg

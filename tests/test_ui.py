@@ -192,6 +192,21 @@ def test_design_page_picks_the_reasoning_deployment(registry_with_demo, monkeypa
     assert not app.exception and app.selectbox(key="design:demo:lockbox:deployment").value == "gpt-4.1"
 
 
+def test_icon_note_tells_what_the_drawings_show(tmp_path, monkeypatch):
+    ui = _app_module()
+    plain = ui.Design(name="n", template="demo")
+    assert ui._icon_note(plain).startswith("Nodes draw as plain shapes")
+    sap = ui.Design(name="s", template="demo", brief=ui.Brief(subject="x", about="SAP S/4HANA lockbox"))
+    monkeypatch.setenv("SDGEN_ICONS", str(tmp_path))
+    assert ui._icon_note(sap).startswith("No SAP icon")
+    svg = tmp_path / ui.catalogue()["cloud_integration"].file
+    svg.write_text("<svg/>", encoding="utf-8")
+    (tmp_path / "png").mkdir()
+    (tmp_path / "png" / (svg.stem + ".png")).write_bytes(b"png")
+    assert "1 of" in ui._icon_note(sap) and "Cloud Integration" in ui._icon_note(sap)
+    assert list(ui.DIAGRAM_FORMATS) == ["shapes", "drawio", "mermaid"]
+
+
 def _labels(app):
     # The test tree lists an expander with an icon as a status box.
     return [e.label for e in list(app.expander) + list(app.status)]

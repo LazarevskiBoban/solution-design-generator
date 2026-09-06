@@ -34,6 +34,11 @@ def icon_keys() -> list[str]:
     return list(catalogue())
 
 
+def installed_keys() -> list[str]:
+    """Catalogue keys whose PNG rendition exists, the ones drawings can show."""
+    return [key for key in icon_keys() if icon_png(key) is not None]
+
+
 def icon_file(key: str) -> Path | None:
     """The SVG behind a catalogue key, when the file was copied into the icon folder."""
     icon = catalogue().get(key)

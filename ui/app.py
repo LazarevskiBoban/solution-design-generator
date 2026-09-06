@@ -24,7 +24,7 @@ from sdgen.mapping.model import MappingEntry, MappingSet, SourceSpec, TargetSpec
 from sdgen.mapping.workbook import write_workbook
 from sdgen.drawio import to_drawio
 from sdgen.flow import plan_flows, to_mermaid, uses_sap, walkthrough_text
-from sdgen.icons import icon_keys
+from sdgen.icons import catalogue, icon_keys, installed_keys
 from sdgen.plan import SOURCES, WALKTHROUGH_SUFFIX, FlowRequest, SectionDecision, SectionPlan, active_extras, apply_plan, extended_blueprint, extended_manifest, extra_slides, leftover_texts, plan_sections, walkthrough_extras
 from sdgen.preview import export_slides
 from sdgen.registry import Registry, safe_name
@@ -47,9 +47,9 @@ SHORTCUTS = {"previous": "Left", "next": "Right", "up": "Up", "down": "Down", "h
 STEPS = ["brief", "plan", "write", "diagrams", "review", "generate"]
 DONE_ICON = "✅"
 DIAGRAM_FORMATS = {
-    "shapes": "PowerPoint shapes, editable in the deck",
-    "drawio": "draw.io file next to the shapes, with SAP icons when the brief is about SAP",
-    "mermaid": "Mermaid text next to the shapes",
+    "shapes": "Shapes on the slide only",
+    "drawio": "Shapes on the slide plus a draw.io file to open, adjust and export",
+    "mermaid": "Shapes on the slide plus a Mermaid file",
 }
 
 
@@ -501,7 +501,8 @@ def design_page() -> None:
         requests = {f.section: f for f in (design.plan.flows if design.plan else [])}
         pending = [section for section, spec in diagram_fields if section.key not in flows and not design.images.get(spec.key) and section.key not in design.hidden]
         with st.expander(f"4. Diagrams: {uploaded} image(s) uploaded, {drawn} drawn from the brief, {len(diagram_fields)} slots", expanded=step == "diagrams", icon=_done(not pending), key=f"{state_key}:exp:diagrams"):
-            st.caption("Draw asks the model for the flow (systems, steps, arrows), draws it as editable shapes on the slide and keeps a draw.io and a Mermaid file next to it; a popup lets you pick the format to work with. SAP icons are used when the brief is about SAP. An uploaded image always wins over a drawing. A drawing on a slide without a text box of its own gets a 'how it works' slide after it with the numbered steps.")
+            st.caption("Draw asks the model for the flow (systems, steps, arrows), draws it as editable shapes on the slide and keeps a draw.io and a Mermaid file next to it; a popup lets you pick the format to work with. An uploaded image always wins over a drawing. A drawing on a slide without a text box of its own gets a 'how it works' slide after it with the numbered steps.")
+            _show_icon_note(design)
             if pending and st.button(f"Draw {len(pending)} diagram(s) from the brief", key=f"{state_key}:draw_all"):
                 _diagram_format_dialog(state_key, pending, requests, provider, settings)
             if st.session_state.get(f"{state_key}:flow_note"):
@@ -1381,6 +1382,22 @@ def slot_sizes(entry) -> dict[str, tuple[float, float]]:
     return sizes
 
 
+def _icon_note(design: Design) -> str:
+    """What the icon set does for the drawings of this design."""
+    if not uses_sap(design.brief):
+        return "Nodes draw as plain shapes: the brief is not about SAP, so no icon set is used."
+    have = installed_keys()
+    if not have:
+        return "No SAP icon files are installed, so every node draws as a plain shape. See assets/icons/README.md to add them."
+    labels = ", ".join(catalogue()[k].label for k in have)
+    return f"SAP icons installed for {len(have)} of {len(icon_keys())} catalogue entries ({labels}); other systems draw as plain shapes."
+
+
+def _show_icon_note(design: Design) -> None:
+    note = _icon_note(design)
+    (st.warning if note.startswith("No SAP icon") else st.caption)(note)
+
+
 def _flow_icons(design: Design) -> list[str] | None:
     """The icon catalogue when the brief is about SAP; the user is never asked."""
     return icon_keys() if uses_sap(design.brief) else None
@@ -1391,7 +1408,8 @@ def _diagram_format_dialog(state_key: str, sections: list, requests: dict, provi
     design: Design = st.session_state[state_key]
     store = design_store()
     names = ", ".join(design.titles.get(s.key, s.title) for s in sections)
-    st.caption(f"Diagrams: {names}. The deck always gets the shape drawing; draw.io and Mermaid add a file you can open, adjust and export as PNG, then upload to replace the drawing." + (" The brief is about SAP, so the SAP icon set is used." if uses_sap(design.brief) else "") + " Not now keeps the slots empty; step 4 draws them later.")
+    st.caption(f"Diagrams: {names}. The slide always gets editable PowerPoint shapes, whatever the format; draw.io and Mermaid add a file next to the design that you can open, adjust, export as PNG and upload in step 4 to replace the shapes. Not now keeps the slots empty; step 4 draws them later.")
+    _show_icon_note(design)
     current = design.diagram_format if design.diagram_format in DIAGRAM_FORMATS else "shapes"
     choice = st.radio("Format", list(DIAGRAM_FORMATS), format_func=DIAGRAM_FORMATS.get, index=list(DIAGRAM_FORMATS).index(current), key=f"{state_key}:fmt:choice")
     everywhere = st.checkbox("Use this format for all diagrams of this design", value=True, key=f"{state_key}:fmt:all")

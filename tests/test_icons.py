@@ -16,7 +16,10 @@ def test_catalogue_and_lookup(tmp_path, monkeypatch):
     svg = tmp_path / icons.catalogue()["btp_integration_suite"].file
     svg.write_text("<svg xmlns='http://www.w3.org/2000/svg'/>", encoding="utf-8")
     assert icons.icon_file("btp_integration_suite") == svg and icons.icon_file("s4hana") is None
-    assert icons.icon_png("btp_integration_suite") is None
+    assert icons.icon_png("btp_integration_suite") is None and icons.installed_keys() == []
+    (tmp_path / "png").mkdir()
+    (tmp_path / "png" / (svg.stem + ".png")).write_bytes(b"png")
+    assert icons.installed_keys() == ["btp_integration_suite"]
 
 
 @pytest.mark.skipif(
