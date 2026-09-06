@@ -171,3 +171,10 @@ def test_line_budget_accompanies_the_character_budget(sample_deck):
     assert need.max_lines and 1 < need.max_lines < 40
     binding = analysis.to_manifest("demo").field("business_need").bindings[0]
     assert binding.max_lines == need.max_lines and binding.max_chars == need.max_chars
+
+
+def test_table_row_budget_from_the_room_below(sample_deck):
+    analysis = analyze_deck(inspect_deck(sample_deck))
+    scope = next(c for c in analysis.candidates if c.key == "scope")
+    assert scope.max_rows and scope.max_rows >= 1
+    assert analysis.to_manifest("demo").field("scope").bindings[0].max_rows == scope.max_rows

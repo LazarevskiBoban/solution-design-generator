@@ -102,12 +102,6 @@ def capacity_lines(height_pt: float, spec: FontSpec, spacing_pct: float = 100.0,
     return max(1, int(height_pt * fill / line)) if line > 0 else 1
 
 
-def capacity_lines(height_pt: float, spec: FontSpec, spacing_pct: float = 100.0, space_after_pt: float = 0.0, fill: float = 0.8) -> int:
-    """Lines that fit the height comfortably, at least one."""
-    line = line_height_pt(spec, spacing_pct) + space_after_pt
-    return max(1, int(height_pt * fill / line)) if line > 0 else 1
-
-
 def capacity_chars(
     width_pt: float,
     height_pt: float,

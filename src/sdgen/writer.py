@@ -235,6 +235,8 @@ def answer_skeleton(brief: Brief, sections: list[dict]) -> str:
                     hint += f" on about {field['max_lines']} lines"
                 hint += f" (about {max(1, field['max_chars'] // CHARS_PER_WORD)} words; write 50 to 85 percent of it"
                 hint += "; a bullet takes at least one line)" if field.get("max_lines") else ")"
+            elif field["kind"] == "table" and field.get("max_rows"):
+                hint += f", about {field['max_rows']} rows fit the slide; further rows continue on a copy of it"
             if field["guidance"]:
                 hint += f". {field['guidance']}"
             lines.append(f"## {field['key']}")
@@ -295,7 +297,7 @@ def writable_sections(blueprint: Blueprint, manifest: Manifest, exclude: set[str
                         "columns": list(f.columns),
                         "max_chars": max((b.max_chars or 0) for b in f.bindings) or None,
                         "max_lines": max((b.max_lines or 0) for b in f.bindings) or None,
-                        "max_lines": max((b.max_lines or 0) for b in f.bindings) or None,
+                        "max_rows": max((b.max_rows or 0) for b in f.bindings) or None,
                         "token": any(b.mode == "token" for b in f.bindings),
                         "guidance": f.guidance,
                     }

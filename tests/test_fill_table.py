@@ -66,3 +66,18 @@ def test_header_only_table_uses_header_as_template():
     prs, frame = _table_frame(rows=1, footer=None)
     fill_table(frame, [["a", "b", "c"], ["d", "e", "f"]])
     assert _texts(frame) == [["Ref", "Item", "Notes"], ["a", "b", "c"], ["d", "e", "f"]]
+
+
+def test_row_heights_follow_wrapped_text_and_settle_the_rows():
+    from sdgen.fill.table import append_rows, row_heights
+
+    prs, frame = _table_frame(footer=None)
+    template_h = frame.table.rows[1].height
+    long = "This note wraps over several lines because the column is narrow and the sentence keeps going on and on without a stop."
+    estimated = row_heights(frame, rows=[["1", "a", "n"], ["2", "b", long]])
+    assert estimated[0] <= template_h * 1.1 and estimated[1] > template_h * 2
+    fill_table(frame, [["1", "a", "n"], ["2", "b", long]])
+    heights = [row.height for row in frame.table.rows]
+    assert heights[1] <= template_h * 1.1 and heights[2] > template_h * 2 and frame.height == sum(heights)
+    append_rows(frame, [["3", "c", "n"]])
+    assert _texts(frame)[-1] == ["3", "c", "n"] and len(frame.table.rows) == 4

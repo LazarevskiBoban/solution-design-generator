@@ -421,4 +421,6 @@ def test_line_budget_and_prompt_rules():
 
     section = {"title": "Overview", "fields": [{"key": "need", "label": "Need", "kind": "bullets", "columns": [], "max_chars": 300, "max_lines": 4, "token": False, "guidance": ""}]}
     assert "target 300 characters on about 4 lines (about 50 words; write 50 to 85 percent of it; a bullet takes at least one line)" in answer_skeleton(Brief(subject="X"), [section])
+    table = {"title": "Scope", "fields": [{"key": "scope", "label": "Scope", "kind": "table", "columns": ["A", "B"], "max_chars": None, "max_lines": None, "max_rows": 3, "token": False, "guidance": ""}]}
+    assert "about 3 rows fit the slide; further rows continue on a copy of it" in answer_skeleton(Brief(subject="X"), [table])
     assert "never more bullets than the field has lines" in SYSTEM_PROMPT and "never\nreuse its system names" in SYSTEM_PROMPT

@@ -24,6 +24,7 @@ class Binding(BaseModel):
     keep_prefix: str | None = None
     max_chars: int | None = None
     max_lines: int | None = None
+    max_rows: int | None = None
     header_rows: int = 1
     keep_last_row_if: str | None = None
     fit: ImageFit = "contain"

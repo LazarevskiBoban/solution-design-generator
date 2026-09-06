@@ -13,10 +13,10 @@ from sdgen.diagrams import remove_shapes
 from sdgen.fill.image import replace_picture
 from sdgen.flow import FlowSpec, draw_flow
 from sdgen.fill.slides import clone_slide, move_slide, remove_slide
-from sdgen.fill.table import clear_table_body, fill_table
+from sdgen.fill.table import append_rows, clear_table_body, fill_table, has_footer, row_heights
 from sdgen.fill.text import Block, Span, capacity_chars_of, capacity_lines_of, fit_text_shape, line_chars_of, overflow_ratio, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text, theme_fonts
 from sdgen.inventory import find_shape, walk_shapes
-from sdgen.layout import CONTAIN_TOL, SlideLayout, analyse_slide, shift_shapes
+from sdgen.layout import BLOCK_GAP, CONTAIN_TOL, SlideLayout, analyse_slide, shift_shapes
 from sdgen.manifest import Binding, FieldSpec, Manifest
 
 CONTINUATION_SUFFIX = " (cont.)"
@@ -166,7 +166,8 @@ def render(
                 continue
             try:
                 allow = binding.slide in prototypes or (continue_on is None and shape.is_placeholder)
-                remaining = _apply(prs, slide, shape, spec, binding, value, issues, allow, spill=spill, theme=theme)
+                room = _room(layouts.get(binding.slide), shape) if spec.kind == "table" else None
+                remaining = _apply(prs, slide, shape, spec, binding, value, issues, allow, spill=spill, theme=theme, room=room)
                 if remaining:
                     pending.setdefault(binding.slide, {})[spec.key] = (spec, binding, remaining)
             except Exception as exc:  # keep rendering the rest of the document
@@ -251,9 +252,10 @@ def _add_extras(prs, slides: list, extras: list[ExtraSlide], subject: str, issue
             try:
                 if extra.spec.kind == "table" and extra.spec.columns and getattr(shape, "has_table", False):
                     _set_header(shape, extra.spec.columns)
-                remaining = _apply(prs, clone, shape, extra.spec, binding, value, issues, False, spill=True, theme=theme)
+                layout = analyse_slide(clone, {binding.shape.id: extra.key}, prs.slide_height)
+                room = _room(layout, shape) if extra.spec.kind == "table" else None
+                remaining = _apply(prs, clone, shape, extra.spec, binding, value, issues, False, spill=True, theme=theme, room=room)
                 if remaining:
-                    layout = analyse_slide(clone, {binding.shape.id: extra.key}, prs.slide_height)
                     copies = _continue_slide(prs, clone, layout, None, binding.slide, {extra.key: (extra.spec, binding, remaining)}, theme, issues, set())
             except Exception as exc:
                 issues.append(RenderIssue(level="error", field=extra.key, message=str(exc)))
@@ -302,16 +304,22 @@ def _locate(slide, binding: Binding):
     return shape
 
 
-def _apply(prs, slide, shape, spec: FieldSpec, binding: Binding, value: Any, issues: list[RenderIssue], prototype: bool, spill: bool = False, theme: tuple[str, str] | None = None) -> list:
+def _apply(prs, slide, shape, spec: FieldSpec, binding: Binding, value: Any, issues: list[RenderIssue], prototype: bool, spill: bool = False, theme: tuple[str, str] | None = None, room: int | None = None) -> list:
     if spec.kind == "table":
         if not getattr(shape, "has_table", False):
             raise ValueError("bound shape is not a table")
         rows = _as_rows(value)
         if spec.static and not rows:
             clear_table_body(shape, binding.header_rows)
-            return
+            return []
         fill_table(shape, rows, header_rows=binding.header_rows, keep_last_row_if=binding.keep_last_row_if, columns=spec.columns or None)
-        return
+        if spill and room is not None and len(rows) > 1:
+            fitting = _rows_that_fit(shape, binding, len(rows), room)
+            if fitting < len(rows):
+                fill_table(shape, rows[:fitting], header_rows=binding.header_rows, keep_last_row_if=binding.keep_last_row_if, columns=spec.columns or None)
+                issues.append(RenderIssue(level="info", field=spec.key, slide=binding.slide, message=f"{len(rows) - fitting} row(s) continue on the next slide"))
+                return list(rows[fitting:])
+        return []
     if spec.kind == "image":
         images = images_of(value)
         missing = [i.path for i in images if not Path(i.path).is_file()]
@@ -412,7 +420,11 @@ def _continue_slide(prs, slide, layout: SlideLayout | None, manifest: Manifest |
         issues.append(RenderIssue(level="error", slide=number, message=f"could not continue the slide, text shrunk instead: {exc}"))
         for spec, binding, blocks in pending.values():
             shape = find_shape(slide, binding.shape.id)
-            if shape is not None:
+            if shape is None:
+                continue
+            if spec.kind == "table":
+                append_rows(shape, blocks, header_rows=binding.header_rows, keep_last_row_if=binding.keep_last_row_if, columns=spec.columns or None)
+            else:
                 set_rich_text(shape, blocks, keep_prefix=binding.keep_prefix)
                 _shrink(shape, spec, binding, issues, theme)
         return []
@@ -434,7 +446,7 @@ def _expand_and_push(prs, slide, layout: SlideLayout, top, pending: dict, number
         remove_shapes(pushed, _shapes(pushed, top.members))
         shift_shapes(pushed, other_ids, top.box.top - min(b.box.top for b in others))
         _mark_continuation(pushed)
-    chunked = _chunk_pending(slide, pending, theme, {key: scales.get(binding.shape.id, 1.0) for key, (_, binding, _) in pending.items()}, True, issues)
+    chunked = _chunk_pending(slide, pending, theme, {key: scales.get(binding.shape.id, 1.0) for key, (_, binding, _) in pending.items()}, True, issues, _table_rooms(slide, pending, layout.floor, 0, True))
     copies = _spread(prs, slide, chunked, theme, issues)
     note = f"top block grown to the slide bottom, {len(others)} block(s) moved to the next slide"
     issues.append(RenderIssue(level="info", slide=number, message=note + (f", continued on {len(copies)} extra slide(s)" if copies else "")))
@@ -473,19 +485,27 @@ def _continue_cleaned(prs, slide, layout: SlideLayout, pending: dict, number: in
                 if shape is not None:
                     _grow(shape, growth[id(b)])
 
-    chunked = _chunk_pending(slide, pending, theme, scales, False, issues)
+    chunked = _chunk_pending(slide, pending, theme, scales, False, issues, _table_rooms(slide, pending, layout.floor, shift, False))
     copies = _spread(prs, slide, chunked, theme, issues, prepare)
     if copies:
         issues.append(RenderIssue(level="info", slide=number, message=f"continued on {len(copies)} extra slide(s) that show only the continued block(s)"))
     return copies
 
 
-def _chunk_pending(slide, pending: dict, theme, scales: dict[str, float], grow_first: bool, issues: list[RenderIssue]) -> dict:
+def _chunk_pending(slide, pending: dict, theme, scales: dict[str, float], grow_first: bool, issues: list[RenderIssue], rooms: dict[str, int] | None = None) -> dict:
     """Splits each overflowing field into chunks and writes the first chunk into its box."""
     chunked: dict = {}
     for key, (spec, binding, blocks) in pending.items():
         shape = find_shape(slide, binding.shape.id)
         if shape is None:
+            continue
+        if spec.kind == "table":
+            # Rows that still fit under the table stay on the slide; the rest is split by the room a copy offers.
+            first, rest = (rooms or {}).get(key, (0, 0))
+            chunks = _split_rows(shape, binding, spec, blocks, first, rest, theme)
+            if chunks[0]:
+                append_rows(shape, chunks[0], header_rows=binding.header_rows, keep_last_row_if=binding.keep_last_row_if, columns=spec.columns or None)
+            chunked[key] = (spec, binding, chunks)
             continue
         capacity = _capacity(shape, binding, blocks, theme)
         grown = max(1, int(capacity * scales.get(key, 1.0)))
@@ -510,12 +530,65 @@ def _spread(prs, slide, chunked: dict, theme, issues: list[RenderIssue], prepare
             target = find_shape(copy, binding.shape.id)
             if target is None:
                 continue
+            if spec.kind == "table":
+                fill_table(target, chunks[index] if index < len(chunks) else [], header_rows=binding.header_rows, keep_last_row_if=binding.keep_last_row_if, columns=spec.columns or None)
+                continue
             set_rich_text(target, chunks[index] if index < len(chunks) else "", keep_prefix=binding.keep_prefix)
             if index < len(chunks):
                 _shrink(target, spec, binding, issues, theme)
         copies.append(copy)
         source = copy
     return copies
+
+
+def _room(layout: SlideLayout | None, shape) -> int | None:
+    return None if layout is None else layout.limit_below(shape.shape_id) - shape.top
+
+
+def _rows_that_fit(shape, binding: Binding, count: int, room: int) -> int:
+    """Body rows of the filled table that fit the room, at least one."""
+    heights = [tr.h for tr in shape.table._tbl.tr_lst]
+    footer = 1 if has_footer(shape, binding.keep_last_row_if, binding.header_rows) else 0
+    used = sum(heights[:binding.header_rows]) + (heights[-1] if footer else 0)
+    fitting = 0
+    for height in heights[binding.header_rows:len(heights) - footer]:
+        if fitting and used + height > room:
+            break
+        used += height
+        fitting += 1
+    return max(1, min(fitting, count))
+
+
+def _split_rows(shape, binding: Binding, spec: FieldSpec, rows: list, first: int, rest: int, theme) -> list[list]:
+    """Row chunks: what still fits under the table, then one chunk per copy; without a known room the rest goes on one copy."""
+    heights = [tr.h for tr in shape.table._tbl.tr_lst]
+    footer = heights[-1] if has_footer(shape, binding.keep_last_row_if, binding.header_rows) else 0
+    budget = rest - sum(heights[:binding.header_rows]) - footer
+    estimates = row_heights(shape, theme, rows=rows, header_rows=binding.header_rows, columns=spec.columns or None)
+    chunks: list[list] = [[]]
+    used, limit = 0, first
+    for index, (row, height) in enumerate(zip(rows, estimates)):
+        if used + height > limit and (chunks[-1] or len(chunks) == 1):
+            if budget <= 0:
+                chunks.append(list(rows[index:]))
+                return chunks
+            chunks.append([])
+            used, limit = 0, budget
+        chunks[-1].append(row)
+        used += height
+    return chunks
+
+
+def _table_rooms(slide, pending: dict, floor: int, shift: int, grow_first: bool) -> dict[str, tuple[int, int]]:
+    """Per table: room left under it on this slide (when the block grows) and the room a copy offers."""
+    rooms: dict[str, tuple[int, int]] = {}
+    for key, (spec, binding, _) in pending.items():
+        shape = find_shape(slide, binding.shape.id)
+        if spec.kind == "table" and shape is not None:
+            rest = floor - (shape.top - shift) - BLOCK_GAP
+            first = floor - (shape.top + shape.height) - BLOCK_GAP if grow_first else 0
+            rooms[key] = (first, rest)
+    return rooms
 
 
 def _capacity(shape, binding: Binding, blocks: list[Block], theme) -> int:
@@ -530,6 +603,8 @@ def _growing_members(slide, block: Block, bottom: int, bound: dict[int, str]) ->
         shape = find_shape(slide, shape_id)
         if shape is None or not shape.height:
             continue
+        if getattr(shape, "has_table", False):
+            continue  # a table is as tall as its rows
         touches = abs(shape.top + shape.height - bottom) <= CONTAIN_TOL
         if touches or (shape_id in bound and getattr(shape, "has_text_frame", False)):
             ids.append(shape_id)
@@ -564,7 +639,9 @@ def _continue_composite(prs, slide, manifest: Manifest, number: int, pending: di
                 if target is None:
                     continue
                 entry = pending.get(other.key)
-                if entry is not None and index < len(entry[2]):
+                if entry is not None and other.kind == "table" and getattr(target, "has_table", False):
+                    fill_table(target, entry[2][index] if index < len(entry[2]) else [], header_rows=binding.header_rows, keep_last_row_if=binding.keep_last_row_if, columns=other.columns or None)
+                elif entry is not None and index < len(entry[2]):
                     set_rich_text(target, entry[2][index], keep_prefix=binding.keep_prefix)
                     _shrink(target, other, binding, issues)
                 elif other.kind == "table" and getattr(target, "has_table", False):

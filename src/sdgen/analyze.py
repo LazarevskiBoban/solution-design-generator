@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from sdgen.inventory import DeckInfo, ShapeInfo, SlideInfo
 from sdgen.manifest import Binding, FieldKind, FieldSpec, GlobalSpec, Manifest, ShapeRef, SlideRules
-from sdgen.textmetrics import FontSpec, capacity_chars, capacity_lines, capacity_lines
+from sdgen.textmetrics import FontSpec, capacity_chars, capacity_lines
 
 LONG_TEXT = 80
 DIAGRAM_LONG_TEXT = 120
@@ -51,6 +51,7 @@ class Candidate(BaseModel):
     keep_prefix: str | None = None
     max_chars: int | None = None
     max_lines: int | None = None
+    max_rows: int | None = None
     columns: list[str] = Field(default_factory=list)
     keep_last_row_if: str | None = None
 
@@ -89,6 +90,7 @@ class Analysis(BaseModel):
                 keep_prefix=cand.keep_prefix,
                 max_chars=cand.max_chars,
                 max_lines=cand.max_lines,
+                max_rows=cand.max_rows,
                 keep_last_row_if=cand.keep_last_row_if,
             )
             if existing:
@@ -115,7 +117,7 @@ def analyze_deck(deck: DeckInfo) -> Analysis:
     analysis = Analysis(globals=_detect_subject(deck))
     for slide in deck.slides:
         diagram, reason = _looks_like_diagram(slide)
-        candidates = _slide_candidates(slide, diagram)
+        candidates = _slide_candidates(slide, diagram, deck.height)
         if diagram:
             kind: SlideKind = "diagram"
         elif any(c.include for c in candidates):
@@ -163,14 +165,14 @@ def _looks_like_diagram(slide: SlideInfo) -> tuple[bool, str]:
     return False, ""
 
 
-def _slide_candidates(slide: SlideInfo, diagram: bool) -> list[Candidate]:
+def _slide_candidates(slide: SlideInfo, diagram: bool, slide_height: float = 7.5) -> list[Candidate]:
     labels = [s for s in slide.shapes if _is_label(s)]
     title_label = _title_segment(slide)
     found: list[Candidate] = []
     used_labels: set[int] = set()
     for shape in slide.shapes:
         if shape.kind == "table":
-            found.append(_table_candidate(slide, shape, labels, title_label, used_labels))
+            found.append(_table_candidate(slide, shape, labels, title_label, used_labels, slide_height))
         elif shape.kind == "picture" and not diagram:
             if (shape.width or 0) >= IMAGE_MIN_WIDTH:
                 found.append(_image_candidate(slide, shape, title_label))
@@ -280,6 +282,7 @@ def _table_candidate(
     labels: list[ShapeInfo],
     title_label: str | None,
     used_labels: set[int],
+    slide_height: float = 7.5,
 ) -> Candidate:
     table = shape.table
     header = table.cells[0] if table and table.cells else []
@@ -308,6 +311,7 @@ def _table_candidate(
         reason=f"table {table.rows}x{table.cols}" if table else "table",
         columns=columns,
         keep_last_row_if=keep_last,
+        max_rows=_max_rows(slide, shape, slide_height, keep_last is not None),
     )
 
 
@@ -379,6 +383,23 @@ def _max_lines(shape: ShapeInfo) -> int | None:
         return None
     spec, spacing, after = _font_of(shape)
     return capacity_lines(shape.height * 72 - 7.2, spec, spacing * 100, after)
+
+
+def _max_rows(slide: SlideInfo, shape: ShapeInfo, slide_height: float, has_footer: bool) -> int | None:
+    """Body rows that fit between the table and the nearest shape below it, at the template row height."""
+    table = shape.table
+    if table is None or table.rows < 1 or not shape.has_geometry:
+        return None
+    bottom = shape.top + shape.height
+    right = shape.left + shape.width
+    below = [
+        s.top
+        for s in slide.shapes
+        if s.id != shape.id and s.has_geometry and s.top >= bottom - 0.05 and min(s.left + s.width, right) - max(s.left, shape.left) > 0
+    ]
+    limit = min(below) - 0.1 if below else slide_height - 0.35
+    row_height = shape.height / table.rows
+    return max(1, int((limit - shape.top) / row_height) - 1 - (1 if has_footer else 0))
 
 
 def _font_of(shape: ShapeInfo) -> tuple[FontSpec, float, float]:

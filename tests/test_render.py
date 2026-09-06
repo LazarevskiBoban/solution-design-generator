@@ -441,3 +441,56 @@ def test_inner_text_box_grows_with_its_block_on_the_copy(tmp_path):
     assert copy["Right Container"].top + copy["Right Container"].height == copy["Right Inner"].top + copy["Right Inner"].height + Inches(0.15)
     texts = [{s.name: s for s in sl.shapes}["Right Inner"].text_frame.text for sl in slides]
     assert chr(10).join(texts) == chr(10).join(f"Point {i} is short." for i in range(1, 7))
+
+
+def _table_deck(tmp_path):
+    from pptx.util import Inches
+
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    slide.shapes.title.text = "Scope"
+    slide.shapes.title.height = Inches(0.6)
+    frame = slide.shapes.add_table(2, 2, Inches(1), Inches(1.2), Inches(8), Inches(0.8))
+    frame.name = "Scope Table"
+    frame.table.cell(0, 0).text, frame.table.cell(0, 1).text = "Function", "Bank"
+    frame.table.cell(1, 0).text = "x"
+    below = slide.shapes.add_textbox(Inches(1), Inches(2.3), Inches(8), Inches(1))
+    below.name = "Below Box"
+    below.text_frame.text = "Success"
+    side = slide.shapes.add_textbox(Inches(9.5), Inches(1.2), Inches(3), Inches(0.8))
+    side.name = "Side Box"
+    side.text_frame.text = "Legend"
+    deck = tmp_path / "table.pptx"
+    prs.save(deck)
+    spec = FieldSpec(key="scope", label="Scope", kind="table", columns=["Function", "Bank"], bindings=[Binding(slide=1, shape=ShapeRef(id=frame.shape_id))])
+    return deck, spec
+
+
+def test_table_rows_continue_on_a_cleaned_copy(tmp_path):
+    deck, spec = _table_deck(tmp_path)
+    rows = [{"Function": f"Inbound {i}", "Bank": f"Bank {i}"} for i in range(1, 6)]
+    result = render(deck, Manifest(name="t", fields=[spec]), Content(fields={"scope": rows}), tmp_path / "out.pptx", spill=True)
+    slides = list(Presentation(str(tmp_path / "out.pptx")).slides)
+    assert not result.errors and len(slides) == 2 and any("4 row(s) continue" in i.message for i in result.issues)
+    first = next(s for s in slides[0].shapes if s.has_table)
+    second = next(s for s in slides[1].shapes if s.has_table)
+    assert len(first.table.rows) == 2 and [c.text for c in first.table.rows[1].cells] == ["Inbound 1", "Bank 1"]
+    assert len(second.table.rows) == 5 and [c.text for c in second.table.rows[0].cells] == ["Function", "Bank"]
+    assert [c.text for c in list(second.table.rows)[-1].cells] == ["Inbound 5", "Bank 5"]
+    assert not {"Below Box", "Side Box"} & {s.name for s in slides[1].shapes} and slides[1].shapes.title.text.endswith("(cont.)")
+
+
+def test_extra_table_rows_continue_too(tmp_path):
+    from sdgen.render import ExtraSlide
+
+    deck, spec = _table_deck(tmp_path)
+    extra_spec = spec.model_copy(update={"key": "extra", "label": "Acceptance"})
+    rows = [{"Function": f"Case {i}", "Bank": "ok"} for i in range(1, 9)]
+    extra = ExtraSlide(key="extra", title="Acceptance", spec=extra_spec, value=rows, before=0)
+    result = render(deck, Manifest(name="t", fields=[spec]), Content(fields={"scope": [{"Function": "One", "Bank": "B"}]}), tmp_path / "out.pptx", extras=[extra], spill=True)
+    slides = list(Presentation(str(tmp_path / "out.pptx")).slides)
+    assert not result.errors and len(slides) == 3 and result.slide_keys == ["", "extra", "extra"]
+    assert slides[1].shapes.title.text == "Acceptance" and slides[2].shapes.title.text == "Acceptance (cont.)"
+    tables = [next(s for s in sl.shapes if s.has_table) for sl in slides[1:]]
+    assert len(tables[0].table.rows) == 2 and len(tables[1].table.rows) == 8

@@ -15,6 +15,7 @@ CONTAIN_TOL = Inches(0.05)
 BOTTOM_BAND = Inches(0.6)
 BOTTOM_MARGIN = Inches(0.35)
 FULL_WIDTH = 0.8
+BLOCK_GAP = Inches(0.1)
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,14 @@ class SlideLayout:
 
     def top_block(self) -> Block | None:
         return min(self.blocks, key=lambda b: (b.box.top, b.box.left)) if self.blocks else None
+
+    def limit_below(self, shape_id: int) -> int:
+        """How far down the block holding the shape may extend: to the nearest block below it, else the floor."""
+        block = self.block_of(shape_id)
+        if block is None:
+            return self.floor
+        below = [o.box.top for o in self.blocks if o is not block and o.box.top >= block.box.bottom - CONTAIN_TOL and o.box.overlap_x(block.box) > 0]
+        return min(below) - BLOCK_GAP if below else self.floor
 
     def is_full_width(self, block: Block) -> bool:
         if self.content is None or block.box.width < FULL_WIDTH * self.content.width:
