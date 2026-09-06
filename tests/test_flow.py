@@ -153,6 +153,11 @@ def test_draw_flow_places_icon_pictures(tmp_path, monkeypatch):
     assert "Flow x icon s4" in names and "Flow x icon bank" not in names
     node = next(s for s in created if s.name == "Flow x node s4")
     assert node.text_frame.margin_left > Inches(0.3)
+    # A node too narrow for icon plus label keeps the label width and gets a corner badge instead.
+    narrow: list = []
+    slide = _blank_slide()[1]
+    small = flow_module._node(slide, FlowNode(id="s4", label="S/4HANA", icon="s4hana"), 0, 0, Inches(0.6), Inches(0.5), "Flow y", narrow)
+    assert small.text_frame.margin_left == Inches(0.05) and narrow[0].width == flow_module.ICON_BADGE
 
 
 def _box(shape):

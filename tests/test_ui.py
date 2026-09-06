@@ -9,6 +9,7 @@ from streamlit.testing.v1 import AppTest
 from sdgen.analyze import analyze_deck
 from sdgen.blueprint import derive_blueprint
 from sdgen.design import DesignStore
+from sdgen.icons import catalogue
 from sdgen.inventory import inspect_deck
 from sdgen.manifest import GlobalSpec
 from sdgen.registry import Registry
@@ -204,11 +205,11 @@ def test_icon_note_tells_what_the_drawings_show(tmp_path, monkeypatch):
     sap = ui.Design(name="s", template="demo", brief=ui.Brief(subject="x", about="SAP S/4HANA lockbox"))
     monkeypatch.setenv("SDGEN_ICONS", str(tmp_path))
     assert ui._icon_note(sap).startswith("No SAP icon")
-    svg = tmp_path / ui.catalogue()["cloud_integration"].file
+    svg = tmp_path / catalogue()["cloud_integration"].file
     svg.write_text("<svg/>", encoding="utf-8")
     (tmp_path / "png").mkdir()
     (tmp_path / "png" / (svg.stem + ".png")).write_bytes(b"png")
-    assert "1 of" in ui._icon_note(sap) and "Cloud Integration" in ui._icon_note(sap)
+    assert ui._icon_note(sap).startswith("Icons installed for 1 of")
     assert list(ui.DIAGRAM_FORMATS) == ["shapes", "drawio", "mermaid"]
 
 

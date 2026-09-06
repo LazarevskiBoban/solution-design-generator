@@ -24,7 +24,7 @@ from sdgen.mapping.model import MappingEntry, MappingSet, SourceSpec, TargetSpec
 from sdgen.mapping.workbook import write_workbook
 from sdgen.drawio import to_drawio
 from sdgen.flow import plan_flows, to_mermaid, uses_sap, walkthrough_text
-from sdgen.icons import catalogue, icon_keys, installed_keys
+from sdgen.icons import icon_keys, installed_keys
 from sdgen.plan import SOURCES, WALKTHROUGH_SUFFIX, FlowRequest, SectionDecision, SectionPlan, active_extras, apply_plan, extended_blueprint, extended_manifest, extra_slides, leftover_texts, plan_sections, walkthrough_extras
 from sdgen.preview import export_slides
 from sdgen.registry import Registry, safe_name
@@ -1398,10 +1398,12 @@ def _icon_note(design: Design) -> str:
     if not uses_sap(design.brief):
         return "Nodes draw as plain shapes: the brief is not about SAP, so no icon set is used."
     have = installed_keys()
+    total = len(icon_keys())
     if not have:
-        return "No SAP icon files are installed, so every node draws as a plain shape. See assets/icons/README.md to add them."
-    labels = ", ".join(catalogue()[k].label for k in have)
-    return f"SAP icons installed for {len(have)} of {len(icon_keys())} catalogue entries ({labels}); other systems draw as plain shapes."
+        return "No SAP icon files are installed, so every node draws as a plain shape. Run sdgen icons --fetch once (see assets/icons/README.md)."
+    if len(have) == total:
+        return f"Every node gets an icon: all {total} SAP and non-SAP icons of the catalogue are installed."
+    return f"Icons installed for {len(have)} of {total} catalogue entries; the other nodes draw as plain shapes until sdgen icons --fetch has run."
 
 
 def _show_icon_note(design: Design) -> None:

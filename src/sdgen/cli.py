@@ -289,12 +289,15 @@ def _resolve_template(template: str, templates: Path) -> TemplateEntry:
 
 
 @main.command()
-def icons() -> None:
+@click.option("--fetch", is_flag=True, help="Download the catalogue files from the SAP BTP Solution Diagrams repository first.")
+def icons(fetch: bool) -> None:
     """Builds the PNG renditions of the diagram icons through PowerPoint."""
-    from sdgen.icons import build_pngs, icon_dir
+    from sdgen.icons import build_pngs, fetch_icons, icon_dir
 
     try:
+        if fetch:
+            click.echo(f"{len(fetch_icons())} icon file(s) downloaded into {icon_dir()}")
         built = build_pngs()
-    except RuntimeError as exc:
+    except (RuntimeError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"{len(built)} icon(s) built under {icon_dir() / 'png'}")

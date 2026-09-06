@@ -15,7 +15,7 @@ from pptx.util import Inches, Pt
 from pydantic import BaseModel, Field, ValidationError
 
 from sdgen.brief import Brief, dump_brief
-from sdgen.icons import icon_keys, icon_png
+from sdgen.icons import catalogue, icon_keys, icon_png
 from sdgen.llm import LLMClient
 from sdgen.textmetrics import FontSpec, text_width_pt
 
@@ -27,6 +27,9 @@ LANE_TITLES = {"source": "Source", "middleware": "Middleware", "target": "Target
 SAP_RE = re.compile(r"\bSAP\b|S/4|S4HANA|\bECC\b|\bBTP\b|Integration Suite|\bCPI\b|PI/PO|Cloud Connector|IDoc|\bRFC\b|OData", re.IGNORECASE)
 ICON_PAD = Inches(0.06)
 ICON_MAX = Inches(0.45)
+ICON_MIN = Inches(0.16)
+ICON_BADGE = Inches(0.18)  # corner badge for nodes too narrow to hold an icon next to the label
+LABEL_MIN_WIDTH = Inches(0.8)
 
 NODE_HEIGHT = Inches(0.7)
 NODE_WIDTH = Inches(3.0)
@@ -170,7 +173,8 @@ def plan_flows(brief: Brief, requests: list, llm: LLMClient, icons: list[str] | 
     schema = FLOW_SCHEMA
     if icons:
         schema = _schema_with_icons(icons)
-        lines += ["", "# Icon keys: give every node the closest one, generic when none fits", ", ".join(icons)]
+        known = catalogue()
+        lines += ["", "# Icon keys: give every node the closest one; SAP systems take SAP keys, other systems the non-SAP ones", "; ".join(f"{k} = {known[k].label}" if k in known else k for k in icons)]
     lines += ["", "# Facts", brief.facts_text() or "(none)", "", "# Brief", dump_brief(brief)]
     data = llm.complete_json(SYSTEM_PROMPT, "\n".join(lines), schema, name="flows")
     wanted = {request.section for request in requests}
@@ -392,10 +396,13 @@ def _node(slide, node: FlowNode, x: int, y: int, width: int, height: int, prefix
     frame.margin_top = frame.margin_bottom = Inches(0.03)
     png = icon_png(node.icon) if node.icon else None
     if png is not None:
-        size = max(Inches(0.2), min(ICON_MAX, height - 2 * ICON_PAD))
-        picture = slide.shapes.add_picture(str(png), x + ICON_PAD, y + (height - size) // 2, size, size)
+        room = min(ICON_MAX, height - 2 * ICON_PAD, width - LABEL_MIN_WIDTH - 2 * ICON_PAD)
+        if room >= ICON_MIN:
+            picture = slide.shapes.add_picture(str(png), x + ICON_PAD, y + (height - room) // 2, room, room)
+            frame.margin_left = room + 2 * ICON_PAD
+        else:
+            picture = slide.shapes.add_picture(str(png), x + ICON_PAD // 2, y + ICON_PAD // 2, ICON_BADGE, ICON_BADGE)
         picture.name = f"{prefix} icon {node.id}"
-        frame.margin_left = size + 2 * ICON_PAD
         if created is not None:
             created.append(picture)
     paragraph = frame.paragraphs[0]

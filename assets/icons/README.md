@@ -1,14 +1,13 @@
 # Diagram icons
 
-Flow diagrams use the SAP BTP Solution Diagram icons when the brief is about SAP.
+Flow diagrams give every node an icon when the brief is about SAP: the SAP BTP service icons and
+the generic SAP icons (SAP blue for SAP systems, grey for everything else) of the SAP BTP Solution
+Diagrams repository (https://github.com/SAP/btp-solution-diagrams, Apache-2.0).
 
-1. Download the SVG folder of the SAP BTP Solution Diagrams repository
-   (https://github.com/SAP/btp-solution-diagrams, folder
-   `assets/shape-libraries-and-editable-presets/svg`, Apache-2.0).
-2. Copy the files named in `src/sdgen/icons.yaml` into `assets/icons/sap/` next to this file
-   (or point the `SDGEN_ICONS` environment variable at the folder that holds them).
-3. Run `sdgen icons` once to build the PNG renditions that PowerPoint drawings use
-   (needs PowerPoint on this machine). draw.io files use the SVGs directly.
+1. Run `sdgen icons --fetch` once. It downloads the files named in `src/sdgen/icons.yaml` into
+   `assets/icons/sap/` next to this file (or into the folder the `SDGEN_ICONS` environment
+   variable points at) and builds the PNG renditions that PowerPoint drawings use (needs
+   PowerPoint on this machine). draw.io files use the SVGs directly.
+2. Run `sdgen icons` again after editing the catalogue, `--fetch` when new files were added.
 
-Catalogue keys without a file draw as plain shapes; add a file name in `icons.yaml` to give
-them an icon.
+A key whose file is missing draws as a plain shape.

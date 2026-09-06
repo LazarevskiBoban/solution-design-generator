@@ -1,20 +1,52 @@
-# Icon catalogue for flow diagrams. Keys are what the model assigns to nodes; files are SVGs from the
-# SAP BTP Solution Diagrams set (github.com/SAP/btp-solution-diagrams, Apache-2.0), copied into
-# assets/icons/sap/. A key without a file, or a missing file, draws as a plain shape.
+# Icon catalogue for flow diagrams. Keys are what the model assigns to nodes. Files come from the SAP BTP
+# Solution Diagrams repository (github.com/SAP/btp-solution-diagrams, Apache-2.0): service icons (*_sd.svg)
+# from its svg folder, generic icons (generic-*.svg, SAP blue or non-SAP grey) from its draw.io library.
+# `sdgen icons --fetch` downloads them into assets/icons/sap/ and builds the PNGs the drawings use.
+
+# SAP systems and platforms
 s4hana:
-  label: SAP S/4HANA
-  file: ""
+  label: SAP S/4HANA (any edition, RISE included)
+  file: generic-building-sap.svg
 ecc:
-  label: SAP ECC
-  file: ""
+  label: SAP ECC or other on-premise SAP system
+  file: generic-on-premise-sap.svg
+sap_saas:
+  label: SAP cloud application (Ariba, SuccessFactors, Concur, Fieldglass)
+  file: generic-app-sap.svg
 btp:
-  label: SAP BTP
-  file: ""
+  label: SAP BTP (platform, subaccount)
+  file: generic-cloud-sap.svg
+sap_gui:
+  label: SAP Fiori app or SAP GUI screen
+  file: generic-desktop-sap.svg
+sap_api:
+  label: SAP API (OData, SOAP, BAPI, IDoc)
+  file: generic-api-sap.svg
+sap_job:
+  label: SAP background job or program
+  file: generic-settings-sap.svg
+sap_file_share:
+  label: SAP-side file share or SFTP (RISE, BTP)
+  file: generic-documents-sap.svg
+sap_document:
+  label: SAP document or report output
+  file: generic-document-sap.svg
+sap_event:
+  label: SAP business event
+  file: generic-event-sap.svg
+sap_user:
+  label: SAP business user
+  file: generic-user-sap.svg
+sap_security:
+  label: SAP certificate, key or trust configuration
+  file: generic-key-sap.svg
+
+# SAP BTP services
 btp_integration_suite:
   label: SAP Integration Suite
   file: 32086-sap-integration-suite_sd.svg
 cloud_integration:
-  label: Cloud Integration
+  label: Cloud Integration (iFlow)
   file: 32134-sap-integration-suite_cloud-integration_sd.svg
 api_management:
   label: API Management
@@ -22,39 +54,158 @@ api_management:
 edge_integration_cell:
   label: Edge Integration Cell
   file: 32136-edge-integration-cell_sd.svg
+integration_advisor:
+  label: Integration Advisor
+  file: 32138-sap-integration-suite_integration-advisor_sd.svg
+open_connectors:
+  label: Open Connectors
+  file: 32141-sap-integration-suite_open-connectors_sd.svg
+trading_partner_management:
+  label: Trading Partner Management (B2B)
+  file: 32142-sap-integration-suite_trading-partner-management_sd.svg
+event_mesh:
+  label: Event Mesh
+  file: 31037-sap-integration-suite_event-mesh_sd.svg
+advanced_event_mesh:
+  label: Advanced Event Mesh
+  file: 32032-sap-integration-suite_advanced-event-mesh_sd.svg
 cloud_connector:
   label: SAP Cloud Connector
   file: 32148-cloud-connector_sd.svg
+connectivity_service:
+  label: Connectivity service
+  file: 20077-sap-connectivity-service_sd.svg
+destination_service:
+  label: Destination service
+  file: 20080-sap-destination-service_sd.svg
+alert_notification:
+  label: Alert Notification service
+  file: 31060-sap-alert-notification-service-for-sap-btp_sd.svg
+job_scheduling:
+  label: Job Scheduling service
+  file: 20090-sap-job-scheduling-service_sd.svg
+credential_store:
+  label: Credential Store
+  file: 31073-sap-credential-store_sd.svg
+private_link:
+  label: Private Link service
+  file: 10042-sap-private-link-service_sd.svg
+object_store:
+  label: Object Store
+  file: 10009-object-store-on-sap-btp_sd.svg
+audit_log:
+  label: Audit Log service
+  file: 10014-sap-audit-log-service_sd.svg
+cloud_logging:
+  label: Cloud Logging
+  file: 31112-cloud-logging_sd.svg
+build_process_automation:
+  label: SAP Build Process Automation (workflow)
+  file: 31067-sap-build-process-automation_sd.svg
+master_data_integration:
+  label: SAP Master Data Integration
+  file: 10039-sap-master-data-integration_sd.svg
+document_management:
+  label: SAP Document Management service
+  file: 31027-sap-document-management-service_sd.svg
 hana:
   label: SAP HANA Cloud
   file: 20083-sap-hana-cloud_sd.svg
+datasphere:
+  label: SAP Datasphere
+  file: 10025-sap-datasphere_sd.svg
+analytics_cloud:
+  label: SAP Analytics Cloud
+  file: 20061-sap-analytics-cloud_sd.svg
 identity:
-  label: SAP Cloud Identity Services
+  label: SAP Cloud Identity Services (IAS, IPS)
   file: 32129-sap-cloud-identity-services_sd.svg
+cloud_foundry:
+  label: BTP Cloud Foundry runtime (custom app)
+  file: 10017-sap-btp_cloud-foundry-runtime_sd.svg
+kyma:
+  label: BTP Kyma runtime
+  file: 20065-sap-btp_kyma-runtime_sd.svg
+abap_environment:
+  label: BTP ABAP environment
+  file: 20016-sap-btp_abap-environment_sd.svg
+cloud_alm:
+  label: SAP Cloud ALM (monitoring)
+  file: 34156-sap-cloud-alm_sd.svg
+
+# Non-SAP systems
+server:
+  label: Non-SAP server or virtual machine
+  file: generic-on-premise-nonsap.svg
 sftp:
-  label: SFTP server
-  file: ""
+  label: Non-SAP SFTP or FTP server
+  file: generic-documents-nonsap.svg
 file_share:
-  label: File share
-  file: ""
+  label: File share or archive folder
+  file: generic-document-nonsap.svg
 database:
-  label: Database
-  file: ""
+  label: Database, table or log store
+  file: generic-indent-nonsap.svg
 bank:
   label: Bank
-  file: ""
+  file: generic-building-nonsap.svg
 swift:
-  label: SWIFT
-  file: ""
+  label: SWIFT or other financial messaging network
+  file: generic-paper-plane-nonsap.svg
+email:
+  label: E-mail or messaging
+  file: generic-message-nonsap.svg
 azure:
   label: Microsoft Azure
-  file: ""
+  file: generic-cloud-nonsap.svg
+cloud_nonsap:
+  label: Other non-SAP cloud (AWS, Google Cloud)
+  file: generic-cloud-nonsap.svg
 mulesoft:
   label: MuleSoft
-  file: ""
+  file: generic-adapter-nonsap.svg
+middleware:
+  label: Other non-SAP middleware (Boomi, webMethods, Azure Integration Services)
+  file: generic-adapter-nonsap.svg
+api:
+  label: Non-SAP API or web service
+  file: generic-api-nonsap.svg
+web_app:
+  label: Web application or portal
+  file: generic-web-nonsap.svg
+mobile:
+  label: Mobile app or device
+  file: generic-mobile-nonsap.svg
+queue:
+  label: Message queue or event broker (Kafka, MQ)
+  file: generic-event-nonsap.svg
+scheduler:
+  label: Non-SAP scheduler or batch job
+  file: generic-settings-nonsap.svg
+identity_provider:
+  label: Non-SAP identity provider (Entra ID, Okta)
+  file: generic-key-nonsap.svg
+security:
+  label: Certificates, keys, firewall
+  file: generic-locked-nonsap.svg
+monitoring:
+  label: Monitoring or ticketing tool (Splunk, ServiceNow)
+  file: generic-inspect-nonsap.svg
+erp_nonsap:
+  label: Non-SAP ERP or business application (Oracle, Dynamics, Salesforce)
+  file: generic-factory-nonsap.svg
+third_party:
+  label: External partner or customer system
+  file: generic-third-party-nonsap.svg
+machine:
+  label: Machine, IoT device or sensor
+  file: generic-machine-nonsap.svg
 user:
-  label: User
-  file: ""
+  label: User or team
+  file: generic-user-nonsap.svg
+admin:
+  label: Operations or support team
+  file: generic-admin-nonsap.svg
 generic:
-  label: System
-  file: ""
+  label: Other system
+  file: generic-app-nonsap.svg

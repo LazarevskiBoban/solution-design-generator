@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
+import json
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -12,6 +15,11 @@ DEFAULT_ICON_DIR = Path(__file__).resolve().parents[2] / "assets" / "icons" / "s
 PNG_DIR_NAME = "png"
 PP_SHAPE_FORMAT_PNG = 2
 ICON_PX = 256
+REPOSITORY = "https://raw.githubusercontent.com/SAP/btp-solution-diagrams/main/assets/shape-libraries-and-editable-presets/"
+SERVICE_ICONS_URL = REPOSITORY + "svg/"
+GENERIC_LIBRARY_URL = REPOSITORY + "draw.io/20-03-generic-icons/sap-generic-icons-size-M-200302.xml"
+GENERIC_PREFIX = "generic-"
+GENERIC_TITLE = re.compile(r"(.*?)[ -]?(Highlight|Non-SAP|SAP)[ -]Size [MS]$")
 
 
 class Icon(BaseModel):
@@ -32,6 +40,47 @@ def catalogue() -> dict[str, Icon]:
 
 def icon_keys() -> list[str]:
     return list(catalogue())
+
+
+def fetch_icons(target: Path | None = None) -> list[Path]:
+    """Downloads every catalogue file from the SAP BTP Solution Diagrams repository into the icon folder."""
+    from urllib.request import urlopen
+
+    folder = target or icon_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    wanted = sorted({icon.file for icon in catalogue().values() if icon.file})
+    fetched: list[Path] = []
+    generic = [name for name in wanted if name.startswith(GENERIC_PREFIX)]
+    if generic:
+        with urlopen(GENERIC_LIBRARY_URL, timeout=60) as response:
+            library = library_svgs(response.read().decode("utf-8"))
+        for name in generic:
+            if name in library:
+                (folder / name).write_bytes(library[name])
+                fetched.append(folder / name)
+    for name in wanted:
+        if name.startswith(GENERIC_PREFIX):
+            continue
+        with urlopen(SERVICE_ICONS_URL + name, timeout=60) as response:
+            (folder / name).write_bytes(response.read())
+        fetched.append(folder / name)
+    return fetched
+
+
+def library_svgs(text: str) -> dict[str, bytes]:
+    """The SVGs of a draw.io library of the generic SAP icons, keyed by the catalogue file name."""
+    match = re.search(r"<mxlibrary>(.*)</mxlibrary>", text, re.S)
+    if not match:
+        return {}
+    found: dict[str, bytes] = {}
+    for item in json.loads(match.group(1)):
+        title = GENERIC_TITLE.match(str(item.get("title", ""))) if "data" in item else None
+        if title is None:
+            continue
+        slug = re.sub(r"[^a-z0-9]+", "-", title.group(1).strip().lower()).strip("-")
+        variant = title.group(2).lower().replace("-", "")
+        found[f"{GENERIC_PREFIX}{slug}-{variant}.svg"] = base64.b64decode(item["data"].split(",", 1)[1])
+    return found
 
 
 def installed_keys() -> list[str]:
