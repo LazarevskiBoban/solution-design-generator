@@ -49,7 +49,7 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     app.text_input(key="design_name:demo").input("CAMT 053").run()
     state_key = "design:demo:camt-053"
     assert state_key in app.session_state
-    steps = [e.label.split(":")[0] for e in app.expander if e.label[:1].isdigit()]
+    steps = _steps(app)
     assert steps[:3] == ["1. Brief", "2. Section plan", "3. Write the slides"] and steps[-2:] == ["5. Review sections", "6. Generate"]
 
     app.text_input(key=f"{state_key}:0:b:subject").input("Lockbox Integration")
@@ -58,14 +58,18 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     app.run()
     assert app.session_state[state_key].brief.facts == {"countries": "ZA, KE"}
     assert (tmp_path / "designs" / "camt-053" / "brief.md").read_text(encoding="utf-8").rstrip().endswith("## fact:countries\nZA, KE")
+    app.button(key=f"{state_key}:next:plan").click().run()
+    assert app.session_state[f"{state_key}:step"] == "plan"
     app.button(key=f"{state_key}:draft").click().run()
     assert not app.exception
     design = app.session_state[state_key]
     assert "[Draft] Bank statements" in design.content_markdown
     assert any(s.value.startswith("Drafted 3 of 3 fields with mock") for s in app.success)
     assert (tmp_path / "designs" / "camt-053" / "content.md").is_file()
-    labels = [e.label for e in app.expander]
+    labels = _labels(app)
     assert "3. Write the slides: written with mock" in labels
+    assert app.session_state[f"{state_key}:step"] in ("review", "diagrams")
+    assert next(e.icon for e in app.status if e.label.startswith("3.")) == chr(0x2705)
     assert any(re.fullmatch(r"5\. Review sections: (\d+) of \1 written", label) for label in labels)
 
     app.button(key=f"{state_key}:generate").click().run()
@@ -97,6 +101,7 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     assert not app.exception
     assert app.session_state[state_key].plan is not None and (tmp_path / "designs" / "camt-053" / "plan.yaml").is_file()
     assert f"{state_key}:proposed_plan" not in app.session_state
+    assert app.session_state[f"{state_key}:step"] == "write"
 
     # The confirmation opens a dialog, which the test harness cannot drive; the trigger and the action are checked apart.
     app.selectbox(key="design_choice:demo").select("camt-053").run()
@@ -185,6 +190,15 @@ def test_design_page_picks_the_reasoning_deployment(registry_with_demo, monkeypa
     assert picker.value == "gpt-5" and picker.options == ["gpt-4.1", "gpt-5", "gpt-4o-mini"]
     picker.select("gpt-4.1").run()
     assert not app.exception and app.selectbox(key="design:demo:lockbox:deployment").value == "gpt-4.1"
+
+
+def _labels(app):
+    # The test tree lists an expander with an icon as a status box.
+    return [e.label for e in list(app.expander) + list(app.status)]
+
+
+def _steps(app):
+    return sorted(label.split(":")[0] for label in _labels(app) if label[:1].isdigit())
 
 
 def _app_module():
