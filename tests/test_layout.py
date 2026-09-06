@@ -67,3 +67,19 @@ def test_sample_deck_label_is_the_table_header(sample_deck):
     scope = layout.block_of(table.shape_id)
     assert names[scope.header] == "Scope Label" and scope.fields == {"scope"}
     assert not layout.is_full_width(layout.top_block())
+
+
+def test_moving_a_placeholder_keeps_its_inherited_size():
+    from pptx.oxml.ns import qn
+
+    from sdgen.layout import shift_shapes
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
+    body = slide.placeholders[1]
+    body.text_frame.text = "text"
+    assert body._element.xfrm is None
+    width, height, top = body.width, body.height, body.top
+    shift_shapes(slide, [body.shape_id], Inches(1))
+    assert body._element.find(".//" + qn("a:xfrm")) is not None
+    assert body.width == width and body.height == height and body.top == top + Inches(1)

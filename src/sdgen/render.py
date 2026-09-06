@@ -17,7 +17,7 @@ from sdgen.fill.slides import clone_slide, move_slide, remove_slide
 from sdgen.fill.table import append_rows, clear_table_body, fill_table, has_footer, row_heights
 from sdgen.fill.text import Block, Span, capacity_chars_of, capacity_lines_of, fit_text_shape, line_chars_of, overflow_ratio, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text, theme_fonts
 from sdgen.inventory import find_shape, walk_shapes
-from sdgen.layout import BLOCK_GAP, CONTAIN_TOL, Box, SlideLayout, analyse_slide, shift_shapes
+from sdgen.layout import BLOCK_GAP, CONTAIN_TOL, Box, SlideLayout, analyse_slide, pin_geometry, shift_shapes
 from sdgen.manifest import Binding, FieldSpec, Manifest
 
 CONTINUATION_SUFFIX = " (cont.)"
@@ -26,6 +26,7 @@ SPILL_RATIO = 1.25
 SMALL_BOX_LINES = 4
 PICTURE_OVERLAP = 0.3
 SMALL_BOX_SHRINK_RATIO = 1.5
+STALE_BUDGET_RATIO = 1.25
 MissingMode = Literal["keep", "blank", "placeholder"]
 PLACEHOLDER_ROW = "[To be completed]"
 
@@ -362,7 +363,7 @@ def _apply(prs, slide, shape, spec: FieldSpec, binding: Binding, value: Any, iss
 
     blocks = parse_blocks(text)
     set_rich_text(shape, blocks, keep_prefix=binding.keep_prefix)
-    capacity = binding.max_chars or capacity_chars_of(shape, theme, len(binding.keep_prefix or ""))
+    capacity = _budget(binding.max_chars, capacity_chars_of(shape, theme, len(binding.keep_prefix or "")))
     ratio = overflow_ratio(shape, theme)
     over = bool(capacity and len(text) > capacity * SPILL_RATIO) or ratio > SPILL_RATIO
     lines = capacity_lines_of(shape, theme)
@@ -475,29 +476,57 @@ def _continue_cleaned(prs, slide, layout: SlideLayout, pending: dict, number: in
     keep_ids = [i for b in keep for i in b.members]
     drop_ids = [i for b in layout.blocks if not any(b is k for k in keep) for i in b.members]
     shift = min(b.box.top for b in keep) - layout.content.top
+
+    def below_of(block: Block) -> list:
+        return [o for o in keep if o is not block and o.box.top >= block.box.bottom - CONTAIN_TOL and o.box.overlap_x(block.box) > 0]
+
+    # A table whose remaining rows need more height pushes the kept blocks under it down, when the floor allows.
+    extra: dict[int, int] = {}
+    for key, (spec, binding, rows) in pending.items():
+        shape = find_shape(slide, binding.shape.id)
+        if spec.kind == "table" and shape is not None:
+            block = layout.block_of(binding.shape.id)
+            extra[id(block)] = max(0, _table_need(shape, binding, spec, rows, theme) + BLOCK_GAP - (block.box.bottom - shape.top))
+    push: dict[int, int] = {}
+    for b in sorted(keep, key=lambda b: b.box.top):
+        for o in below_of(b):
+            push[id(o)] = max(push.get(id(o), 0), push.get(id(b), 0) + extra.get(id(b), 0))
+    if any(o.box.bottom - shift + push.get(id(o), 0) > layout.floor for o in keep):
+        extra, push = {}, {}  # no room to push: the rows continue on further copies instead
     growth: dict[int, int] = {}
     growing: dict[int, list[int]] = {}
+    limits: dict[int, int] = {}
     for b in keep:
-        below = any(o is not b and o.box.top >= b.box.bottom - CONTAIN_TOL and o.box.overlap_x(b.box) > 0 for o in keep)
-        growth[id(b)] = 0 if below else max(0, layout.floor - (b.box.bottom - shift))
+        below = below_of(b)
+        bottom = b.box.bottom - shift + push.get(id(b), 0)
+        limits[id(b)] = min(o.box.top - shift + push.get(id(o), 0) for o in below) - BLOCK_GAP if below else layout.floor
+        growth[id(b)] = extra.get(id(b), 0) if below else max(0, layout.floor - bottom, extra.get(id(b), 0))
         growing[id(b)] = _growing_members(slide, b, b.box.bottom, layout.bound) if growth[id(b)] > 0 else []
     scales: dict[str, float] = {}
-    for key, (_, binding, _) in pending.items():
+    rooms: dict[str, tuple[int, int]] = {}
+    for key, (spec, binding, _) in pending.items():
         block = layout.block_of(binding.shape.id)
         shape = find_shape(slide, binding.shape.id)
-        grows = shape is not None and binding.shape.id in growing[id(block)]
+        if shape is None:
+            continue
+        if spec.kind == "table":
+            rooms[key] = (0, limits[id(block)] - (shape.top - shift + push.get(id(block), 0)))
+            continue
+        grows = binding.shape.id in growing[id(block)]
         scales[key] = (shape.height + growth[id(block)]) / shape.height if grows else 1.0
 
     def prepare(copy) -> None:
         remove_shapes(copy, _shapes(copy, drop_ids))
         shift_shapes(copy, keep_ids, -shift)
         for b in keep:
+            if push.get(id(b)):
+                shift_shapes(copy, b.members, push[id(b)])
             for shape_id in growing[id(b)]:
                 shape = find_shape(copy, shape_id)
                 if shape is not None:
                     _grow(shape, growth[id(b)])
 
-    chunked = _chunk_pending(slide, pending, theme, scales, False, issues, _table_rooms(slide, pending, layout.floor, shift, False))
+    chunked = _chunk_pending(slide, pending, theme, scales, False, issues, rooms)
     copies = _spread(prs, slide, chunked, theme, issues, prepare)
     if copies:
         issues.append(RenderIssue(level="info", slide=number, message=f"continued on {len(copies)} extra slide(s) that show only the continued block(s)"))
@@ -592,6 +621,13 @@ def _rows_that_fit(shape, binding: Binding, count: int, room: int) -> int:
     return max(1, min(fitting, count))
 
 
+def _table_need(shape, binding: Binding, spec: FieldSpec, rows: list, theme) -> int:
+    """Height a copy of the table needs to show all the rows: header, rows and footer."""
+    heights = [tr.h for tr in shape.table._tbl.tr_lst]
+    footer = heights[-1] if has_footer(shape, binding.keep_last_row_if, binding.header_rows) else 0
+    return sum(heights[: binding.header_rows]) + footer + sum(row_heights(shape, theme, rows=rows, header_rows=binding.header_rows, columns=spec.columns or None))
+
+
 def _split_rows(shape, binding: Binding, spec: FieldSpec, rows: list, first: int, rest: int, theme) -> list[list]:
     """Row chunks: what still fits under the table, then one chunk per copy; without a known room the rest goes on one copy."""
     heights = [tr.h for tr in shape.table._tbl.tr_lst]
@@ -626,7 +662,14 @@ def _table_rooms(slide, pending: dict, floor: int, shift: int, grow_first: bool)
 
 def _capacity(shape, binding: Binding, blocks: list[Block], theme) -> int:
     measured = capacity_chars_of(shape, theme, len(binding.keep_prefix or ""))
-    return binding.max_chars or measured or max(1, sum(len(b.text) + 1 for b in blocks))
+    return _budget(binding.max_chars, measured) or max(1, sum(len(b.text) + 1 for b in blocks))
+
+
+def _budget(stated: int | None, measured: int | None) -> int | None:
+    """The stated budget, unless it is far above what the box measures: then the analysis is stale."""
+    if stated and measured:
+        return min(stated, int(measured * STALE_BUDGET_RATIO))
+    return stated or measured
 
 
 def _growing_members(slide, block: Block, bottom: int, bound: dict[int, str]) -> list[int]:
@@ -650,6 +693,7 @@ def _shapes(slide, shape_ids) -> list:
 
 def _grow(shape, delta: int) -> None:
     """A box that gets taller reads from the top, whatever the template anchored it to."""
+    pin_geometry(shape)
     shape.height = shape.height + delta
     if getattr(shape, "has_text_frame", False):
         shape.text_frame.vertical_anchor = MSO_ANCHOR.TOP

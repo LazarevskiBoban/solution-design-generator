@@ -165,7 +165,7 @@ def _walk(shapes):
 def _of_interest(shape, names: set[str]) -> bool:
     try:
         name = str(shape.Name)
-        if name in names or name.startswith(FLOW_PREFIX):
+        if name in names or (name.startswith(FLOW_PREFIX) and " node " in name):
             return True
         return shape.Type == MSO_PLACEHOLDER and shape.PlaceholderFormat.Type in TITLE_PLACEHOLDERS
     except Exception:

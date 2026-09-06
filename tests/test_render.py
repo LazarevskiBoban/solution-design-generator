@@ -518,3 +518,21 @@ def test_template_picture_under_written_text_is_removed(tmp_path):
 
     render(deck, manifest, Content(fields={"left": "Left", "inner": "Inner"}), tmp_path / "kept.pptx")
     assert "Screenshot" in {s.name for s in Presentation(str(tmp_path / "kept.pptx")).slides[0].shapes}
+
+
+def test_table_pushes_the_kept_block_below_on_the_copy(tmp_path):
+    from pptx.util import Inches
+
+    deck, spec = _table_deck(tmp_path)
+    prs = Presentation(str(deck))
+    below = next(s for s in prs.slides[0].shapes if s.name == "Below Box")
+    note = FieldSpec(key="note", label="Note", kind="text", bindings=[Binding(slide=1, shape=ShapeRef(id=below.shape_id), max_chars=200)])
+    rows = [{"Function": f"Inbound {i}", "Bank": f"Bank {i}"} for i in range(1, 6)]
+    text = chr(10).join(f"Note paragraph {i} with a few words." for i in range(1, 7))
+    result = render(deck, Manifest(name="t", fields=[spec, note]), Content(fields={"scope": rows, "note": text}), tmp_path / "out.pptx", spill=True)
+    slides = list(Presentation(str(tmp_path / "out.pptx")).slides)
+    assert not result.errors and len(slides) == 2
+    copy = {s.name: s for s in slides[1].shapes}
+    table = next(s for s in slides[1].shapes if s.has_table)
+    assert len(table.table.rows) == 5 and "Below Box" in copy
+    assert copy["Below Box"].top >= table.top + table.height and copy["Below Box"].top + copy["Below Box"].height <= Inches(7.15) + 1

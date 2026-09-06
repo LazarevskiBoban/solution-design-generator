@@ -146,7 +146,17 @@ def shift_shapes(slide, shape_ids: list[int], dy: int) -> None:
     for shape_id in shape_ids:
         shape = find_shape(slide, shape_id)
         if shape is not None:
+            pin_geometry(shape)
             shape.top = shape.top + dy
+
+
+def pin_geometry(shape) -> None:
+    """A placeholder inherits its place from the layout; moving or resizing it needs that place written on the slide first."""
+    if not getattr(shape, "is_placeholder", False) or shape._element.xfrm is not None:
+        return
+    left, top, width, height = shape.left, shape.top, shape.width, shape.height
+    if None not in (left, top, width, height):
+        shape.left, shape.top, shape.width, shape.height = left, top, width, height
 
 
 def _can_contain(shape, is_bound: bool) -> bool:
