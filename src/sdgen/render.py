@@ -14,7 +14,7 @@ from sdgen.fill.image import replace_picture
 from sdgen.flow import FlowSpec, draw_flow
 from sdgen.fill.slides import clone_slide, move_slide, remove_slide
 from sdgen.fill.table import clear_table_body, fill_table
-from sdgen.fill.text import Block, Span, capacity_chars_of, fit_text_shape, line_chars_of, overflow_ratio, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text, theme_fonts
+from sdgen.fill.text import Block, Span, capacity_chars_of, capacity_lines_of, fit_text_shape, line_chars_of, overflow_ratio, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text, theme_fonts
 from sdgen.inventory import find_shape, walk_shapes
 from sdgen.layout import CONTAIN_TOL, SlideLayout, analyse_slide, shift_shapes
 from sdgen.manifest import Binding, FieldSpec, Manifest
@@ -22,6 +22,8 @@ from sdgen.manifest import Binding, FieldSpec, Manifest
 CONTINUATION_SUFFIX = " (cont.)"
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 SPILL_RATIO = 1.25
+SMALL_BOX_LINES = 4
+SMALL_BOX_SHRINK_RATIO = 1.5
 MissingMode = Literal["keep", "blank", "placeholder"]
 PLACEHOLDER_ROW = "[To be completed]"
 
@@ -341,7 +343,11 @@ def _apply(prs, slide, shape, spec: FieldSpec, binding: Binding, value: Any, iss
     blocks = parse_blocks(text)
     set_rich_text(shape, blocks, keep_prefix=binding.keep_prefix)
     capacity = binding.max_chars or capacity_chars_of(shape, theme, len(binding.keep_prefix or ""))
-    over = bool(capacity and len(text) > capacity * SPILL_RATIO) or overflow_ratio(shape, theme) > SPILL_RATIO
+    ratio = overflow_ratio(shape, theme)
+    over = bool(capacity and len(text) > capacity * SPILL_RATIO) or ratio > SPILL_RATIO
+    lines = capacity_lines_of(shape, theme)
+    if over and lines is not None and lines < SMALL_BOX_LINES and ratio < SMALL_BOX_SHRINK_RATIO:
+        over = False  # a small box that is only a little over shrinks instead of spawning a slide
     if over and prototype:
         chunks = _split_blocks(blocks, capacity or len(text), line_chars_of(shape, theme))
         issues.append(RenderIssue(level="info", field=spec.key, slide=binding.slide, message=f"continued on {len(chunks) - 1} extra slide(s)"))
@@ -420,11 +426,10 @@ def _expand_and_push(prs, slide, layout: SlideLayout, top, pending: dict, number
     remove_shapes(slide, _shapes(slide, other_ids))
     delta = max(0, layout.floor - top.box.bottom)
     scales: dict[int, float] = {}
-    for shape_id in top.members:
+    for shape_id in _growing_members(slide, top, top.box.bottom, layout.bound):
         shape = find_shape(slide, shape_id)
-        if shape is not None and shape.height and abs(shape.top + shape.height - top.box.bottom) <= CONTAIN_TOL:
-            scales[shape_id] = (shape.height + delta) / shape.height
-            _grow(shape, delta)
+        scales[shape_id] = (shape.height + delta) / shape.height
+        _grow(shape, delta)
     if pushed is not None:
         remove_shapes(pushed, _shapes(pushed, top.members))
         shift_shapes(pushed, other_ids, top.box.top - min(b.box.top for b in others))
@@ -447,23 +452,25 @@ def _continue_cleaned(prs, slide, layout: SlideLayout, pending: dict, number: in
     drop_ids = [i for b in layout.blocks if not any(b is k for k in keep) for i in b.members]
     shift = min(b.box.top for b in keep) - layout.content.top
     growth: dict[int, int] = {}
+    growing: dict[int, list[int]] = {}
     for b in keep:
         below = any(o is not b and o.box.top >= b.box.bottom - CONTAIN_TOL and o.box.overlap_x(b.box) > 0 for o in keep)
         growth[id(b)] = 0 if below else max(0, layout.floor - (b.box.bottom - shift))
+        growing[id(b)] = _growing_members(slide, b, b.box.bottom, layout.bound) if growth[id(b)] > 0 else []
     scales: dict[str, float] = {}
     for key, (_, binding, _) in pending.items():
         block = layout.block_of(binding.shape.id)
         shape = find_shape(slide, binding.shape.id)
-        grows = shape is not None and shape.height and growth[id(block)] > 0 and abs(shape.top + shape.height - block.box.bottom) <= CONTAIN_TOL
+        grows = shape is not None and binding.shape.id in growing[id(block)]
         scales[key] = (shape.height + growth[id(block)]) / shape.height if grows else 1.0
 
     def prepare(copy) -> None:
         remove_shapes(copy, _shapes(copy, drop_ids))
         shift_shapes(copy, keep_ids, -shift)
         for b in keep:
-            for shape_id in b.members:
+            for shape_id in growing[id(b)]:
                 shape = find_shape(copy, shape_id)
-                if shape is not None and growth[id(b)] > 0 and abs(shape.top + shape.height - (b.box.bottom - shift)) <= CONTAIN_TOL:
+                if shape is not None:
                     _grow(shape, growth[id(b)])
 
     chunked = _chunk_pending(slide, pending, theme, scales, False, issues)
@@ -514,6 +521,19 @@ def _spread(prs, slide, chunked: dict, theme, issues: list[RenderIssue], prepare
 def _capacity(shape, binding: Binding, blocks: list[Block], theme) -> int:
     measured = capacity_chars_of(shape, theme, len(binding.keep_prefix or ""))
     return binding.max_chars or measured or max(1, sum(len(b.text) + 1 for b in blocks))
+
+
+def _growing_members(slide, block: Block, bottom: int, bound: dict[int, str]) -> list[int]:
+    """Members that get taller with the block: those touching its bottom and every bound text box inside it."""
+    ids = []
+    for shape_id in block.members:
+        shape = find_shape(slide, shape_id)
+        if shape is None or not shape.height:
+            continue
+        touches = abs(shape.top + shape.height - bottom) <= CONTAIN_TOL
+        if touches or (shape_id in bound and getattr(shape, "has_text_frame", False)):
+            ids.append(shape_id)
+    return ids
 
 
 def _shapes(slide, shape_ids) -> list:

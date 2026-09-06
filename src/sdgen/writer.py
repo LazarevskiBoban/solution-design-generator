@@ -32,11 +32,14 @@ and in the same order, replace each <!-- hint --> with the content, and add noth
 headings, no commentary, no code fence.
 Under a heading: one paragraph per line; bullet lines start with "- " and are indented two spaces
 per level; use **bold** sparingly; do not repeat the field label at the start of the content.
-Write sharp and short. Each field states a character target: write between 50 and 85 percent
-of it and never more, using the structure shown for the field. One idea per bullet, at most six
-bullets per field, at most fifteen words per bullet, no nested bullets unless the structure shows
-them. Prose: at most three sentences per paragraph; no filler such as "the design must ensure
-that" or "it is important to note". Fields marked as a few words get at most four words.
+Write sharp and short. Each field states a character target and a line count: write between
+50 and 85 percent of the characters and never more, using the structure shown for the field.
+One idea per bullet, never more bullets than the field has lines, at most fifteen words per
+bullet, no nested bullets unless the structure shows them; a box of three lines or fewer gets
+one or two short lines. Prose: at most three sentences per paragraph; no filler such as "the
+design must ensure that" or "it is important to note". Fields marked as a few words get at most
+four words. The earlier document quoted in the outline shows structure and tone only: never
+reuse its system names, wording or facts.
 Overview fields summarise for management: what, why and with which systems. Developer detail
 (steps, checks, parameters, cut-off times, naming) goes to the build notes field when the
 skeleton has one, never into an overview.
@@ -45,7 +48,7 @@ listed columns. Never write the same sentence into two fields; each field adds s
 
 ROUTING = {
     "overview": [
-        "Business need follows the structure of the earlier document (problem, expected outcome, status) and uses the volumes from the facts.",
+        "Business need follows the structure of the earlier document (problem, expected outcome, status) and uses the volumes from the facts; label each paragraph as the box header lists them (Business Need, Problem, Expected Outcomes).",
         "Executive overview boxes are the management summary: three to five sentences each, no parameter lists.",
         "Solution overview labels each system keep, change or new, taken from the systems fact.",
         "Landscape fields list platforms and systems, not process steps.",
@@ -227,7 +230,11 @@ def answer_skeleton(brief: Brief, sections: list[dict]) -> str:
             if field["token"]:
                 hint += ", a few words only, it replaces a short placeholder"
             elif field["max_chars"]:
-                hint += f", target {field['max_chars']} characters (about {max(1, field['max_chars'] // CHARS_PER_WORD)} words; write 50 to 85 percent of it)"
+                hint += f", target {field['max_chars']} characters"
+                if field.get("max_lines"):
+                    hint += f" on about {field['max_lines']} lines"
+                hint += f" (about {max(1, field['max_chars'] // CHARS_PER_WORD)} words; write 50 to 85 percent of it"
+                hint += "; a bullet takes at least one line)" if field.get("max_lines") else ")"
             if field["guidance"]:
                 hint += f". {field['guidance']}"
             lines.append(f"## {field['key']}")
@@ -287,6 +294,8 @@ def writable_sections(blueprint: Blueprint, manifest: Manifest, exclude: set[str
                         "kind": f.kind,
                         "columns": list(f.columns),
                         "max_chars": max((b.max_chars or 0) for b in f.bindings) or None,
+                        "max_lines": max((b.max_lines or 0) for b in f.bindings) or None,
+                        "max_lines": max((b.max_lines or 0) for b in f.bindings) or None,
                         "token": any(b.mode == "token" for b in f.bindings),
                         "guidance": f.guidance,
                     }

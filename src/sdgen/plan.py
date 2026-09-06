@@ -91,6 +91,7 @@ For every section decide:
 - title: a new title only when the template title names the earlier project's systems or
   flows and the slide's purpose still fits the new integration (for example a flow slide that
   becomes the new integration's equivalent flow); otherwise an empty string keeps the title.
+  A title has at most 50 characters and no arrows; the subject is appended automatically.
 - source: "draft" when the model should write it, "keep" for template text that applies as it
   is (guiding principles, contents), "blank" when the slide should stay empty, "diagram" for
   diagram slides to draw from the brief, "mechanical" for cover, version control and references.

@@ -163,3 +163,11 @@ def test_placeholder_budget_uses_the_inherited_size(tmp_path):
     paragraph = shape.paragraphs[0]
     assert paragraph.font_size == 32.0 and paragraph.font_name == "Calibri" and paragraph.line_spacing == 1.0
     assert _max_chars(shape) < capacity_chars(shape.width * 72 - 14.4, shape.height * 72 - 7.2, FontSpec("Calibri", 14, False), 100, 0)
+
+
+def test_line_budget_accompanies_the_character_budget(sample_deck):
+    analysis = analyze_deck(inspect_deck(sample_deck))
+    need = next(c for c in analysis.candidates if c.key == "business_need")
+    assert need.max_lines and 1 < need.max_lines < 40
+    binding = analysis.to_manifest("demo").field("business_need").bindings[0]
+    assert binding.max_lines == need.max_lines and binding.max_chars == need.max_chars

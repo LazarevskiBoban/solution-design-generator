@@ -394,7 +394,7 @@ def test_other_overflowing_block_continues_after_the_pushed_slide(tmp_path):
     manifest = _overview_manifest(shapes)
     manifest.field("left").bindings[0].max_chars = 20
     need = "Lockbox files arrive daily from three banks over SWIFT. They must be posted automatically without manual work."
-    left = chr(10).join(f"Left paragraph {i} with a few words." for i in range(1, 5))
+    left = chr(10).join(f"Left paragraph {i} with a few words." for i in range(1, 9))
     content = Content(fields={"need": need, "left": left, "inner": "Inner text"})
     result = render(deck, manifest, content, tmp_path / "out.pptx", spill=True)
     slides = list(Presentation(str(tmp_path / "out.pptx")).slides)
@@ -419,3 +419,25 @@ def test_long_paragraph_is_cut_at_sentence_ends():
     assert [" ".join(b.text for b in chunk) for chunk in chunks] == ["First sentence of the story.", "Second sentence follows it.", "Third one is here. Fourth closes it."]
     assert _split_blocks(parse_blocks("One sentence only that is long enough to exceed the limit by itself"), 40) == [parse_blocks("One sentence only that is long enough to exceed the limit by itself")]
 
+
+
+def test_inner_text_box_grows_with_its_block_on_the_copy(tmp_path):
+    from pptx.util import Inches
+    from test_layout import overview_deck
+
+    prs, _, shapes = overview_deck()
+    deck = tmp_path / "overview.pptx"
+    prs.save(deck)
+    manifest = _overview_manifest(shapes)
+    manifest.field("inner").bindings[0].max_chars = 45
+    inner = chr(10).join(f"- Point {i} is short." for i in range(1, 7))
+    content = Content(fields={"need": "Need text.", "left": "Left text", "inner": inner})
+    result = render(deck, manifest, content, tmp_path / "out.pptx", spill=True)
+    slides = list(Presentation(str(tmp_path / "out.pptx")).slides)
+    assert not result.errors and len(slides) == 2
+    original = {s.name: s for s in slides[0].shapes}["Right Inner"]
+    copy = {s.name: s for s in slides[1].shapes}
+    assert "Left Box" not in copy and copy["Right Inner"].height > original.height + Inches(3)
+    assert copy["Right Container"].top + copy["Right Container"].height == copy["Right Inner"].top + copy["Right Inner"].height + Inches(0.15)
+    texts = [{s.name: s for s in sl.shapes}["Right Inner"].text_frame.text for sl in slides]
+    assert chr(10).join(texts) == chr(10).join(f"Point {i} is short." for i in range(1, 7))

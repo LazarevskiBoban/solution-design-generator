@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from sdgen.inventory import DeckInfo, ShapeInfo, SlideInfo
 from sdgen.manifest import Binding, FieldKind, FieldSpec, GlobalSpec, Manifest, ShapeRef, SlideRules
-from sdgen.textmetrics import FontSpec, capacity_chars
+from sdgen.textmetrics import FontSpec, capacity_chars, capacity_lines, capacity_lines
 
 LONG_TEXT = 80
 DIAGRAM_LONG_TEXT = 120
@@ -50,6 +50,7 @@ class Candidate(BaseModel):
     token: str | None = None
     keep_prefix: str | None = None
     max_chars: int | None = None
+    max_lines: int | None = None
     columns: list[str] = Field(default_factory=list)
     keep_last_row_if: str | None = None
 
@@ -87,6 +88,7 @@ class Analysis(BaseModel):
                 token=cand.token,
                 keep_prefix=cand.keep_prefix,
                 max_chars=cand.max_chars,
+                max_lines=cand.max_lines,
                 keep_last_row_if=cand.keep_last_row_if,
             )
             if existing:
@@ -249,6 +251,7 @@ def _text_candidates(
             reason=reason if include else "short text, left unticked",
             keep_prefix=prefix,
             max_chars=_max_chars(shape, len(prefix or "")),
+            max_lines=_max_lines(shape),
         )
     ]
 
@@ -366,14 +369,26 @@ def _title_segment(slide: SlideInfo) -> str | None:
 def _max_chars(shape: ShapeInfo, prefix_len: int = 0) -> int | None:
     if not shape.has_geometry:
         return None
+    spec, spacing, after = _font_of(shape)
+    # Measured against PowerPoint's default insets of 0.1 in left and right, 0.05 in top and bottom.
+    return capacity_chars(shape.width * 72 - 14.4, shape.height * 72 - 7.2, spec, spacing * 100, after, prefix_len)
+
+
+def _max_lines(shape: ShapeInfo) -> int | None:
+    if not shape.has_geometry:
+        return None
+    spec, spacing, after = _font_of(shape)
+    return capacity_lines(shape.height * 72 - 7.2, spec, spacing * 100, after)
+
+
+def _font_of(shape: ShapeInfo) -> tuple[FontSpec, float, float]:
     size = next((p.font_size for p in shape.paragraphs if p.font_size), None)
     size = size or (PLACEHOLDER_FONT_PT if shape.placeholder_type else DEFAULT_FONT_PT)
     name = next((p.font_name for p in shape.paragraphs if p.font_name), None) or "Arial"
     bold = bool(next((p.bold for p in shape.paragraphs if p.bold is not None), False))
     spacing = next((p.line_spacing for p in shape.paragraphs if p.line_spacing), None) or 1.0
     after = next((p.space_after for p in shape.paragraphs if p.space_after), None) or 0.0
-    # Measured against PowerPoint's default insets of 0.1 in left and right, 0.05 in top and bottom.
-    return capacity_chars(shape.width * 72 - 14.4, shape.height * 72 - 7.2, FontSpec(name, size, bold), spacing * 100, after, prefix_len)
+    return FontSpec(name, size, bold), spacing, after
 
 
 def _detect_subject(deck: DeckInfo) -> list[GlobalSpec]:

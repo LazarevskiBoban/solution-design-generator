@@ -414,3 +414,11 @@ def test_skeleton_states_words_and_the_budget_band():
     section = {"title": "S", "fields": [{"key": "k", "label": "L", "kind": "text", "token": False, "max_chars": 300, "guidance": "", "columns": []}]}
     assert "target 300 characters (about 50 words; write 50 to 85 percent of it)" in answer_skeleton(Brief(subject="X"), [section])
 
+
+
+def test_line_budget_and_prompt_rules():
+    from sdgen.writer import SYSTEM_PROMPT, answer_skeleton
+
+    section = {"title": "Overview", "fields": [{"key": "need", "label": "Need", "kind": "bullets", "columns": [], "max_chars": 300, "max_lines": 4, "token": False, "guidance": ""}]}
+    assert "target 300 characters on about 4 lines (about 50 words; write 50 to 85 percent of it; a bullet takes at least one line)" in answer_skeleton(Brief(subject="X"), [section])
+    assert "never more bullets than the field has lines" in SYSTEM_PROMPT and "never\nreuse its system names" in SYSTEM_PROMPT

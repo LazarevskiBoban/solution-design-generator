@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from sdgen.inventory import walk_shapes
 from sdgen.styles import resolve_font, resolve_spacing, theme_fonts
-from sdgen.textmetrics import capacity_chars, line_chars, line_height_pt, wrapped_lines
+from sdgen.textmetrics import capacity_chars, capacity_lines, line_chars, line_height_pt, wrapped_lines
 
 __all__ = ["theme_fonts"]
 
@@ -405,6 +405,36 @@ def capacity_chars_of(shape, theme: tuple[str, str] | None = None, prefix_len: i
     spec = resolve_font(shape, p, default_pt, theme)
     pct, _, after = resolve_spacing(shape, p, spec.size_pt)
     return capacity_chars(usable_w, usable_h, spec, pct, after, prefix_len)
+
+
+def capacity_lines_of(shape, theme: tuple[str, str] | None = None, default_pt: float = DEFAULT_FONT_PT) -> int | None:
+    """Lines that fit the box comfortably, judged by its first paragraph."""
+    if not getattr(shape, "has_text_frame", False) or shape.width is None or shape.height is None:
+        return None
+    frame = shape.text_frame
+    _, usable_h = _usable_pt(shape, frame)
+    if usable_h <= 0:
+        return 0
+    theme = theme or theme_fonts(shape.part)
+    p = frame.paragraphs[0]._p
+    spec = resolve_font(shape, p, default_pt, theme)
+    pct, _, after = resolve_spacing(shape, p, spec.size_pt)
+    return capacity_lines(usable_h, spec, pct, after)
+
+
+def capacity_lines_of(shape, theme: tuple[str, str] | None = None, default_pt: float = DEFAULT_FONT_PT) -> int | None:
+    """Lines that fit the box comfortably, judged by its first paragraph."""
+    if not getattr(shape, "has_text_frame", False) or shape.width is None or shape.height is None:
+        return None
+    frame = shape.text_frame
+    _, usable_h = _usable_pt(shape, frame)
+    if usable_h <= 0:
+        return 0
+    theme = theme or theme_fonts(shape.part)
+    p = frame.paragraphs[0]._p
+    spec = resolve_font(shape, p, default_pt, theme)
+    pct, _, after = resolve_spacing(shape, p, spec.size_pt)
+    return capacity_lines(usable_h, spec, pct, after)
 
 
 def line_chars_of(shape, theme: tuple[str, str] | None = None, default_pt: float = DEFAULT_FONT_PT) -> int:
