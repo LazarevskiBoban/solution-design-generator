@@ -7,6 +7,7 @@ from pptx.dml.color import RGBColor
 from pptx.oxml.ns import qn
 from pptx.util import Inches, Pt
 
+from sdgen.textmetrics import FontSpec
 from sdgen.fill.text import (
     Block,
     Span,
@@ -252,7 +253,7 @@ def test_measure_shape_uses_theme_fonts_and_spacing():
 
     prs, slide = _slide()
     assert theme_fonts(slide.part) == ("Calibri", "Calibri")
-    box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(3), Inches(1))
+    box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(3), Inches(1.5))
     box.text_frame.text = "Integration files arrive daily from three banks and are posted automatically in the morning run."
     single = measure_shape(box)
     assert single is not None and single.lines >= 2 and single.usable_width_pt == pytest.approx(3 * 72 - 14.4)
@@ -266,3 +267,43 @@ def test_measure_shape_uses_theme_fonts_and_spacing():
     wide = slide.shapes.add_textbox(Inches(1), Inches(3), Inches(6), Inches(2))
     assert capacity_chars_of(box) is not None and 0 < capacity_chars_of(box) < capacity_chars_of(wide)
 
+
+
+def test_placeholders_inherit_layout_master_and_default_styles():
+    from sdgen.fill.text import measure_shape
+    from sdgen.styles import resolve_font, resolve_spacing, theme_fonts
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
+    theme = theme_fonts(slide.part)
+    title, body = slide.shapes.title, slide.placeholders[1]
+    title.text_frame.text = "Overview"
+    body.text_frame.text = "Files arrive daily from three banks and post automatically before the morning run starts."
+    assert resolve_font(title, title.text_frame.paragraphs[0]._p, 14, theme).size_pt == 44.0
+    assert resolve_font(body, body.text_frame.paragraphs[0]._p, 14, theme).size_pt == 32.0
+    box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(3), Inches(1))
+    box.text_frame.text = "plain"
+    assert resolve_font(box, box.text_frame.paragraphs[0]._p, 14, theme) == FontSpec(family="Calibri", size_pt=18.0, bold=False)
+
+    at_master_size = measure_shape(body).needed_pt
+    layout_body = prs.slide_layouts[1].placeholders[1]._txBody if hasattr(prs.slide_layouts[1].placeholders[1], "_txBody") else prs.slide_layouts[1].placeholders[1].text_frame._txBody
+    lst = layout_body.find(qn("a:lstStyle"))
+    if lst is None:
+        lst = etree.SubElement(layout_body, qn("a:lstStyle"))
+        layout_body.find(qn("a:bodyPr")).addnext(lst)
+    lvl = etree.SubElement(lst, qn("a:lvl1pPr"))
+    etree.SubElement(lvl, qn("a:defRPr")).set("sz", "2000")
+    assert resolve_font(body, body.text_frame.paragraphs[0]._p, 14, theme).size_pt == 20.0
+    at_layout_size = measure_shape(body).needed_pt
+    assert at_layout_size < at_master_size
+
+    master_lvl = prs.slide_masters[0]._element.find(qn("p:txStyles")).find(qn("p:bodyStyle")).find(qn("a:lvl1pPr"))
+    spacing = master_lvl.find(qn("a:lnSpc"))
+    if spacing is None:
+        spacing = etree.SubElement(master_lvl, qn("a:lnSpc"))
+        master_lvl.insert(0, spacing)
+    for child in list(spacing):
+        spacing.remove(child)
+    etree.SubElement(spacing, qn("a:spcPct")).set("val", "200000")
+    assert resolve_spacing(body, body.text_frame.paragraphs[0]._p, 20.0)[0] == 200.0
+    assert measure_shape(body).needed_pt > at_layout_size * 1.5

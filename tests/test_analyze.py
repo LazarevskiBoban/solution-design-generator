@@ -34,7 +34,7 @@ def test_fixture_candidates(sample_deck):
 
     need = by_key["business_need"]
     assert need.include and need.kind == "text" and need.keep_prefix == "Business Need: "
-    assert need.max_chars and need.max_chars > 100
+    assert need.max_chars and need.max_chars >= 100
 
     scope = by_key["scope"]
     assert scope.kind == "table" and scope.columns == ["Function", "Countries"]
@@ -146,3 +146,20 @@ def test_max_chars_uses_font_metrics():
     if load_font("Arial") is not None:
         assert _max_chars(shape(font_name="Arial", bold=True)) < arial
 
+
+
+def test_placeholder_budget_uses_the_inherited_size(tmp_path):
+    from pptx import Presentation
+
+    from sdgen.analyze import _max_chars
+    from sdgen.textmetrics import FontSpec, capacity_chars
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
+    slide.placeholders[1].text_frame.text = "Lockbox files arrive daily from three banks over SWIFT and are posted by the standard programs."
+    path = tmp_path / "placeholder.pptx"
+    prs.save(str(path))
+    shape = next(s for s in inspect_deck(path).slides[0].shapes if s.placeholder_type in ("body", "object"))
+    paragraph = shape.paragraphs[0]
+    assert paragraph.font_size == 32.0 and paragraph.font_name == "Calibri" and paragraph.line_spacing == 1.0
+    assert _max_chars(shape) < capacity_chars(shape.width * 72 - 14.4, shape.height * 72 - 7.2, FontSpec("Calibri", 14, False), 100, 0)

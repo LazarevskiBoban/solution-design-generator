@@ -9,7 +9,10 @@ from pptx.oxml.ns import qn
 from pydantic import BaseModel, Field
 
 from sdgen.inventory import walk_shapes
-from sdgen.textmetrics import FontSpec, capacity_chars, line_chars, line_height_pt, wrapped_lines
+from sdgen.styles import resolve_font, resolve_spacing, theme_fonts
+from sdgen.textmetrics import capacity_chars, line_chars, line_height_pt, wrapped_lines
+
+__all__ = ["theme_fonts"]
 
 BULLET_RE = re.compile(r"^(\s*)[-*•]\s+(.*)$")
 INLINE_RE = re.compile(r"(\*\*[^*]+\*\*|\*[^*\s][^*]*\*)")
@@ -358,18 +361,6 @@ class Measurement(BaseModel):
         return self.needed_pt / self.usable_height_pt if self.usable_height_pt > 0 else 0.0
 
 
-def theme_fonts(part) -> tuple[str, str]:
-    """(major, minor) latin typefaces behind a slide part; Arial when the theme cannot be read."""
-    try:
-        theme = part.slide_layout.slide_master.part.part_related_by(RT.THEME)
-        root = etree.fromstring(theme.blob)
-    except Exception:
-        return ("Arial", "Arial")
-    major = root.find(".//a:majorFont/a:latin", A_NS)
-    minor = root.find(".//a:minorFont/a:latin", A_NS)
-    return ((major.get("typeface") if major is not None else None) or "Arial", (minor.get("typeface") if minor is not None else None) or "Arial")
-
-
 def measure_shape(shape, default_pt: float = DEFAULT_FONT_PT, theme: tuple[str, str] | None = None) -> Measurement | None:
     """Height the text needs against the height the box offers, with the deck fonts and paragraph spacing."""
     if not getattr(shape, "has_text_frame", False) or shape.width is None or shape.height is None:
@@ -379,12 +370,12 @@ def measure_shape(shape, default_pt: float = DEFAULT_FONT_PT, theme: tuple[str, 
     if usable_w <= 0 or usable_h <= 0:
         return None
     theme = theme or theme_fonts(shape.part)
-    tx_body = frame._txBody
     needed, lines = 0.0, 0
     for paragraph in frame.paragraphs:
         p = paragraph._p
         ppr = p.find(qn("a:pPr"))
-        spec = _font_spec(p, default_pt, theme, tx_body)
+        spec = resolve_font(shape, p, default_pt, theme)
+        pct, before, after = resolve_spacing(shape, p, spec.size_pt)
         if ppr is not None and ppr.get("marL"):
             indent = int(ppr.get("marL")) / EMU_PER_PT
         else:
@@ -392,7 +383,7 @@ def measure_shape(shape, default_pt: float = DEFAULT_FONT_PT, theme: tuple[str, 
         text = " ".join(paragraph.text.split())
         count = wrapped_lines(text, usable_w - indent, spec) if text else 1
         lines += count
-        needed += count * line_height_pt(spec, _spacing_pct(ppr)) + _space_pt(ppr, "a:spcBef", spec.size_pt) + _space_pt(ppr, "a:spcAft", spec.size_pt)
+        needed += count * line_height_pt(spec, pct) + before + after
     return Measurement(needed_pt=needed, usable_width_pt=usable_w, usable_height_pt=usable_h, lines=lines)
 
 
@@ -411,9 +402,9 @@ def capacity_chars_of(shape, theme: tuple[str, str] | None = None, prefix_len: i
         return 0
     theme = theme or theme_fonts(shape.part)
     p = frame.paragraphs[0]._p
-    ppr = p.find(qn("a:pPr"))
-    spec = _font_spec(p, default_pt, theme, frame._txBody)
-    return capacity_chars(usable_w, usable_h, spec, _spacing_pct(ppr), _space_pt(ppr, "a:spcAft", spec.size_pt), prefix_len)
+    spec = resolve_font(shape, p, default_pt, theme)
+    pct, _, after = resolve_spacing(shape, p, spec.size_pt)
+    return capacity_chars(usable_w, usable_h, spec, pct, after, prefix_len)
 
 
 def line_chars_of(shape, theme: tuple[str, str] | None = None, default_pt: float = DEFAULT_FONT_PT) -> int:
@@ -425,7 +416,7 @@ def line_chars_of(shape, theme: tuple[str, str] | None = None, default_pt: float
     if usable_w <= 0:
         return 0
     theme = theme or theme_fonts(shape.part)
-    return line_chars(usable_w, _font_spec(frame.paragraphs[0]._p, default_pt, theme, frame._txBody))
+    return line_chars(usable_w, resolve_font(shape, frame.paragraphs[0]._p, default_pt, theme))
 
 
 def fit_text_shape(shape, default_pt: float = DEFAULT_FONT_PT, theme: tuple[str, str] | None = None) -> float:
@@ -461,47 +452,6 @@ def _usable_pt(shape, frame) -> tuple[float, float]:
         frame.margin_bottom if frame.margin_bottom is not None else DEFAULT_INSETS_EMU[3],
     )
     return (shape.width - left - right) / EMU_PER_PT, (shape.height - top - bottom) / EMU_PER_PT
-
-
-def _font_spec(p: etree._Element, default_pt: float, theme: tuple[str, str], tx_body=None) -> FontSpec:
-    """Size, weight and typeface of a paragraph: its first run, else the paragraph or list defaults, else the theme."""
-    ppr = p.find(qn("a:pPr"))
-    candidates = [_run_rpr(p), ppr.find(qn("a:defRPr")) if ppr is not None else None]
-    lst = tx_body.find(qn("a:lstStyle")) if tx_body is not None else None
-    if lst is not None:
-        level = int(ppr.get("lvl", "0")) + 1 if ppr is not None else 1
-        lvl = lst.find(qn(f"a:lvl{level}pPr"))
-        candidates.append(lvl.find(qn("a:defRPr")) if lvl is not None else None)
-    present = [c for c in candidates if c is not None]
-    size = next((int(c.get("sz")) / 100 for c in present if c.get("sz")), default_pt)
-    bold = next((c.get("b") == "1" for c in present if c.get("b") is not None), False)
-    latin = next((c.find(qn("a:latin")).get("typeface") for c in present if c.find(qn("a:latin")) is not None and c.find(qn("a:latin")).get("typeface")), "")
-    if latin.startswith("+mj"):
-        family = theme[0]
-    elif not latin or latin.startswith("+mn"):
-        family = theme[1]
-    else:
-        family = latin
-    return FontSpec(family=family, size_pt=size, bold=bold)
-
-
-def _spacing_pct(ppr) -> float:
-    node = ppr.find(qn("a:lnSpc")) if ppr is not None else None
-    pct = node.find(qn("a:spcPct")) if node is not None else None
-    return int(pct.get("val")) / 1000 if pct is not None and pct.get("val") else 100.0
-
-
-def _space_pt(ppr, tag: str, size_pt: float) -> float:
-    node = ppr.find(qn(tag)) if ppr is not None else None
-    if node is None:
-        return 0.0
-    pts = node.find(qn("a:spcPts"))
-    if pts is not None and pts.get("val"):
-        return int(pts.get("val")) / 100
-    pct = node.find(qn("a:spcPct"))
-    if pct is not None and pct.get("val"):
-        return int(pct.get("val")) / 100000 * size_pt
-    return 0.0
 
 
 def _order_body_children(body, autofit) -> None:

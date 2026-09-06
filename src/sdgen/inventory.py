@@ -13,6 +13,8 @@ from pptx.shapes.picture import Picture
 from pptx.slide import Slide
 from pydantic import BaseModel, Field
 
+from sdgen.styles import resolve_font, resolve_spacing, theme_fonts
+
 EMU_PER_INCH = 914400
 PREVIEW_CHARS = 80
 MAX_TABLE_ROWS_SHOWN = 20
@@ -169,7 +171,7 @@ def _shape_info(shape: BaseShape) -> ShapeInfo:
     elif kind == "table":
         info.table = _table_info(shape)
     elif shape.has_text_frame:
-        info.paragraphs = [_paragraph_info(p) for p in shape.text_frame.paragraphs]
+        info.paragraphs = [_paragraph_info(p, shape) for p in shape.text_frame.paragraphs]
         info.text = "\n".join(p.text for p in info.paragraphs)
     return info
 
@@ -195,7 +197,7 @@ def _kind(shape: BaseShape) -> ShapeKind:
     return "other"
 
 
-def _paragraph_info(paragraph) -> ParagraphInfo:
+def _paragraph_info(paragraph, shape=None) -> ParagraphInfo:
     ppr = paragraph._p.pPr
     has_bullet = ppr is not None and (
         ppr.find(qn("a:buChar")) is not None or ppr.find(qn("a:buAutoNum")) is not None
@@ -209,10 +211,21 @@ def _paragraph_info(paragraph) -> ParagraphInfo:
             size = run.font.size.pt if run.font.size is not None else None
             name = run.font.name
             break
+    if shape is not None and (size is None or name is None or bold is None):
+        # Placeholders and plain boxes take their font from the layout, the master or the presentation default.
+        spec = resolve_font(shape, paragraph._p, 0.0, theme_fonts(shape.part))
+        size = size or (spec.size_pt or None)
+        name = name or spec.family
+        bold = spec.bold if bold is None else bold
     spacing = paragraph.line_spacing
     if spacing is not None and not isinstance(spacing, float):
         spacing = spacing.pt / size if size else None
     after = paragraph.space_after
+    after_pt = after.pt if after is not None else None
+    if shape is not None and size and (spacing is None or after_pt is None):
+        pct, _, inherited_after = resolve_spacing(shape, paragraph._p, size)
+        spacing = spacing if spacing is not None else pct / 100
+        after_pt = after_pt if after_pt is not None else (inherited_after or None)
     return ParagraphInfo(
         text=paragraph.text,
         level=paragraph.level,
@@ -221,7 +234,7 @@ def _paragraph_info(paragraph) -> ParagraphInfo:
         font_size=size,
         font_name=name,
         line_spacing=spacing,
-        space_after=after.pt if after is not None else None,
+        space_after=after_pt,
     )
 
 
