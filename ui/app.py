@@ -42,8 +42,17 @@ SAMPLE_TYPES = ["xml", "xsd", "edmx", "json", "csv"]
 EMPTY_FIELD_RE = re.compile(r"field '[^']+' \((.+)\) is empty$")
 SECTION_MODES = {"text": "Use the text below", "keep": "Keep the template text", "blank": "Leave the slide blank"}
 VIEWER_CSS = "<style>div[data-testid='stDialog'] div[data-testid='stImage'] img{width:auto !important;max-width:100%;max-height:calc(100vh - 300px);display:block;margin:0 auto}</style>"
-FULL_VIEW_CSS = "<style>div[data-testid='stDialog'] [role='dialog']{width:98vw !important;max-width:98vw !important}div[data-testid='stDialog'] div[data-testid='stImage'] img{max-height:none !important;width:100% !important}</style>"
+# Full view: the dialog box itself carries the width, the picture is bounded by the viewport, the section actions are hidden.
+FULL_VIEW_CSS = (
+    "<style>"
+    "div[data-testid='stDialog']{padding-top:0.5rem !important;padding-bottom:0.5rem !important}"
+    "div[data-testid='stDialog'] > div{width:calc(100vw - 1rem) !important;max-width:calc(100vw - 1rem) !important;margin:0 !important}"
+    "div[data-testid='stDialog'] div[data-testid='stImage'] img{width:100% !important;height:calc(100vh - 260px) !important;max-height:none !important;object-fit:contain;display:block;margin:0 auto}"
+    ".st-key-viewer_details{display:none}"
+    "</style>"
+)
 SHORTCUTS = {"previous": "Left", "next": "Right", "up": "Up", "down": "Down", "hide": "Delete"}
+PREVIEW_WIDTH = 1600  # pixels per exported slide picture, enough for the full view on a wide screen
 STEPS = ["brief", "plan", "write", "diagrams", "review", "generate"]
 DONE_ICON = "✅"
 DIAGRAM_FORMATS = {
@@ -591,7 +600,7 @@ def design_page() -> None:
             overflows: dict[int, list[str]] = {}
             try:
                 with st.spinner("Rendering slide pictures with PowerPoint."):
-                    exported = export_slides(output, output.parent / "png", interest=_overflow_interest(entry, response))
+                    exported = export_slides(output, output.parent / "png", width=PREVIEW_WIDTH, interest=_overflow_interest(entry, response))
                 pictures: list = [p.read_bytes() for p in exported.files]
                 for item in exported.overflows:
                     overflows.setdefault(item.slide, []).append(item.shape)
@@ -775,7 +784,7 @@ def _slide_viewer(state_key: str, entry) -> None:
 
     col_prev, col_pick, col_next, col_full = st.columns([1, 4, 1, 1], vertical_alignment="bottom")
     with col_full:
-        if st.toggle("Full view", key=f"{state_key}:vw:full", help="Widen the picture to the browser width; scroll to see the rest"):
+        if st.toggle("Full view", key=f"{state_key}:vw:full", help="Fit the slide to the screen, like a zoomed picture; switch it off for the section actions"):
             st.html(FULL_VIEW_CSS)
     with col_prev:
         if st.button("Previous", key=f"{state_key}:vw:prev", disabled=index == 0, shortcut=key_for("previous"), help="Left arrow"):
@@ -807,66 +816,66 @@ def _slide_viewer(state_key: str, entry) -> None:
     if section is None:
         return
 
-    order = _section_order(design, blueprint)
-    position = order.index(section.key)
-    fields = [f for f in (manifest.field(k) for k in section.fields) if f is not None and f.kind != "image"]
-    col_edit, col_refresh, col_up, col_down, col_hide = st.columns(5)
-    with col_edit:
-        editing = st.toggle("Edit section", key=f"{state_key}:vw:edit:{section.key}", disabled=not fields)
-    with col_refresh:
-        if st.button("Refresh slide", key=f"{state_key}:vw:refresh:{section.key}", help="Render this slide again; saving a section does this on its own"):
-            _refresh_slide(state_key, entry, design, store, section.key)
-    with col_up:
-        if st.button("Move up", key=f"{state_key}:vw:up:{section.key}", disabled=position == 0, shortcut=key_for("up"), help="Up arrow"):
-            _move_section(design, blueprint, section.key, -1)
-            store.save(design)
-            _jump_to_section(state_key, entries, design, blueprint, section.key)
-            st.rerun(scope="fragment")
-    with col_down:
-        if st.button("Move down", key=f"{state_key}:vw:down:{section.key}", disabled=position >= len(order) - 1, shortcut=key_for("down"), help="Down arrow"):
-            _move_section(design, blueprint, section.key, 1)
-            store.save(design)
-            _jump_to_section(state_key, entries, design, blueprint, section.key)
-            st.rerun(scope="fragment")
-    with col_hide:
-        if st.button("Hide slide", key=f"{state_key}:vw:hide:{section.key}", disabled=section.kind == "cover", shortcut=key_for("hide"), help="Delete key. Drops this slide from the document; unhide it on the slide board"):
-            design.hidden.append(section.key)
-            store.save(design)
-            st.toast(f"Hidden: {item['title']}. Unhide it on the slide board.")
-            st.rerun(scope="fragment")
+    with st.container(key="viewer_details"):
+        order = _section_order(design, blueprint)
+        position = order.index(section.key)
+        fields = [f for f in (manifest.field(k) for k in section.fields) if f is not None and f.kind != "image"]
+        col_edit, col_refresh, col_up, col_down, col_hide = st.columns(5)
+        with col_edit:
+            editing = st.toggle("Edit section", key=f"{state_key}:vw:edit:{section.key}", disabled=not fields)
+        with col_refresh:
+            if st.button("Refresh slide", key=f"{state_key}:vw:refresh:{section.key}", help="Render this slide again; saving a section does this on its own"):
+                _refresh_slide(state_key, entry, design, store, section.key)
+        with col_up:
+            if st.button("Move up", key=f"{state_key}:vw:up:{section.key}", disabled=position == 0, shortcut=key_for("up"), help="Up arrow"):
+                _move_section(design, blueprint, section.key, -1)
+                store.save(design)
+                _jump_to_section(state_key, entries, design, blueprint, section.key)
+                st.rerun(scope="fragment")
+        with col_down:
+            if st.button("Move down", key=f"{state_key}:vw:down:{section.key}", disabled=position >= len(order) - 1, shortcut=key_for("down"), help="Down arrow"):
+                _move_section(design, blueprint, section.key, 1)
+                store.save(design)
+                _jump_to_section(state_key, entries, design, blueprint, section.key)
+                st.rerun(scope="fragment")
+        with col_hide:
+            if st.button("Hide slide", key=f"{state_key}:vw:hide:{section.key}", disabled=section.kind == "cover", shortcut=key_for("hide"), help="Delete key. Drops this slide from the document; unhide it on the slide board"):
+                design.hidden.append(section.key)
+                store.save(design)
+                st.toast(f"Hidden: {item['title']}. Unhide it on the slide board.")
+                st.rerun(scope="fragment")
 
-    if editing and fields:
-        version = st.session_state[f"{state_key}:v"]
-        content = load_markdown(design.content_markdown, manifest) if design.content_markdown.strip() else Content()
-        modes_before = dict(design.modes)
-        with st.container(border=True):
-            _section_editor(entry, design, content, section, fields, f"{state_key}:{version}:view:")
-            if design.modes != modes_before:
-                store.save(design)
-                _refresh_slide(state_key, entry, design, store, section.key)
-            if st.button("Save section", type="primary", key=f"{state_key}:vw:save:{section.key}"):
-                design.content_markdown = dump_markdown(Content(globals=_globals(design.brief.subject), fields=content.fields), manifest)
-                store.save(design)
-                st.session_state[f"{state_key}:v"] = version + 1
-                _refresh_slide(state_key, entry, design, store, section.key)
-            instruction = st.text_input("Redraft with an instruction", key=f"{state_key}:vw:instruction:{section.key}", placeholder="for example: shorter, name the three banks, add the retry rule")
-            if st.button("Redraft this section", key=f"{state_key}:vw:redraft:{section.key}", disabled=not instruction.strip()):
-                try:
-                    llm = _current_llm(state_key)
-                    with st.spinner("Rewriting the section."):
-                        fields_new = redraft_section(design.brief, blueprint, manifest, section.key, instruction, content, llm)
-                except (LLMNotConfigured, LLMError) as exc:
-                    st.error(str(exc))
-                else:
-                    if not fields_new:
-                        st.error("The reply did not use the expected headings; nothing changed.")
+        if editing and fields:
+            version = st.session_state[f"{state_key}:v"]
+            content = load_markdown(design.content_markdown, manifest) if design.content_markdown.strip() else Content()
+            modes_before = dict(design.modes)
+            with st.container(border=True):
+                _section_editor(entry, design, content, section, fields, f"{state_key}:{version}:view:")
+                if design.modes != modes_before:
+                    store.save(design)
+                    _refresh_slide(state_key, entry, design, store, section.key)
+                if st.button("Save section", type="primary", key=f"{state_key}:vw:save:{section.key}"):
+                    design.content_markdown = dump_markdown(Content(globals=_globals(design.brief.subject), fields=content.fields), manifest)
+                    store.save(design)
+                    st.session_state[f"{state_key}:v"] = version + 1
+                    _refresh_slide(state_key, entry, design, store, section.key)
+                instruction = st.text_input("Redraft with an instruction", key=f"{state_key}:vw:instruction:{section.key}", placeholder="for example: shorter, name the three banks, add the retry rule")
+                if st.button("Redraft this section", key=f"{state_key}:vw:redraft:{section.key}", disabled=not instruction.strip()):
+                    try:
+                        llm = _current_llm(state_key)
+                        with st.spinner("Rewriting the section."):
+                            fields_new = redraft_section(design.brief, blueprint, manifest, section.key, instruction, content, llm)
+                    except (LLMNotConfigured, LLMError) as exc:
+                        st.error(str(exc))
                     else:
-                        content.fields.update(fields_new)
-                        design.content_markdown = dump_markdown(Content(globals=_globals(design.brief.subject), fields=content.fields), manifest)
-                        store.save(design)
-                        st.session_state[f"{state_key}:v"] = version + 1
-                        _refresh_slide(state_key, entry, design, store, section.key)
-
+                        if not fields_new:
+                            st.error("The reply did not use the expected headings; nothing changed.")
+                        else:
+                            content.fields.update(fields_new)
+                            design.content_markdown = dump_markdown(Content(globals=_globals(design.brief.subject), fields=content.fields), manifest)
+                            store.save(design)
+                            st.session_state[f"{state_key}:v"] = version + 1
+                            _refresh_slide(state_key, entry, design, store, section.key)
 
 def _refresh_slide(state_key: str, entry, design: Design, store: DesignStore, key: str) -> None:
     with st.spinner("Updating the slide."):
@@ -910,7 +919,7 @@ def _refresh_section_pictures(state_key: str, entry, design: Design, store: Desi
     pictures: dict[int, bytes] = {}
     overflows: dict[int, list[str]] = {}
     try:
-        exported = export_slides(output, output.parent / "png", only=targets, interest=_overflow_interest(entry, response))
+        exported = export_slides(output, output.parent / "png", width=PREVIEW_WIDTH, only=targets, interest=_overflow_interest(entry, response))
         pictures = {target: f.read_bytes() for target, f in zip(targets, exported.files)}
         for item in exported.overflows:
             overflows.setdefault(item.slide, []).append(item.shape)
