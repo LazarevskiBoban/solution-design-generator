@@ -153,3 +153,107 @@ def test_draw_flow_places_icon_pictures(tmp_path, monkeypatch):
     assert "Flow x icon s4" in names and "Flow x icon bank" not in names
     node = next(s for s in created if s.name == "Flow x node s4")
     assert node.text_frame.margin_left > Inches(0.3)
+
+
+def _box(shape):
+    return (shape.left, shape.top, shape.left + shape.width, shape.top + shape.height)
+
+
+def _overlaps(a, b) -> bool:
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def _labels_clear_of_nodes(created) -> bool:
+    nodes = [s for s in created if " node " in s.name]
+    labels = [s for s in created if s.name.endswith(" label")]
+    return not any(_overlaps(_box(label), _box(node)) for label in labels for node in nodes)
+
+
+def test_edges_that_skip_a_node_go_around_it():
+    prs, slide = _blank_slide()
+    spec = FlowSpec(
+        nodes=[
+            FlowNode(id="a", label="A", lane="middleware"),
+            FlowNode(id="b", label="B", lane="middleware"),
+            FlowNode(id="c", label="C", lane="middleware"),
+            FlowNode(id="s", label="S", lane="source"),
+            FlowNode(id="t", label="T", lane="target"),
+        ],
+        edges=[
+            FlowEdge(source="a", target="b", label="one"),
+            FlowEdge(source="b", target="c", label="two"),
+            FlowEdge(source="a", target="c", label="skip"),
+            FlowEdge(source="s", target="t", label="far"),
+            FlowEdge(source="s", target="a", label="in"),
+        ],
+    )
+    created = draw_flow(slide, (Inches(0.5), Inches(1.0), Inches(12.0), Inches(5.5)), spec, prefix="Flow x")
+    by_name = {s.name: s for s in created}
+    a, b = by_name["Flow x node a"], by_name["Flow x node b"]
+    skip = by_name["Flow x edge 3"]
+    assert skip._element.find(".//" + qn("a:stCxn")) is None and skip._element.find(".//" + qn("a:tailEnd")).get("type") == "triangle"
+    assert skip.left >= b.left + b.width - 1
+    far = by_name["Flow x edge 4"]
+    lowest = max(s.top + s.height for s in created if " node " in s.name)
+    assert far.top + far.height > lowest and far.left < a.left and far.left + far.width > a.left + a.width
+    assert by_name["Flow x edge 5"]._element.find(".//" + qn("a:stCxn")) is not None
+    assert _labels_clear_of_nodes(created)
+    canvas = _box(by_name["Flow x canvas"])
+    for shape in created:
+        if " node " in shape.name or " edge " in shape.name and not shape.name.endswith("label"):
+            box = _box(shape)
+            assert box[0] >= canvas[0] - 1 and box[1] >= canvas[1] - 1 and box[2] <= canvas[2] + 1 and box[3] <= canvas[3] + 1
+
+
+def test_rows_layout_labels_lanes_on_the_side_and_routes_far_edges():
+    from sdgen.flow import LANE_LABEL
+
+    prs, slide = _blank_slide()
+    spec = FlowSpec(
+        nodes=[FlowNode(id="s", label="S", lane="source"), FlowNode(id="m1", label="M1", lane="middleware"), FlowNode(id="m2", label="M2", lane="middleware"), FlowNode(id="t", label="T", lane="target")],
+        edges=[FlowEdge(source="s", target="m1", label="a"), FlowEdge(source="m1", target="m2", label="b"), FlowEdge(source="m2", target="t", label="c"), FlowEdge(source="s", target="t", label="far")],
+    )
+    created = draw_flow(slide, (Inches(0.5), Inches(1.0), Inches(6.0), Inches(5.5)), spec, prefix="Flow r")
+    by_name = {s.name: s for s in created}
+    assert by_name["Flow r lane source"].rotation == 270.0
+    s, t = by_name["Flow r node s"], by_name["Flow r node t"]
+    assert s.top < t.top and s.left >= Inches(0.5) + LANE_LABEL
+    far = by_name["Flow r edge 4"]
+    rightmost = max(n.left + n.width for n in created if " node " in n.name)
+    assert far.left + far.width > rightmost and far._element.find(".//" + qn("a:stCxn")) is None
+    assert _labels_clear_of_nodes(created)
+
+
+def test_flat_box_falls_back_to_columns():
+    prs, slide = _blank_slide()
+    created = draw_flow(slide, (Inches(0.5), Inches(1.0), Inches(6.0), Inches(1.8)), SPEC, prefix="Flow f")
+    bank = next(s for s in created if s.name == "Flow f node bank")
+    s4 = next(s for s in created if s.name == "Flow f node s4")
+    assert bank.left < s4.left and bank.top == s4.top and bank.height >= Inches(0.4)
+
+
+def test_plan_flows_tells_the_model_the_drawing_area():
+    from sdgen.flow import node_cap
+    from sdgen.plan import FlowRequest
+
+    class Catcher:
+        name = "fake"
+
+        def complete(self, system, user):
+            return ""
+
+        def complete_json(self, system, user, schema, name="result"):
+            self.user = user
+            return {"flows": []}
+
+    llm = Catcher()
+    requests = [
+        FlowRequest(section="a", title="A", purpose="p", width_in=12.7, height_in=5.5),
+        FlowRequest(section="b", title="B", purpose="q", width_in=6.3, height_in=2.6),
+        FlowRequest(section="c", title="C", purpose=""),
+    ]
+    plan_flows(Brief(subject="x"), requests, llm)
+    assert "drawing area 12.7 x 5.5 in, at most 9 nodes" in llm.user
+    assert "drawing area 6.3 x 2.6 in, at most 4 nodes, two lanes at most" in llm.user
+    assert "size unknown, at most 9 nodes" in llm.user
+    assert node_cap(12.7, 5.5) == 9 and node_cap(6.3, 2.6) == 4 and node_cap(7, 4) == 8

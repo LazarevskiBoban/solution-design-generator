@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sdgen.brief import Brief, dump_brief
 from sdgen.icons import icon_keys, icon_png
 from sdgen.llm import LLMClient
+from sdgen.textmetrics import FontSpec, text_width_pt
 
 Lane = Literal["source", "middleware", "target"]
 NodeKind = Literal["system", "step", "store", "external"]
@@ -33,9 +34,18 @@ MIN_NODE = Inches(0.4)
 GAP = Inches(0.35)
 HEADER = Inches(0.35)
 PAD = Inches(0.15)
-LABEL_WIDTH = Inches(1.1)
-LABEL_HEIGHT = Inches(0.3)
+LABEL_HEIGHT = Inches(0.22)
+LABEL_PAD = Inches(0.12)
+LABEL_FONT = FontSpec("Arial", 8.0, False)
+LABEL_SMALL_FONT = FontSpec("Arial", 7.0, False)
 COLUMNS_MIN_WIDTH = Inches(8)
+CHANNEL = Inches(0.45)
+LANE_LABEL = Inches(0.55)
+ROUTE_OFFSET = Inches(0.2)
+ROUTE_STEP = Inches(0.3)
+MIN_ROW_NODE = Inches(0.45)
+NODES_PER_SQ_IN = 3.5
+SMALL_AREA_SQ_IN = 20.0
 FILL = {
     "system": RGBColor(0xDC, 0xE8, 0xF7),
     "step": RGBColor(0xEE, 0xEE, 0xEE),
@@ -99,11 +109,12 @@ FLOW_SCHEMA = {
 
 SYSTEM_PROMPT = """You design integration flow diagrams for a solution-design document.
 For each requested diagram return its nodes and edges.
-Nodes: four to nine, each with a short label (at most five words), a kind (system, step,
-store or external) and a lane that follows the direction of the data: source, middleware or
-target. Steps that happen inside a system go in that system's lane, right after it.
-Edges: from node to node in flow order, each with a short label naming the protocol, format
-or trigger, and a kind: sync, async or file.
+Nodes: four to nine, fewer when the diagram line caps them, each with a short label (at most
+four words), a kind (system, step, store or external) and a lane that follows the direction of
+the data: source, middleware or target. Steps that happen inside a system go in that system's
+lane, right after it. Small drawing areas get at most two lanes and few nodes.
+Edges: from node to node in flow order, each with a short label (at most three words) naming
+the protocol, format or trigger, and a kind: sync, async or file.
 Use only systems, protocols and steps named in the brief and the facts; never example names.
 Return only JSON matching the schema."""
 
@@ -149,9 +160,9 @@ def plan_flows(brief: Brief, requests: list, llm: LLMClient, icons: list[str] | 
     """
     if not requests:
         return {}
-    lines = ["# Diagrams to design (section key | title | purpose)"]
+    lines = ["# Diagrams to design (section key | title | purpose | drawing area)"]
     for request in requests:
-        lines.append(f"- {request.section} | {request.title or request.section} | {request.purpose or ''}")
+        lines.append(f"- {request.section} | {request.title or request.section} | {request.purpose or ''} | {_area_hint(request)}")
     schema = FLOW_SCHEMA
     if icons:
         schema = _schema_with_icons(icons)
@@ -172,6 +183,19 @@ def plan_flows(brief: Brief, requests: list, llm: LLMClient, icons: list[str] | 
         if spec.nodes:
             result[key] = spec
     return result
+
+
+def node_cap(width_in: float, height_in: float) -> int:
+    """Nodes a drawing area can show readably."""
+    return max(4, min(9, int(width_in * height_in / NODES_PER_SQ_IN)))
+
+
+def _area_hint(request) -> str:
+    width, height = float(getattr(request, "width_in", 0) or 0), float(getattr(request, "height_in", 0) or 0)
+    if not width or not height:
+        return "size unknown, at most 9 nodes"
+    hint = f"drawing area {width:.1f} x {height:.1f} in, at most {node_cap(width, height)} nodes"
+    return hint + (", two lanes at most" if width * height < SMALL_AREA_SQ_IN else "")
 
 
 def _schema_with_icons(icons: list[str]) -> dict:
@@ -230,18 +254,26 @@ def draw_flow(slide, box: tuple[int, int, int, int], spec: FlowSpec, prefix: str
     """Draws the flow as editable shapes inside the box (EMU left, top, width, height)."""
     left, top, width, height = box
     lanes = [lane for lane in LANES if any(n.lane == lane for n in spec.nodes)] or ["middleware"]
+    index_of = {lane: i for i, lane in enumerate(lanes)}
+    lane_of = {n.id: index_of.get(n.lane, 0) for n in spec.nodes}
+    far = any(abs(lane_of[e.source] - lane_of[e.target]) >= 2 for e in spec.edges if e.source in lane_of and e.target in lane_of)
     columns = width >= COLUMNS_MIN_WIDTH or len(lanes) == 1
+    if not columns and (height - 2 * PAD) // len(lanes) - 2 * PAD < MIN_ROW_NODE:
+        columns = True  # too flat for rows: columns keep every node readable
     created = [_canvas(slide, left, top, width, height, f"{prefix} canvas")]
     placed: dict[str, tuple] = {}
     left, top, width, height = left + PAD, top + PAD, width - 2 * PAD, height - 2 * PAD
+    channel = CHANNEL if far else 0
+    geometry = {"columns": columns, "left": left, "top": top, "width": width, "height": height, "lanes": len(lanes)}
     if columns:
         lane_width = width // len(lanes)
         node_width = min(NODE_WIDTH, lane_width - 2 * PAD)
+        geometry.update(lane_width=lane_width, channel_y=top + height - channel // 2)
         for index, lane in enumerate(lanes):
             x0 = left + index * lane_width
             created.append(_header(slide, x0, top, lane_width, HEADER, LANE_TITLES[lane], f"{prefix} lane {lane}"))
             members = [n for n in spec.nodes if n.lane == lane]
-            node_height, gap = _fit(len(members), height - HEADER - PAD, NODE_HEIGHT, GAP)
+            node_height, gap = _fit(len(members), height - channel - HEADER - PAD, NODE_HEIGHT, GAP)
             y = top + HEADER + PAD
             for position, node in enumerate(members):
                 shape = _node(slide, node, x0 + (lane_width - node_width) // 2, y, node_width, node_height, prefix, created)
@@ -250,23 +282,26 @@ def draw_flow(slide, box: tuple[int, int, int, int], spec: FlowSpec, prefix: str
                 y += node_height + gap
     else:
         lane_height = height // len(lanes)
+        usable = width - LANE_LABEL - channel
+        geometry.update(lane_height=lane_height, channel_x=left + width - channel // 2)
         for index, lane in enumerate(lanes):
             y0 = top + index * lane_height
-            created.append(_header(slide, left, y0, width, HEADER, LANE_TITLES[lane], f"{prefix} lane {lane}"))
+            created.append(_lane_label(slide, left, y0, LANE_LABEL, lane_height, LANE_TITLES[lane], f"{prefix} lane {lane}"))
             members = [n for n in spec.nodes if n.lane == lane]
-            node_width, gap = _fit(len(members), width - 2 * PAD, NODE_WIDTH, GAP)
-            node_height = max(MIN_NODE, min(NODE_HEIGHT, lane_height - HEADER - PAD))
-            x = left + PAD
+            node_width, gap = _fit(len(members), usable - 2 * PAD, NODE_WIDTH, GAP)
+            node_height = max(MIN_NODE, min(NODE_HEIGHT, lane_height - 2 * PAD))
+            x = left + LANE_LABEL + PAD
             for position, node in enumerate(members):
-                shape = _node(slide, node, x, y0 + HEADER, node_width, node_height, prefix, created)
+                shape = _node(slide, node, x, y0 + (lane_height - node_height) // 2, node_width, node_height, prefix, created)
                 placed[node.id] = (shape, index, position)
                 created.append(shape)
                 x += node_width + gap
+    routed: dict[int, int] = {}
     for number, edge in enumerate(spec.edges, 1):
         start, end = placed.get(edge.source), placed.get(edge.target)
         if start is None or end is None:
             continue
-        created.extend(_connect(slide, start, end, columns, edge, f"{prefix} edge {number}"))
+        created.extend(_edge(slide, start, end, geometry, routed, edge, f"{prefix} edge {number}"))
     return created
 
 
@@ -307,6 +342,17 @@ def _header(slide, x: int, y: int, width: int, height: int, text: str, name: str
     return box
 
 
+def _lane_label(slide, x: int, y: int, width: int, height: int, text: str, name: str):
+    """A lane title standing on its side along the left edge, so the lane keeps its full height for nodes."""
+    box = _header(slide, x + width // 2 - height // 2, y + height // 2 - width // 2, height, width, text, name)
+    box.rotation = 270.0
+    box.text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
+    box.text_frame.word_wrap = False
+    for run in box.text_frame.paragraphs[0].runs:
+        run.font.size = Pt(9)
+    return box
+
+
 def _node(slide, node: FlowNode, x: int, y: int, width: int, height: int, prefix: str, created: list | None = None):
     shape = slide.shapes.add_shape(SHAPES.get(node.kind, MSO_SHAPE.ROUNDED_RECTANGLE), x, y, width, height)
     shape.name = f"{prefix} node {node.id}"
@@ -339,68 +385,150 @@ def _node(slide, node: FlowNode, x: int, y: int, width: int, height: int, prefix
     return shape
 
 
-def _connect(slide, start: tuple, end: tuple, columns: bool, edge: FlowEdge, name: str) -> list:
+def _edge(slide, start: tuple, end: tuple, geometry: dict, routed: dict[int, int], edge: FlowEdge, name: str) -> list:
+    """Neighbours get a glued connector; anything that would cross a node is routed around it."""
     shape_a, lane_a, pos_a = start
     shape_b, lane_b, pos_b = end
-    if columns:
-        if lane_b > lane_a:
-            site_a, site_b = RIGHT, LEFT
-        elif lane_b < lane_a:
-            site_a, site_b = LEFT, RIGHT
+    columns = geometry["columns"]
+    if lane_a == lane_b and abs(pos_a - pos_b) == 1:
+        if columns:
+            sites = (BOTTOM, TOP) if pos_b > pos_a else (TOP, BOTTOM)
         else:
-            site_a, site_b = (BOTTOM, TOP) if pos_b > pos_a else (TOP, BOTTOM)
-    else:
-        if lane_b > lane_a:
-            site_a, site_b = BOTTOM, TOP
-        elif lane_b < lane_a:
-            site_a, site_b = TOP, BOTTOM
+            sites = (RIGHT, LEFT) if pos_b > pos_a else (LEFT, RIGHT)
+        return _connector(slide, shape_a, shape_b, sites, edge, name)
+    if abs(lane_a - lane_b) == 1:
+        if columns:
+            sites = (RIGHT, LEFT) if lane_b > lane_a else (LEFT, RIGHT)
         else:
-            site_a, site_b = (RIGHT, LEFT) if pos_b > pos_a else (LEFT, RIGHT)
+            sites = (BOTTOM, TOP) if lane_b > lane_a else (TOP, BOTTOM)
+        return _connector(slide, shape_a, shape_b, sites, edge, name)
+    if lane_a == lane_b:
+        last = lane_a == geometry["lanes"] - 1
+        points = _side_route(shape_a, shape_b, columns, routed.get(lane_a, 0), above=not columns and last)
+        routed[lane_a] = routed.get(lane_a, 0) + 1
+        return _polyline(slide, points, edge, name, "along" if columns else ("above" if last else "below"))
+    return _polyline(slide, _channel_route(shape_a, shape_b, lane_a, lane_b, geometry), edge, name, "on")
+
+
+def _connector(slide, shape_a, shape_b, sites: tuple[int, int], edge: FlowEdge, name: str) -> list:
+    site_a, site_b = sites
     x1, y1 = _site(shape_a, site_a)
     x2, y2 = _site(shape_b, site_b)
     connector = slide.shapes.add_connector(MSO_CONNECTOR.ELBOW, x1, y1, x2, y2)
     connector.name = name
     connector.begin_connect(shape_a, site_a)
     connector.end_connect(shape_b, site_b)
-    connector.line.color.rgb = LINE
-    connector.line.width = Pt(1.25)
+    _style_line(connector, edge)
+    if site_a in (LEFT, RIGHT):
+        mid = (x1 + x2) // 2
+        points = [(x1, y1), (mid, y1), (mid, y2), (x2, y2)] if y1 != y2 else [(x1, y1), (x2, y2)]
+    else:
+        mid = (y1 + y2) // 2
+        points = [(x1, y1), (x1, mid), (x2, mid), (x2, y2)] if x1 != x2 else [(x1, y1), (x2, y2)]
+    return [connector] + _label(slide, points, edge.label, name, "on", min(shape_a.top, shape_b.top))
+
+
+def _polyline(slide, points: list[tuple[int, int]], edge: FlowEdge, name: str, placement: str = "on") -> list:
+    builder = slide.shapes.build_freeform(points[0][0], points[0][1], scale=1.0)
+    builder.add_line_segments(points[1:], close=False)
+    shape = builder.convert_to_shape()
+    shape.name = name
+    shape.fill.background()
+    _style_line(shape, edge)
+    return [shape] + _label(slide, points, edge.label, name, placement)
+
+
+def _style_line(shape, edge: FlowEdge) -> None:
+    shape.line.color.rgb = LINE
+    shape.line.width = Pt(1.25)
     if edge.kind != "sync":
-        connector.line.dash_style = MSO_LINE.DASH
-    _arrow_head(connector)
-    created = [connector]
-    if edge.label:
-        vertical = abs(y2 - y1) >= abs(x2 - x1)
-        if lane_a != lane_b:
-            # The elbow leaves the start box first, so the label sits on that first segment.
-            if site_a == RIGHT:
-                lx, ly = x1 + Inches(0.05), y1 - LABEL_HEIGHT - Inches(0.02)
-            elif site_a == LEFT:
-                lx, ly = x1 - LABEL_WIDTH - Inches(0.05), y1 - LABEL_HEIGHT - Inches(0.02)
-            elif site_a == BOTTOM:
-                lx, ly = x1 + Inches(0.08), y1 + Inches(0.02)
-            else:
-                lx, ly = x1 + Inches(0.08), y1 - LABEL_HEIGHT - Inches(0.02)
-            vertical = site_a in (TOP, BOTTOM)
-        elif vertical:
-            lx, ly = (x1 + x2) // 2 + Inches(0.08), (y1 + y2) // 2 - LABEL_HEIGHT // 2
-        else:
-            lx, ly = (x1 + x2) // 2 - LABEL_WIDTH // 2, (y1 + y2) // 2 - LABEL_HEIGHT - Inches(0.02)
-        label = slide.shapes.add_textbox(lx, ly, LABEL_WIDTH, LABEL_HEIGHT)
-        label.name = f"{name} label"
-        label.fill.solid()
-        label.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-        frame = label.text_frame
-        frame.word_wrap = True
-        frame.margin_left = frame.margin_right = Inches(0.03)
-        frame.margin_top = frame.margin_bottom = 0
-        paragraph = frame.paragraphs[0]
-        paragraph.text = edge.label
-        paragraph.alignment = PP_ALIGN.LEFT if vertical else PP_ALIGN.CENTER
-        for run in paragraph.runs:
-            run.font.size = Pt(9)
-            run.font.color.rgb = TEXT
-        created.append(label)
-    return created
+        shape.line.dash_style = MSO_LINE.DASH
+    _arrow_head(shape)
+
+
+def _side_route(a, b, columns: bool, staggered: int, above: bool = False) -> list[tuple[int, int]]:
+    """Out of the side, past the nodes in between, back into the target's side."""
+    offset = ROUTE_OFFSET + ROUTE_STEP * staggered
+    if columns:
+        x = max(a.left + a.width, b.left + b.width) + offset
+        return [(a.left + a.width, _cy(a)), (x, _cy(a)), (x, _cy(b)), (b.left + b.width, _cy(b))]
+    if above:
+        y = min(a.top, b.top) - offset
+        return [(_cx(a), a.top), (_cx(a), y), (_cx(b), y), (_cx(b), b.top)]
+    y = max(a.top + a.height, b.top + b.height) + offset
+    return [(_cx(a), a.top + a.height), (_cx(a), y), (_cx(b), y), (_cx(b), b.top + b.height)]
+
+
+def _channel_route(a, b, lane_a: int, lane_b: int, geometry: dict) -> list[tuple[int, int]]:
+    """Through the gap next to the start, along the free channel past the lanes in between, into the target."""
+    forward = lane_b > lane_a
+    if geometry["columns"]:
+        boundary = lambda i: geometry["left"] + i * geometry["lane_width"] + ROUTE_STEP  # noqa: E731
+        y = geometry["channel_y"]
+        if forward:
+            x_out, x_in = boundary(lane_a + 1), boundary(lane_b)
+            return [(a.left + a.width, _cy(a)), (x_out, _cy(a)), (x_out, y), (x_in, y), (x_in, _cy(b)), (b.left, _cy(b))]
+        x_out, x_in = boundary(lane_a), boundary(lane_b + 1)
+        return [(a.left, _cy(a)), (x_out, _cy(a)), (x_out, y), (x_in, y), (x_in, _cy(b)), (b.left + b.width, _cy(b))]
+    boundary = lambda i: geometry["top"] + i * geometry["lane_height"] + ROUTE_STEP  # noqa: E731
+    x = geometry["channel_x"]
+    if forward:
+        y_out, y_in = boundary(lane_a + 1), boundary(lane_b)
+        return [(_cx(a), a.top + a.height), (_cx(a), y_out), (x, y_out), (x, y_in), (_cx(b), y_in), (_cx(b), b.top)]
+    y_out, y_in = boundary(lane_a), boundary(lane_b + 1)
+    return [(_cx(a), a.top), (_cx(a), y_out), (x, y_out), (x, y_in), (_cx(b), y_in), (_cx(b), b.top + b.height)]
+
+
+def _label(slide, points: list[tuple[int, int]], text: str, name: str, placement: str = "on", lift_above: int | None = None) -> list:
+    """A white label sized to its text on the longest segment.
+
+    `placement` is "on" the line, "along" a vertical line (text turned upright), "below" or "above" a
+    horizontal one; a straight horizontal line too short for the label moves it above the nodes when
+    `lift_above` gives their top.
+    """
+    if not text:
+        return []
+    (p, q) = max(zip(points, points[1:]), key=lambda s: abs(s[1][0] - s[0][0]) + abs(s[1][1] - s[0][1]))
+    mx, my = (p[0] + q[0]) // 2, (p[1] + q[1]) // 2
+    font = LABEL_FONT if len(text) <= 24 else LABEL_SMALL_FONT
+    width = int(text_width_pt(text, font) * 12700) + LABEL_PAD
+    height = LABEL_HEIGHT
+    lx, ly = mx - width // 2, my - height // 2
+    rotation = 0.0
+    if p[0] == q[0]:
+        rotation = 270.0 if placement == "along" else 0.0
+    elif placement == "below":
+        ly = my + Inches(0.05)
+    elif placement == "above":
+        ly = my - height - Inches(0.05)
+    elif lift_above is not None and len(points) == 2 and abs(q[0] - p[0]) < width + Inches(0.05):
+        ly = lift_above - height - Inches(0.02)
+    label = slide.shapes.add_textbox(lx, ly, width, height)
+    label.rotation = rotation
+    label.name = f"{name} label"
+    label.fill.solid()
+    label.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+    label.line.fill.background()
+    frame = label.text_frame
+    frame.word_wrap = False
+    frame.margin_left = frame.margin_right = Inches(0.03)
+    frame.margin_top = frame.margin_bottom = 0
+    frame.vertical_anchor = MSO_ANCHOR.MIDDLE
+    paragraph = frame.paragraphs[0]
+    paragraph.text = text
+    paragraph.alignment = PP_ALIGN.CENTER
+    for run in paragraph.runs:
+        run.font.size = Pt(font.size_pt)
+        run.font.color.rgb = TEXT
+    return [label]
+
+
+def _cx(shape) -> int:
+    return shape.left + shape.width // 2
+
+
+def _cy(shape) -> int:
+    return shape.top + shape.height // 2
 
 
 def _site(shape, site: int) -> tuple[int, int]:

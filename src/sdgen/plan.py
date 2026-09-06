@@ -132,6 +132,8 @@ class ExtraSection(BaseModel):
 
 
 class FlowRequest(BaseModel):
+    width_in: float = 0.0  # drawing area of the slot, in inches; zero when unknown
+    height_in: float = 0.0
     section: str
     title: str = ""
     purpose: str = ""

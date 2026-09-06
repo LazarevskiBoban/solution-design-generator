@@ -14,7 +14,9 @@ from sdgen.blueprint import Blueprint, derive_blueprint
 from sdgen.brief import BRIEF_FIELDS, DEVELOPER_FIELDS, FACTS_BY_KEY, Brief, fact_questions
 from sdgen.content import Content, dump_markdown, load_markdown
 from sdgen.design import Design, DesignStore
-from sdgen.inventory import DeckInfo
+from pptx import Presentation
+
+from sdgen.inventory import DeckInfo, find_shape
 from sdgen.llm import DEFAULT_AZURE_API_VERSION, DEFAULT_OPENAI_MODEL, LLMError, LLMNotConfigured, default_deployment, get_llm
 from sdgen.manifest import FieldSpec, GlobalSpec, Manifest
 from sdgen.mapping.extract import extract_fields
@@ -1305,6 +1307,7 @@ def _draw_flows_for(state_key: str, design: Design, store: DesignStore, sections
         llm = get_llm(provider, **settings)
         planner = llm.with_effort("medium") if hasattr(llm, "with_effort") else llm
         wanted = [requests.get(s.key) or FlowRequest(section=s.key, title=design.titles.get(s.key, s.title), purpose=s.ask) for s in sections]
+        wanted = _sized_requests(design, sections, wanted)
         with st.spinner("Designing the diagrams."):
             specs = plan_flows(design.brief, wanted, planner, icons=_flow_icons(design))
     except (LLMNotConfigured, LLMError) as exc:
@@ -1315,6 +1318,37 @@ def _draw_flows_for(state_key: str, design: Design, store: DesignStore, sections
     missing = [design.titles.get(s.key, s.title) for s in sections if s.key not in specs]
     st.session_state[f"{state_key}:flow_note"] = f"Drew {len(specs)} diagram(s) from the brief." + (f" The model returned no flow for: {', '.join(missing)}." if missing else "")
     st.rerun()
+
+
+def _sized_requests(design: Design, sections: list, requests: list) -> list:
+    """Each request learns the size of its image slot, so the model draws as many nodes as fit."""
+    try:
+        entry = Registry(os.environ.get("SDGEN_TEMPLATES", str(ROOT / "templates"))).load(design.template)
+        sizes = slot_sizes(entry)
+    except Exception:
+        return requests
+    sized = []
+    for section, request in zip(sections, requests):
+        size = next((sizes[k] for k in section.fields if k in sizes), None)
+        sized.append(request.model_copy(update={"width_in": size[0], "height_in": size[1]}) if size else request)
+    return sized
+
+
+def slot_sizes(entry) -> dict[str, tuple[float, float]]:
+    """Width and height in inches of every image slot of the template, by field key."""
+    prs = Presentation(str(entry.template_path))
+    slides = list(prs.slides)
+    sizes: dict[str, tuple[float, float]] = {}
+    for spec in entry.manifest.fields:
+        if spec.kind != "image":
+            continue
+        for binding in spec.bindings:
+            if 1 <= binding.slide <= len(slides):
+                shape = find_shape(slides[binding.slide - 1], binding.shape.id)
+                if shape is not None and shape.width and shape.height:
+                    sizes[spec.key] = (round(shape.width / 914400, 2), round(shape.height / 914400, 2))
+                    break
+    return sizes
 
 
 def _flow_icons(design: Design) -> list[str] | None:

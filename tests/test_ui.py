@@ -138,6 +138,11 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
         planned.hidden = [slot.key]
         assert ui._pending_flow_sections(planned, loaded, store) == []
     assert ui._pending_flow_sections(fresh, loaded, store) == []
+    sizes = ui.slot_sizes(loaded)
+    assert set(sizes) == {f.key for f in loaded.manifest.fields if f.kind == "image"}
+    if slot is not None:
+        sized = ui._sized_requests(planned, [slot], [ui.FlowRequest(section=slot.key, title="Flow", purpose="")])
+        assert sized[0].width_in > 0 and sized[0].height_in > 0
     assert list(ui.DIAGRAM_FORMATS) == ["shapes", "drawio", "mermaid"]
     assert ui._flow_icons(ui.Design(name="s", template="demo", brief=ui.Brief(subject="x", about="SAP S/4HANA lockbox"))) == ui.icon_keys()
     assert ui._flow_icons(fresh) is None
