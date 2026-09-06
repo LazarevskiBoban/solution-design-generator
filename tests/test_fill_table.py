@@ -81,3 +81,10 @@ def test_row_heights_follow_wrapped_text_and_settle_the_rows():
     assert heights[1] <= template_h * 1.1 and heights[2] > template_h * 2 and frame.height == sum(heights)
     append_rows(frame, [["3", "c", "n"]])
     assert _texts(frame)[-1] == ["3", "c", "n"] and len(frame.table.rows) == 4
+
+
+def test_marker_text_does_not_settle_the_template_row():
+    prs, frame = _table_frame(footer=None)
+    template_h = frame.table.rows[1].height
+    fill_table(frame, [["{{a_very_long_marker_that_would_wrap_in_a_narrow_column}}"]], settle=False)
+    assert frame.table.rows[1].height == template_h and frame.height == sum(row.height for row in frame.table.rows)

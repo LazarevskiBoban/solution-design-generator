@@ -80,7 +80,7 @@ def tokenize_deck(prs, manifest: Manifest) -> Manifest:
                 continue
             if spec.kind == "table":
                 if getattr(shape, "has_table", False):
-                    fill_table(shape, [[marker]], header_rows=binding.header_rows, keep_last_row_if=binding.keep_last_row_if)
+                    fill_table(shape, [[marker]], header_rows=binding.header_rows, keep_last_row_if=binding.keep_last_row_if, settle=False)
             elif shape.has_text_frame:
                 set_rich_text(shape, marker, keep_prefix=binding.keep_prefix)
     return manifest.model_copy(update={"globals": globals_})

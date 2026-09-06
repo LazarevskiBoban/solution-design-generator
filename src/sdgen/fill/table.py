@@ -22,7 +22,9 @@ def fill_table(
     header_rows: int = 1,
     keep_last_row_if: str | None = None,
     columns: Sequence[str] | None = None,
+    settle: bool = True,
 ) -> None:
+    """Replaces the body rows; with `settle` the rows grow to what their text needs (off for marker text)."""
     tbl = graphic_frame.table._tbl
     tr_list = tbl.tr_lst
     header = tr_list[:header_rows]
@@ -51,7 +53,10 @@ def fill_table(
             footer.addprevious(tr)
         else:
             tbl.append(tr)
-    settle_heights(graphic_frame)
+    if settle:
+        settle_heights(graphic_frame)
+    else:
+        graphic_frame.height = sum(tr.h for tr in tbl.tr_lst)
 
 
 def append_rows(
