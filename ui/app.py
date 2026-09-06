@@ -400,7 +400,7 @@ def design_page() -> None:
     ]
     present = [s for s in STEPS if s != "diagrams" or diagram_fields]
     step = _current_step(state_key, design, present)
-    with st.expander("1. Brief", expanded=step == "brief", icon=_done("brief" in design.completed), key=f"{state_key}:exp:brief"):
+    with st.expander("1. Brief", expanded=step == "brief", icon=_done("brief" in design.completed), key=_expander_key(state_key, "brief", step)):
         subject = st.text_input("Integration name (used in slide titles)", key=_init(f"{prefix}b:subject", design.brief.subject))
         texts = {}
         developer_shown = False
@@ -451,7 +451,7 @@ def design_page() -> None:
                 st.info(st.session_state[f"{state_key}:facts_note"])
         _complete_section(state_key, design, store, "brief", present)
 
-    with st.expander(_plan_title(design), expanded=step == "plan", icon=_done("plan" in design.completed), key=f"{state_key}:exp:plan"):
+    with st.expander(_plan_title(design), expanded=step == "plan", icon=_done("plan" in design.completed), key=_expander_key(state_key, "plan", step)):
         st.caption("The model decides which slides apply to this design, proposes titles for slides named after another project, extra slides for the developer content and the diagrams to draw. Confirm to apply it: hidden slides, kept slides and titles follow the plan.")
         if st.button("Plan sections with AI", key=f"{state_key}:plan"):
             try:
@@ -486,7 +486,7 @@ def design_page() -> None:
                     st.rerun()
         _complete_section(state_key, design, store, "plan", present)
 
-    with st.expander(_write_title(design), expanded=step == "write", icon=_done("write" in design.completed), key=f"{state_key}:exp:write"):
+    with st.expander(_write_title(design), expanded=step == "write", icon=_done("write" in design.completed), key=_expander_key(state_key, "write", step)):
         st.caption("This sends the brief and the facts to the model and fills every slide section (about a minute). Run it after the section plan. Nothing appears under Review sections until it has run; Generate runs it on its own when nothing has been written yet.")
         col_draft, col_info = st.columns([1, 3], vertical_alignment="center")
         with col_draft:
@@ -512,7 +512,7 @@ def design_page() -> None:
         drawn = sum(1 for section, _ in diagram_fields if section.key in flows)
         requests = {f.section: f for f in (design.plan.flows if design.plan else [])}
         pending = [section for section, spec in diagram_fields if section.key not in flows and not design.images.get(spec.key) and section.key not in design.hidden]
-        with st.expander(f"4. Diagrams: {uploaded} image(s) uploaded, {drawn} drawn from the brief, {len(diagram_fields)} slots", expanded=step == "diagrams", icon=_done("diagrams" in design.completed), key=f"{state_key}:exp:diagrams"):
+        with st.expander(f"4. Diagrams: {uploaded} image(s) uploaded, {drawn} drawn from the brief, {len(diagram_fields)} slots", expanded=step == "diagrams", icon=_done("diagrams" in design.completed), key=_expander_key(state_key, "diagrams", step)):
             st.caption("Draw asks the model for the flow (systems, steps, arrows), draws it as editable shapes on the slide and keeps a draw.io and a Mermaid file next to it; a popup lets you pick the format to work with. An uploaded image always wins over a drawing. A drawing on a slide without a text box of its own gets a 'how it works' slide after it with the numbered steps.")
             _show_icon_note(design)
             if pending and st.button(f"Draw {len(pending)} diagram(s) from the brief", key=f"{state_key}:draw_all"):
@@ -555,7 +555,7 @@ def design_page() -> None:
 
     content = load_markdown(design.content_markdown, manifest) if design.content_markdown.strip() else Content()
     sections = _writable(blueprint, manifest)
-    with st.expander(_review_title(sections, content), expanded=step == "review", icon=_done("review" in design.completed), key=f"{state_key}:exp:review"):
+    with st.expander(_review_title(sections, content), expanded=step == "review", icon=_done("review" in design.completed), key=_expander_key(state_key, "review", step)):
         with st.popover("Import a content file (.md)"):
             imported = st.file_uploader("Content file", type=["md", "markdown", "txt"], key=f"{prefix}import", label_visibility="collapsed")
             if imported is not None and st.session_state.get(f"{state_key}:import_token") != f"{imported.name}:{imported.size}":
@@ -583,7 +583,7 @@ def design_page() -> None:
             st.caption("This template has no sections to write.")
         _complete_section(state_key, design, store, "review", present)
 
-    with st.expander("6. Generate", expanded=step == "generate", icon=_done("generate" in design.completed), key=f"{state_key}:exp:generate"):
+    with st.expander("6. Generate", expanded=step == "generate", icon=_done("generate" in design.completed), key=_expander_key(state_key, "generate", step)):
         col_missing, col_preview, col_generate = st.columns([1, 1, 1], vertical_alignment="bottom")
         with col_missing:
             missing = st.selectbox(
@@ -1463,6 +1463,11 @@ def _current_step(state_key: str, design: Design, present: list[str]) -> str:
     if st.session_state.get(key) not in present:
         st.session_state[key] = next((s for s in present if s not in design.completed), present[-1])
     return st.session_state[key]
+
+
+def _expander_key(state_key: str, name: str, step: str) -> str:
+    """The key changes with the open state, so the browser applies it; manual toggles stay untouched otherwise."""
+    return f"{state_key}:exp:{name}:{'open' if step == name else 'shut'}"
 
 
 def _go_to(state_key: str, step: str) -> None:
