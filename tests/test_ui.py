@@ -127,7 +127,17 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     twice = entries + [dict(entries[0])]
     assert [e["title"] for e in ui._visible_entries(twice, fresh, blueprint)] == ["A", "A (cont.)"]
     assert ui.SHORTCUTS == {"previous": "Left", "next": "Right", "up": "Up", "down": "Down", "hide": "Delete"}
-    assert "max-height" in ui.VIEWER_CSS and ui._write_title(fresh) == "3. Write the slides"
+    assert "max-height" in ui.VIEWER_CSS and "98vw" in ui.FULL_VIEW_CSS and ui._write_title(fresh) == "3. Write the slides"
+    assert f"{state_key}:draw_after_write" not in app.session_state
+    store = DesignStore(tmp_path / "designs")
+    loaded = Registry(registry_with_demo).load("demo")
+    slot = next((s for s in blueprint.sections if any(loaded.manifest.field(k) and loaded.manifest.field(k).kind == "image" for k in s.fields)), None)
+    if slot is not None:
+        planned = ui.Design(name="p", template="demo", plan=ui.SectionPlan(flows=[ui.FlowRequest(section=slot.key, title="Flow", purpose="show it")]))
+        assert [s.key for s in ui._pending_flow_sections(planned, loaded, store)] == [slot.key]
+        planned.hidden = [slot.key]
+        assert ui._pending_flow_sections(planned, loaded, store) == []
+    assert ui._pending_flow_sections(fresh, loaded, store) == []
     assert list(ui.DIAGRAM_FORMATS) == ["shapes", "drawio", "mermaid"]
     assert ui._flow_icons(ui.Design(name="s", template="demo", brief=ui.Brief(subject="x", about="SAP S/4HANA lockbox"))) == ui.icon_keys()
     assert ui._flow_icons(fresh) is None

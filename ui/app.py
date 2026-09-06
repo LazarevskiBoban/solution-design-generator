@@ -40,6 +40,7 @@ SAMPLE_TYPES = ["xml", "xsd", "edmx", "json", "csv"]
 EMPTY_FIELD_RE = re.compile(r"field '[^']+' \((.+)\) is empty$")
 SECTION_MODES = {"text": "Use the text below", "keep": "Keep the template text", "blank": "Leave the slide blank"}
 VIEWER_CSS = "<style>div[data-testid='stDialog'] div[data-testid='stImage'] img{width:auto !important;max-width:100%;max-height:calc(100vh - 300px);display:block;margin:0 auto}</style>"
+FULL_VIEW_CSS = "<style>div[data-testid='stDialog'] [role='dialog']{width:98vw !important;max-width:98vw !important}div[data-testid='stDialog'] div[data-testid='stImage'] img{max-height:none !important;width:100% !important}</style>"
 SHORTCUTS = {"previous": "Left", "next": "Right", "up": "Up", "down": "Down", "hide": "Delete"}
 DIAGRAM_FORMATS = {
     "shapes": "PowerPoint shapes, editable in the deck",
@@ -475,6 +476,10 @@ def design_page() -> None:
         for k in section.fields
         if manifest.field(k) is not None and manifest.field(k).kind == "image"
     ]
+    if diagram_fields and st.session_state.pop(f"{state_key}:draw_after_write", False):
+        waiting = _pending_flow_sections(design, entry, store)
+        if waiting:
+            _diagram_format_dialog(state_key, waiting, {f.section: f for f in design.plan.flows}, provider, settings)
     if diagram_fields:
         flows = store.flows(design)
         uploaded = sum(len(design.images.get(spec.key, [])) for _, spec in diagram_fields)
@@ -750,7 +755,10 @@ def _slide_viewer(state_key: str, entry) -> None:
     keys_on = not st.session_state.get(f"{state_key}:vw:edit:{shown[index]['section']}", False)
     key_for = (lambda action: SHORTCUTS[action]) if keys_on else (lambda action: None)
 
-    col_prev, col_pick, col_next = st.columns([1, 4, 1], vertical_alignment="bottom")
+    col_prev, col_pick, col_next, col_full = st.columns([1, 4, 1, 1], vertical_alignment="bottom")
+    with col_full:
+        if st.toggle("Full view", key=f"{state_key}:vw:full", help="Widen the picture to the browser width; scroll to see the rest"):
+            st.html(FULL_VIEW_CSS)
     with col_prev:
         if st.button("Previous", key=f"{state_key}:vw:prev", disabled=index == 0, shortcut=key_for("previous"), help="Left arrow"):
             index -= 1
@@ -1235,21 +1243,22 @@ def _run_draft(state_key: str, entry, design: Design, store: DesignStore, subjec
     store.save(design)
     total = sum(len(s["fields"]) for s in writable_sections(blueprint, manifest))
     extra = f", {len(result.mechanical)} filled from facts and template" if result.mechanical else ""
-    drawn = _draw_planned_flows(design, store, llm)
-    if drawn:
-        extra += f", {drawn} diagram(s) drawn from the brief"
+    waiting = _pending_flow_sections(design, entry, store)
+    if waiting:
+        st.session_state[f"{state_key}:draw_after_write"] = True
+        extra += f"; {len(waiting)} diagram(s) wait for your format choice"
     st.session_state[f"{state_key}:draft_done"] = f"Drafted {len(result.content.fields)} of {total} fields with {result.llm}{extra}. Review them in step 5, then generate."
     st.session_state[f"{state_key}:draft_warnings"] = result.warnings
     st.session_state[f"{state_key}:v"] = version + 1
     st.rerun()
 
 
-def _draw_planned_flows(design: Design, store: DesignStore, llm) -> int:
-    """Draws the diagrams the plan lists and that have neither a drawing nor an uploaded image yet."""
+def _pending_flow_sections(design: Design, entry, store: DesignStore) -> list:
+    """Diagram sections the plan wants drawn that have neither a drawing nor an uploaded image yet."""
     if design.plan is None or not design.plan.flows:
-        return 0
+        return []
     existing = store.flows(design)
-    sections = {s.key: s for s in Registry(os.environ.get("SDGEN_TEMPLATES", str(ROOT / "templates"))).load(design.template).blueprint.sections}
+    sections = {s.key: s for s in entry.blueprint.sections}
     pending = []
     for request in design.plan.flows:
         section = sections.get(request.section)
@@ -1257,19 +1266,8 @@ def _draw_planned_flows(design: Design, store: DesignStore, llm) -> int:
             continue
         if any(design.images.get(k) for k in section.fields):
             continue
-        pending.append(request)
-    if not pending:
-        return 0
-    try:
-        planner = llm.with_effort("medium") if hasattr(llm, "with_effort") else llm
-        with st.spinner(f"Drawing {len(pending)} diagram(s) from the brief."):
-            specs = plan_flows(design.brief, pending, planner, icons=_flow_icons(design))
-    except (LLMNotConfigured, LLMError) as exc:
-        st.warning(f"Diagrams were not drawn: {exc}")
-        return 0
-    for key, spec in specs.items():
-        store.save_flow(design, key, spec)
-    return len(specs)
+        pending.append(section)
+    return pending
 
 
 def _current_llm(state_key: str):
@@ -1318,11 +1316,17 @@ def _diagram_format_dialog(state_key: str, sections: list, requests: dict, provi
     design: Design = st.session_state[state_key]
     store = design_store()
     names = ", ".join(design.titles.get(s.key, s.title) for s in sections)
-    st.caption(f"Diagrams: {names}. The deck always gets the shape drawing; draw.io and Mermaid add a file you can open, adjust and export as PNG, then upload to replace the drawing." + (" The brief is about SAP, so the SAP icon set is used." if uses_sap(design.brief) else ""))
+    st.caption(f"Diagrams: {names}. The deck always gets the shape drawing; draw.io and Mermaid add a file you can open, adjust and export as PNG, then upload to replace the drawing." + (" The brief is about SAP, so the SAP icon set is used." if uses_sap(design.brief) else "") + " Not now keeps the slots empty; step 4 draws them later.")
     current = design.diagram_format if design.diagram_format in DIAGRAM_FORMATS else "shapes"
     choice = st.radio("Format", list(DIAGRAM_FORMATS), format_func=DIAGRAM_FORMATS.get, index=list(DIAGRAM_FORMATS).index(current), key=f"{state_key}:fmt:choice")
     everywhere = st.checkbox("Use this format for all diagrams of this design", value=True, key=f"{state_key}:fmt:all")
-    if st.button("Draw", type="primary", key=f"{state_key}:fmt:go"):
+    col_go, col_later = st.columns([1, 1])
+    with col_go:
+        go = st.button("Draw", type="primary", key=f"{state_key}:fmt:go")
+    with col_later:
+        if st.button("Not now", key=f"{state_key}:fmt:later"):
+            st.rerun()
+    if go:
         if everywhere:
             design.diagram_format = choice
             design.diagram_formats = {}
