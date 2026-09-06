@@ -198,12 +198,12 @@ def _text_candidates(
     text = shape.text.strip()
     if not text:
         return []
-    if container and len(text) < LONG_TEXT:
-        # A box that holds other shapes is a frame with a heading, not a field.
-        return []
     tokens = list(dict.fromkeys(TOKEN_RE.findall(text)))
     if tokens:
         return [_token_candidate(slide, shape, tok) for tok in tokens]
+    if container and len(text) < LONG_TEXT:
+        # A box that holds other shapes is a frame with a heading, not a field.
+        return []
 
     is_body = shape.placeholder_type in BODY_PLACEHOLDERS
     if diagram:
