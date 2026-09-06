@@ -42,12 +42,13 @@ SAMPLE_TYPES = ["xml", "xsd", "edmx", "json", "csv"]
 EMPTY_FIELD_RE = re.compile(r"field '[^']+' \((.+)\) is empty$")
 SECTION_MODES = {"text": "Use the text below", "keep": "Keep the template text", "blank": "Leave the slide blank"}
 VIEWER_CSS = "<style>div[data-testid='stDialog'] div[data-testid='stImage'] img{width:auto !important;max-width:100%;max-height:calc(100vh - 300px);display:block;margin:0 auto}</style>"
-# Full view: the dialog box itself carries the width, the picture is bounded by the viewport, the section actions are hidden.
+# Full view: the dialog box fills the window, its title bar and everything under the picture are hidden, the picture takes the rest.
 FULL_VIEW_CSS = (
     "<style>"
-    "div[data-testid='stDialog']{padding-top:0.5rem !important;padding-bottom:0.5rem !important}"
-    "div[data-testid='stDialog'] > div{width:calc(100vw - 1rem) !important;max-width:calc(100vw - 1rem) !important;margin:0 !important}"
-    "div[data-testid='stDialog'] div[data-testid='stImage'] img{width:100% !important;height:calc(100vh - 260px) !important;max-height:none !important;object-fit:contain;display:block;margin:0 auto}"
+    "div[data-testid='stDialog']{padding:0 !important}"
+    "div[data-testid='stDialog'] > div{width:100vw !important;max-width:100vw !important;height:100vh !important;max-height:100vh !important;margin:0 !important;border-radius:0 !important}"
+    "div[data-testid='stDialog'] [role='dialog'] > h2{display:none}"
+    "div[data-testid='stDialog'] div[data-testid='stImage'] img{width:100% !important;height:calc(100vh - 110px) !important;max-height:none !important;object-fit:contain;display:block;margin:0 auto}"
     ".st-key-viewer_details{display:none}"
     "</style>"
 )
@@ -810,13 +811,12 @@ def _slide_viewer(state_key: str, entry) -> None:
             st.markdown(f"### {item['title']}")
             st.write(item["text"] or "No text on this slide yet.")
             st.caption("No picture for this slide yet. Press Refresh slide.")
-    st.caption(f"Slide {index + 1} of {len(shown)}: {item['title']}" + (". Edited since the picture was taken, press Refresh slide." if item["section"] in stale else ""))
-    if item.get("overflow"):
-        st.error("PowerPoint lays out more text than fits the box: " + ", ".join(item["overflow"]) + ". Shorten the text or split it.")
-    if section is None:
-        return
-
     with st.container(key="viewer_details"):
+        st.caption(f"Slide {index + 1} of {len(shown)}: {item['title']}" + (". Edited since the picture was taken, press Refresh slide." if item["section"] in stale else ""))
+        if item.get("overflow"):
+            st.error("PowerPoint lays out more text than fits the box: " + ", ".join(item["overflow"]) + ". Shorten the text or split it.")
+        if section is None:
+            return
         order = _section_order(design, blueprint)
         position = order.index(section.key)
         fields = [f for f in (manifest.field(k) for k in section.fields) if f is not None and f.kind != "image"]
