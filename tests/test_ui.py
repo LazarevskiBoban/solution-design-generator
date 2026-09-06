@@ -58,8 +58,10 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     app.run()
     assert app.session_state[state_key].brief.facts == {"countries": "ZA, KE"}
     assert (tmp_path / "designs" / "camt-053" / "brief.md").read_text(encoding="utf-8").rstrip().endswith("## fact:countries\nZA, KE")
-    app.button(key=f"{state_key}:next:plan").click().run()
-    assert app.session_state[f"{state_key}:step"] == "plan"
+    app.button(key=f"{state_key}:complete:brief").click().run()
+    assert app.session_state[f"{state_key}:step"] == "plan" and app.session_state[state_key].completed == ["brief"]
+    assert next(e.icon for e in app.status if e.label.startswith("1.")) == chr(0x2705)
+    assert (tmp_path / "designs" / "camt-053" / "design.yaml").read_text(encoding="utf-8").find("- brief") > 0
     app.button(key=f"{state_key}:draft").click().run()
     assert not app.exception
     design = app.session_state[state_key]
@@ -68,8 +70,10 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     assert (tmp_path / "designs" / "camt-053" / "content.md").is_file()
     labels = _labels(app)
     assert "3. Write the slides: written with mock" in labels
-    assert app.session_state[f"{state_key}:step"] in ("review", "diagrams")
-    assert next(e.icon for e in app.status if e.label.startswith("3.")) == chr(0x2705)
+    assert app.session_state[f"{state_key}:step"] == "plan"
+    assert any(e.label.startswith("3.") for e in app.expander)
+    app.button(key=f"{state_key}:reopen:brief").click().run()
+    assert app.session_state[f"{state_key}:step"] == "brief" and app.session_state[state_key].completed == []
     assert any(re.fullmatch(r"5\. Review sections: (\d+) of \1 written", label) for label in labels)
 
     app.button(key=f"{state_key}:generate").click().run()
@@ -101,7 +105,8 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     assert not app.exception
     assert app.session_state[state_key].plan is not None and (tmp_path / "designs" / "camt-053" / "plan.yaml").is_file()
     assert f"{state_key}:proposed_plan" not in app.session_state
-    assert app.session_state[f"{state_key}:step"] == "write"
+    app.button(key=f"{state_key}:complete:plan").click().run()
+    assert app.session_state[f"{state_key}:step"] == "write" and "plan" in app.session_state[state_key].completed
 
     # The confirmation opens a dialog, which the test harness cannot drive; the trigger and the action are checked apart.
     app.selectbox(key="design_choice:demo").select("camt-053").run()

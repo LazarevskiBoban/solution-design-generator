@@ -39,6 +39,7 @@ class Design(BaseModel):
     order: list[str] = Field(default_factory=list)
     titles: dict[str, str] = Field(default_factory=dict)
     plan: SectionPlan | None = None
+    completed: list[str] = Field(default_factory=list)  # steps of the design page the user marked done
     diagram_format: str = "shapes"  # shapes, drawio or mermaid
     diagram_formats: dict[str, str] = Field(default_factory=dict)  # per-section overrides
     last_draft: str = ""  # the draft as the model returned it, to tell edited sections apart
@@ -100,6 +101,7 @@ class DesignStore:
             modes={str(k): str(v) for k, v in (data.get("modes") or {}).items()},
             hidden=[str(k) for k in (data.get("hidden") or [])],
             order=[str(k) for k in (data.get("order") or [])],
+            completed=[str(k) for k in (data.get("completed") or [])],
             llm=data.get("llm", ""),
             updated=data.get("updated", ""),
         )
@@ -115,6 +117,7 @@ class DesignStore:
             "hidden": design.hidden,
             "order": design.order,
             "titles": design.titles,
+            "completed": design.completed,
             "diagram_format": design.diagram_format,
             "diagram_formats": design.diagram_formats,
             "llm": design.llm,

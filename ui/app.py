@@ -391,8 +391,16 @@ def design_page() -> None:
         model = settings["model"]
 
     written = bool(design.content_markdown.strip())
-    step = _current_step(state_key, design, written)
-    with st.expander("1. Brief", expanded=step == "brief", icon=_done(not design.brief.is_empty), key=f"{state_key}:exp:brief"):
+    diagram_fields = [
+        (section, manifest.field(k))
+        for section in blueprint.sections
+        if section.kind == "diagram"
+        for k in section.fields
+        if manifest.field(k) is not None and manifest.field(k).kind == "image"
+    ]
+    present = [s for s in STEPS if s != "diagrams" or diagram_fields]
+    step = _current_step(state_key, design, present)
+    with st.expander("1. Brief", expanded=step == "brief", icon=_done("brief" in design.completed), key=f"{state_key}:exp:brief"):
         subject = st.text_input("Integration name (used in slide titles)", key=_init(f"{prefix}b:subject", design.brief.subject))
         texts = {}
         developer_shown = False
@@ -441,10 +449,9 @@ def design_page() -> None:
                     st.rerun()
             if st.session_state.get(f"{state_key}:facts_note"):
                 st.info(st.session_state[f"{state_key}:facts_note"])
-        if st.button("Next: section plan", key=f"{state_key}:next:plan", disabled=not subject.strip()):
-            _go_to(state_key, "plan")
+        _complete_section(state_key, design, store, "brief", present)
 
-    with st.expander(_plan_title(design), expanded=step == "plan", icon=_done(design.plan is not None), key=f"{state_key}:exp:plan"):
+    with st.expander(_plan_title(design), expanded=step == "plan", icon=_done("plan" in design.completed), key=f"{state_key}:exp:plan"):
         st.caption("The model decides which slides apply to this design, proposes titles for slides named after another project, extra slides for the developer content and the diagrams to draw. Confirm to apply it: hidden slides, kept slides and titles follow the plan.")
         if st.button("Plan sections with AI", key=f"{state_key}:plan"):
             try:
@@ -472,13 +479,14 @@ def design_page() -> None:
                     store.save(design)
                     st.session_state.pop(f"{state_key}:proposed_plan", None)
                     st.session_state[f"{state_key}:v"] = version + 1
-                    _go_to(state_key, "write")
+                    st.rerun()
             with col_discard:
                 if proposed is not None and st.button("Discard proposal", key=f"{state_key}:plan_discard"):
                     st.session_state.pop(f"{state_key}:proposed_plan", None)
                     st.rerun()
+        _complete_section(state_key, design, store, "plan", present)
 
-    with st.expander(_write_title(design), expanded=step == "write", icon=_done(written), key=f"{state_key}:exp:write"):
+    with st.expander(_write_title(design), expanded=step == "write", icon=_done("write" in design.completed), key=f"{state_key}:exp:write"):
         st.caption("This sends the brief and the facts to the model and fills every slide section (about a minute). Run it after the section plan. Nothing appears under Review sections until it has run; Generate runs it on its own when nothing has been written yet.")
         col_draft, col_info = st.columns([1, 3], vertical_alignment="center")
         with col_draft:
@@ -492,14 +500,8 @@ def design_page() -> None:
         _show_draft_warnings(st.session_state.get(f"{state_key}:draft_warnings", []))
         if design.llm == "mock" and design.content_markdown:
             st.info("This draft comes from the mock provider and only echoes your brief into each section. Configure a real provider to get written sections.")
+        _complete_section(state_key, design, store, "write", present)
 
-    diagram_fields = [
-        (section, manifest.field(k))
-        for section in blueprint.sections
-        if section.kind == "diagram"
-        for k in section.fields
-        if manifest.field(k) is not None and manifest.field(k).kind == "image"
-    ]
     if diagram_fields and st.session_state.pop(f"{state_key}:draw_after_write", False):
         waiting = _pending_flow_sections(design, entry, store)
         if waiting:
@@ -510,7 +512,7 @@ def design_page() -> None:
         drawn = sum(1 for section, _ in diagram_fields if section.key in flows)
         requests = {f.section: f for f in (design.plan.flows if design.plan else [])}
         pending = [section for section, spec in diagram_fields if section.key not in flows and not design.images.get(spec.key) and section.key not in design.hidden]
-        with st.expander(f"4. Diagrams: {uploaded} image(s) uploaded, {drawn} drawn from the brief, {len(diagram_fields)} slots", expanded=step == "diagrams", icon=_done(not pending), key=f"{state_key}:exp:diagrams"):
+        with st.expander(f"4. Diagrams: {uploaded} image(s) uploaded, {drawn} drawn from the brief, {len(diagram_fields)} slots", expanded=step == "diagrams", icon=_done("diagrams" in design.completed), key=f"{state_key}:exp:diagrams"):
             st.caption("Draw asks the model for the flow (systems, steps, arrows), draws it as editable shapes on the slide and keeps a draw.io and a Mermaid file next to it; a popup lets you pick the format to work with. An uploaded image always wins over a drawing. A drawing on a slide without a text box of its own gets a 'how it works' slide after it with the numbered steps.")
             _show_icon_note(design)
             if pending and st.button(f"Draw {len(pending)} diagram(s) from the brief", key=f"{state_key}:draw_all"):
@@ -549,11 +551,11 @@ def design_page() -> None:
                     with col_draw:
                         if st.button("Draw from brief", key=f"{state_key}:draw:{section.key}"):
                             _diagram_format_dialog(state_key, [section], requests, provider, settings)
+            _complete_section(state_key, design, store, "diagrams", present)
 
     content = load_markdown(design.content_markdown, manifest) if design.content_markdown.strip() else Content()
     sections = _writable(blueprint, manifest)
-    done_count, total_count = _review_progress(sections, content)
-    with st.expander(_review_title(sections, content), expanded=step == "review", icon=_done(written and done_count == total_count), key=f"{state_key}:exp:review"):
+    with st.expander(_review_title(sections, content), expanded=step == "review", icon=_done("review" in design.completed), key=f"{state_key}:exp:review"):
         with st.popover("Import a content file (.md)"):
             imported = st.file_uploader("Content file", type=["md", "markdown", "txt"], key=f"{prefix}import", label_visibility="collapsed")
             if imported is not None and st.session_state.get(f"{state_key}:import_token") != f"{imported.name}:{imported.size}":
@@ -579,10 +581,9 @@ def design_page() -> None:
             st.download_button("Export content (.md)", data=design.content_markdown, file_name=f"{name}-content.md", key=f"{state_key}:export")
         else:
             st.caption("This template has no sections to write.")
-        if st.button("Next: generate", key=f"{state_key}:next:generate"):
-            _go_to(state_key, "generate")
+        _complete_section(state_key, design, store, "review", present)
 
-    with st.expander("6. Generate", expanded=step == "generate", icon=_done(bool(st.session_state.get(f"{state_key}:output"))), key=f"{state_key}:exp:generate"):
+    with st.expander("6. Generate", expanded=step == "generate", icon=_done("generate" in design.completed), key=f"{state_key}:exp:generate"):
         col_missing, col_preview, col_generate = st.columns([1, 1, 1], vertical_alignment="bottom")
         with col_missing:
             missing = st.selectbox(
@@ -675,6 +676,7 @@ def design_page() -> None:
                 with st.popover(f"{len(problems)} remark(s) from the generator"):
                     for issue in problems:
                         (st.error if issue.startswith("error") else st.warning)(issue)
+        _complete_section(state_key, design, store, "generate", present)
 
     if design.model_dump_json() != snapshot:
         store.save(design)
@@ -1303,7 +1305,7 @@ def _run_draft(state_key: str, entry, design: Design, store: DesignStore, subjec
     st.session_state[f"{state_key}:draft_done"] = f"Drafted {len(result.content.fields)} of {total} fields with {result.llm}{extra}. Review them in step 5, then generate."
     st.session_state[f"{state_key}:draft_warnings"] = result.warnings
     st.session_state[f"{state_key}:v"] = version + 1
-    _go_to(state_key, "diagrams" if waiting else "review")
+    st.rerun()
 
 
 def _pending_flow_sections(design: Design, entry, store: DesignStore) -> list:
@@ -1357,7 +1359,7 @@ def _draw_flows_for(state_key: str, design: Design, store: DesignStore, sections
         store.save_flow(design, key, spec)
     missing = [design.titles.get(s.key, s.title) for s in sections if s.key not in specs]
     st.session_state[f"{state_key}:flow_note"] = f"Drew {len(specs)} diagram(s) from the brief." + (f" The model returned no flow for: {', '.join(missing)}." if missing else "")
-    _go_to(state_key, "review")
+    st.rerun()
 
 
 def _sized_requests(design: Design, sections: list, requests: list) -> list:
@@ -1453,24 +1455,34 @@ def _review_progress(sections: list[tuple], content: Content) -> tuple[int, int]
     return written, len(sections)
 
 
-def _current_step(state_key: str, design: Design, written: bool) -> str:
-    """The step shown open: set by the actions of the page, else derived from how far the design got."""
+def _current_step(state_key: str, design: Design, present: list[str]) -> str:
+    """The step shown open: the first one not marked complete, until a button on the page moves it."""
     key = f"{state_key}:step"
-    if st.session_state.get(key) not in STEPS:
-        if design.brief.is_empty:
-            st.session_state[key] = "brief"
-        elif design.plan is None:
-            st.session_state[key] = "plan"
-        elif not written:
-            st.session_state[key] = "write"
-        else:
-            st.session_state[key] = "generate" if st.session_state.get(f"{state_key}:board") else "review"
+    if st.session_state.get(key) not in present:
+        st.session_state[key] = next((s for s in present if s not in design.completed), present[-1])
     return st.session_state[key]
 
 
 def _go_to(state_key: str, step: str) -> None:
     st.session_state[f"{state_key}:step"] = step
     st.rerun()
+
+
+def _complete_section(state_key: str, design: Design, store: DesignStore, step: str, present: list[str]) -> None:
+    """Marks the step done and opens the next one; a done step can be reopened."""
+    if step in design.completed:
+        col_note, col_open = st.columns([3, 1], vertical_alignment="center")
+        col_note.caption("Section completed.")
+        if col_open.button("Reopen section", key=f"{state_key}:reopen:{step}"):
+            design.completed.remove(step)
+            store.save(design)
+            _go_to(state_key, step)
+        return
+    if st.button("Complete section", key=f"{state_key}:complete:{step}", help="Marks this step done and opens the next one"):
+        design.completed.append(step)
+        store.save(design)
+        following = present[present.index(step) + 1:] if step in present else []
+        _go_to(state_key, following[0] if following else step)
 
 
 def _done(finished: bool) -> str | None:
