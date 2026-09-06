@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.enum.text import MSO_ANCHOR
 from pydantic import BaseModel, Field
 
@@ -16,13 +17,14 @@ from sdgen.fill.slides import clone_slide, move_slide, remove_slide
 from sdgen.fill.table import append_rows, clear_table_body, fill_table, has_footer, row_heights
 from sdgen.fill.text import Block, Span, capacity_chars_of, capacity_lines_of, fit_text_shape, line_chars_of, overflow_ratio, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text, theme_fonts
 from sdgen.inventory import find_shape, walk_shapes
-from sdgen.layout import BLOCK_GAP, CONTAIN_TOL, SlideLayout, analyse_slide, shift_shapes
+from sdgen.layout import BLOCK_GAP, CONTAIN_TOL, Box, SlideLayout, analyse_slide, shift_shapes
 from sdgen.manifest import Binding, FieldSpec, Manifest
 
 CONTINUATION_SUFFIX = " (cont.)"
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 SPILL_RATIO = 1.25
 SMALL_BOX_LINES = 4
+PICTURE_OVERLAP = 0.3
 SMALL_BOX_SHRINK_RATIO = 1.5
 MissingMode = Literal["keep", "blank", "placeholder"]
 PLACEHOLDER_ROW = "[To be completed]"
@@ -129,6 +131,11 @@ def render(
     drawn = _draw_flows(slides, manifest, content, flows or {}, skipped_slides, issues)
     kept = {k for k, m in (field_modes or {}).items() if m == "keep"} | {f.key for f in manifest.fields if f.static}
     layouts = _layouts(prs, slides, manifest, skipped_slides, issues)
+    image_ids: dict[int, set[int]] = {}
+    for spec in manifest.fields:
+        if spec.kind == "image":
+            for binding in spec.bindings:
+                image_ids.setdefault(binding.slide, set()).add(binding.shape.id)
     pending: dict[int, dict] = {}
     for spec in manifest.fields:
         if spec.key in drawn:
@@ -142,6 +149,7 @@ def render(
             continue
         if mode == "blank":
             value = None
+        written = value not in (None, "", []) and spec.kind in ("text", "bullets")
         mode = mode or missing
         if value is None or value == "" or value == []:
             if mode == "keep" or spec.kind == "image":
@@ -168,6 +176,8 @@ def render(
                 allow = binding.slide in prototypes or (continue_on is None and shape.is_placeholder)
                 room = _room(layouts.get(binding.slide), shape) if spec.kind == "table" else None
                 remaining = _apply(prs, slide, shape, spec, binding, value, issues, allow, spill=spill, theme=theme, room=room)
+                if written and binding.mode == "replace":
+                    _remove_pictures_under(slide, shape, layouts.get(binding.slide), image_ids.get(binding.slide, set()), issues, binding.slide)
                 if remaining:
                     pending.setdefault(binding.slide, {})[spec.key] = (spec, binding, remaining)
             except Exception as exc:  # keep rendering the rest of the document
@@ -255,6 +265,8 @@ def _add_extras(prs, slides: list, extras: list[ExtraSlide], subject: str, issue
                 layout = analyse_slide(clone, {binding.shape.id: extra.key}, prs.slide_height)
                 room = _room(layout, shape) if extra.spec.kind == "table" else None
                 remaining = _apply(prs, clone, shape, extra.spec, binding, value, issues, False, spill=True, theme=theme, room=room)
+                if extra.spec.kind != "table" and extra.value not in (None, "", []):
+                    _remove_pictures_under(clone, shape, layout, set(), issues, binding.slide)
                 if remaining:
                     copies = _continue_slide(prs, clone, layout, None, binding.slide, {extra.key: (extra.spec, binding, remaining)}, theme, issues, set())
             except Exception as exc:
@@ -539,6 +551,27 @@ def _spread(prs, slide, chunked: dict, theme, issues: list[RenderIssue], prepare
         copies.append(copy)
         source = copy
     return copies
+
+
+def _remove_pictures_under(slide, shape, layout: SlideLayout | None, keep_ids: set[int], issues: list[RenderIssue], number: int) -> None:
+    """A template picture under a written box illustrated another project's text; it goes."""
+    if None in (shape.left, shape.top, shape.width, shape.height):
+        return
+    box = Box(shape.left, shape.top, shape.left + shape.width, shape.top + shape.height)
+    bands = set(layout.top_band) | set(layout.bottom_band) if layout is not None else set()
+    doomed = []
+    for other in slide.shapes:
+        if other.shape_type != MSO_SHAPE_TYPE.PICTURE or other.shape_id in keep_ids or other.shape_id in bands or other.name.startswith("Flow "):
+            continue
+        if None in (other.left, other.top, other.width, other.height) or not other.width or not other.height:
+            continue
+        picture = Box(other.left, other.top, other.left + other.width, other.top + other.height)
+        overlap = picture.overlap_x(box) * max(0, min(picture.bottom, box.bottom) - max(picture.top, box.top))
+        if overlap >= PICTURE_OVERLAP * picture.width * picture.height:
+            doomed.append(other)
+    if doomed:
+        issues.append(RenderIssue(level="info", slide=number, message="template picture removed under written text (shape " + ", ".join(str(s.shape_id) for s in doomed) + ")"))
+        remove_shapes(slide, doomed)
 
 
 def _room(layout: SlideLayout | None, shape) -> int | None:

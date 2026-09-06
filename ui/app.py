@@ -607,7 +607,7 @@ def design_page() -> None:
                 try:
                     llm = get_llm(provider, **settings)
                     with st.spinner(f"Drafting the sections with {provider} before generating. This can take a minute."):
-                        result = draft_content(design.brief, blueprint, manifest, llm, original=entry.original, skip_sections=set(design.hidden) | set(design.modes))
+                        result = draft_content(design.brief, blueprint, manifest, llm, original=entry.original, skip_sections=_skipped_sections(design), token_only=_kept_sections(design))
                 except (LLMNotConfigured, LLMError) as exc:
                     st.error(str(exc))
                     st.stop()
@@ -979,6 +979,14 @@ def _remove_template(reg: Registry, target: str) -> None:
         st.session_state.pop(key, None)
 
 
+def _skipped_sections(design: Design) -> set[str]:
+    return set(design.hidden) | {k for k, m in design.modes.items() if m == "blank"}
+
+
+def _kept_sections(design: Design) -> set[str]:
+    return {k for k, m in design.modes.items() if m == "keep"}
+
+
 def _render_fields(design: Design, entry) -> tuple[dict, dict[str, str]]:
     manifest = entry.manifest
     content = load_markdown(design.content_markdown, manifest) if design.content_markdown.strip() else Content()
@@ -992,9 +1000,12 @@ def _render_fields(design: Design, entry) -> tuple[dict, dict[str, str]]:
             spec = manifest.field(key)
             if mode == "keep":
                 original = entry.original.fields.get(key) if entry.original else None
+                token = spec is not None and any(b.mode == "token" for b in spec.bindings)
                 if spec is not None and spec.static:
                     fields.pop(key, None)
                     field_modes[key] = "keep"
+                elif token and fields.get(key) not in (None, "", []):
+                    pass  # a placeholder token inside a kept slide carries this design's own words
                 elif original in (None, "", []):
                     fields.pop(key, None)
                 else:

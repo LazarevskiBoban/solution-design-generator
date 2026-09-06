@@ -149,6 +149,12 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     assert modes == {"scope": "keep"} and "scope" not in values and values["business_need"].startswith("Something long")
     values, modes = ui._render_fields(ui.Design(name="z", template="demo", modes={keys[0]: "blank"}), entry)
     assert modes["scope"] == "blank" and modes["business_need"] == "blank" and "scope" not in values
+    entry.manifest.field("business_need").bindings[0].mode = "token"
+    written_md = ui.dump_markdown(ui.Content(fields={"business_need": "Written insight"}), entry.manifest)
+    values, _ = ui._render_fields(ui.Design(name="w", template="demo", modes={keys[0]: "keep"}, content_markdown=written_md), entry)
+    assert values["business_need"] == "Written insight"
+    assert ui._skipped_sections(ui.Design(name="s", template="demo", hidden=["a"], modes={"b": "blank", "c": "keep"})) == {"a", "b"}
+    assert ui._kept_sections(ui.Design(name="s", template="demo", modes={"b": "blank", "c": "keep"})) == {"c"}
 
     ui._delete_design(DesignStore(tmp_path / "designs"), "demo", "camt-053")
     assert not (tmp_path / "designs" / "camt-053").exists()

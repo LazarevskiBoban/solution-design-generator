@@ -424,3 +424,20 @@ def test_line_budget_and_prompt_rules():
     table = {"title": "Scope", "fields": [{"key": "scope", "label": "Scope", "kind": "table", "columns": ["A", "B"], "max_chars": None, "max_lines": None, "max_rows": 3, "token": False, "guidance": ""}]}
     assert "about 3 rows fit the slide; further rows continue on a copy of it" in answer_skeleton(Brief(subject="X"), [table])
     assert "never more bullets than the field has lines" in SYSTEM_PROMPT and "never\nreuse its system names" in SYSTEM_PROMPT
+
+
+def test_kept_sections_still_write_their_tokens(sample_deck):
+    from sdgen.analyze import analyze_deck
+    from sdgen.blueprint import derive_blueprint
+    from sdgen.inventory import inspect_deck
+    from sdgen.writer import writable_sections
+
+    deck = inspect_deck(sample_deck)
+    analysis = analyze_deck(deck)
+    manifest = analysis.to_manifest("demo")
+    blueprint = derive_blueprint(deck, analysis, manifest, "demo")
+    section = next(s for s in blueprint.sections if "business_need" in s.fields)
+    manifest.field("business_need").bindings[0].mode = "token"
+    kept = writable_sections(blueprint, manifest, token_only={section.key})
+    assert [f["key"] for s in kept if s["section"] == section.key for f in s["fields"]] == ["business_need"]
+    assert not any(s["section"] == section.key for s in writable_sections(blueprint, manifest, skip_sections={section.key}))

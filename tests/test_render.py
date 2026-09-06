@@ -494,3 +494,27 @@ def test_extra_table_rows_continue_too(tmp_path):
     assert slides[1].shapes.title.text == "Acceptance" and slides[2].shapes.title.text == "Acceptance (cont.)"
     tables = [next(s for s in sl.shapes if s.has_table) for sl in slides[1:]]
     assert len(tables[0].table.rows) == 2 and len(tables[1].table.rows) == 8
+
+
+def test_template_picture_under_written_text_is_removed(tmp_path):
+    from PIL import Image as PILImage
+    from pptx.util import Inches
+    from test_layout import overview_deck
+
+    prs, slide, shapes = overview_deck()
+    image = tmp_path / "shot.png"
+    PILImage.new("RGB", (80, 40), "grey").save(image)
+    under = slide.shapes.add_picture(str(image), Inches(1), Inches(2), Inches(4), Inches(1.2))
+    under.name = "Screenshot"
+    aside = slide.shapes.add_picture(str(image), Inches(5.5), Inches(6.2), Inches(1.5), Inches(0.5))
+    aside.name = "Logo"
+    deck = tmp_path / "pictures.pptx"
+    prs.save(deck)
+    manifest = _overview_manifest(shapes)
+    result = render(deck, manifest, Content(fields={"need": "Written need.", "left": "Left", "inner": "Inner"}), tmp_path / "out.pptx")
+    names = {s.name for s in Presentation(str(tmp_path / "out.pptx")).slides[0].shapes}
+    assert "Screenshot" not in names and "Logo" in names
+    assert any("template picture removed" in i.message and str(under.shape_id) in i.message for i in result.issues)
+
+    render(deck, manifest, Content(fields={"left": "Left", "inner": "Inner"}), tmp_path / "kept.pptx")
+    assert "Screenshot" in {s.name for s in Presentation(str(tmp_path / "kept.pptx")).slides[0].shapes}

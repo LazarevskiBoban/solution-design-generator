@@ -166,7 +166,10 @@ def _looks_like_diagram(slide: SlideInfo) -> tuple[bool, str]:
 
 
 def _slide_candidates(slide: SlideInfo, diagram: bool, slide_height: float = 7.5) -> list[Candidate]:
-    labels = [s for s in slide.shapes if _is_label(s)]
+    containers = {s.id for s in slide.shapes if s.kind == "text" and not s.placeholder_type and any(o.id != s.id and _contains(s, o) for o in slide.shapes)}
+    headed = [s for s in slide.shapes if s.id in containers and s.text.strip()]
+    # A short text inside a headed box is that box's content, never a label for something else.
+    labels = [s for s in slide.shapes if _is_label(s) and not any(c.id != s.id and _contains(c, s) for c in headed)]
     title_label = _title_segment(slide)
     found: list[Candidate] = []
     used_labels: set[int] = set()
@@ -177,7 +180,7 @@ def _slide_candidates(slide: SlideInfo, diagram: bool, slide_height: float = 7.5
             if (shape.width or 0) >= IMAGE_MIN_WIDTH:
                 found.append(_image_candidate(slide, shape, title_label))
         elif shape.kind == "text":
-            found.extend(_text_candidates(slide, shape, labels, title_label, diagram, used_labels))
+            found.extend(_text_candidates(slide, shape, labels, title_label, diagram, used_labels, shape.id in containers))
     return [c for c in found if c.shape_id not in used_labels]
 
 
@@ -188,11 +191,15 @@ def _text_candidates(
     title_label: str | None,
     diagram: bool,
     used_labels: set[int],
+    container: bool = False,
 ) -> list[Candidate]:
     if shape.placeholder_type in SKIP_PLACEHOLDERS:
         return []
     text = shape.text.strip()
     if not text:
+        return []
+    if container and len(text) < LONG_TEXT:
+        # A box that holds other shapes is a frame with a heading, not a field.
         return []
     tokens = list(dict.fromkeys(TOKEN_RE.findall(text)))
     if tokens:
@@ -333,6 +340,17 @@ def _image_candidate(slide: SlideInfo, shape: ShapeInfo, title_label: str | None
 def _custom_name(shape: ShapeInfo) -> bool:
     name = shape.name.strip()
     return 0 < len(name) <= PREFIX_MAX and not GENERIC_NAME_RE.match(name)
+
+
+def _contains(outer: ShapeInfo, inner: ShapeInfo, tol: float = 0.05) -> bool:
+    if not (outer.has_geometry and inner.has_geometry):
+        return False
+    return (
+        outer.left - tol <= inner.left
+        and outer.top - tol <= inner.top
+        and inner.left + inner.width <= outer.left + outer.width + tol
+        and inner.top + inner.height <= outer.top + outer.height + tol
+    )
 
 
 def _is_label(shape: ShapeInfo) -> bool:

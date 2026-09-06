@@ -178,3 +178,27 @@ def test_table_row_budget_from_the_room_below(sample_deck):
     scope = next(c for c in analysis.candidates if c.key == "scope")
     assert scope.max_rows and scope.max_rows >= 1
     assert analysis.to_manifest("demo").field("scope").bindings[0].max_rows == scope.max_rows
+
+
+def test_containers_are_frames_and_their_short_text_is_the_field(tmp_path):
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.util import Inches
+
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    slide.shapes.title.text = "Executive Overview: Demo"
+    frame = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(1), Inches(1.5), Inches(4), Inches(2))
+    frame.text_frame.text = "Timeline per Milestone"
+    inner = slide.shapes.add_textbox(Inches(1.2), Inches(2.0), Inches(3.5), Inches(1.2))
+    inner.text_frame.text = "As per the earlier project plan"
+    header = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(6), Inches(1.5), Inches(4), Inches(1))
+    header.text_frame.text = "Demand Categorization"
+    child = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(6.2), Inches(2.0), Inches(1.5), Inches(0.4))
+    path = tmp_path / "frames.pptx"
+    prs.save(path)
+
+    analysis = analyze_deck(inspect_deck(path))
+    included = {c.key: c for c in analysis.candidates if c.include}
+    assert set(included) == {"timeline_per_milestone"}
+    assert included["timeline_per_milestone"].shape_id == inner.shape_id and included["timeline_per_milestone"].reason == "named after nearby label"
