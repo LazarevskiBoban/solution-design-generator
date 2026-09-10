@@ -3,7 +3,7 @@ from pptx.oxml.ns import qn
 from pptx.util import Inches
 
 from sdgen.brief import Brief
-from sdgen.flow import FlowEdge, FlowNode, FlowSpec, clean_flow, draw_flow, plan_flows, to_mermaid
+from sdgen.flow import SYSTEM_PROMPT, FlowEdge, FlowNode, FlowSpec, clean_flow, draw_flow, plan_flows, to_mermaid
 from sdgen.llm import MockLLM
 
 SPEC = FlowSpec(
@@ -286,3 +286,48 @@ def test_steps_are_kept_or_derived_from_the_edges():
 
     flows = plan_flows(Brief(subject="s"), [FlowRequest(section="x", title="X", purpose="")], Catcher())
     assert flows["x"].steps == ["A starts.", "A ends."]
+
+
+def test_sap_nodes_lanes_and_headings():
+    from sdgen.flow import lane_is_sap, lane_title, node_is_sap
+
+    assert [node_is_sap(n) for n in SPEC.nodes] == [False, False, False, True, True]
+    assert [lane_is_sap(SPEC, lane) for lane in ("source", "middleware", "target")] == [False, True, True]
+    assert not node_is_sap(FlowNode(id="x", label="SAP S/4HANA", icon="bank")) and node_is_sap(FlowNode(id="y", label="ERP", icon="s4hana"))
+    assert node_is_sap(FlowNode(id="z", label="Core ERP", subtitle="SAP ECC 6.0"))
+    named = SPEC.model_copy(update={"lanes": {"source": "Bank side", "target": "SAP Landscape (On-Premise)"}})
+    assert lane_title(named, "source") == "Bank side" and lane_title(named, "middleware") == "Middleware"
+    assert not lane_is_sap(named, "source") and lane_is_sap(named.model_copy(update={"lanes": {"source": "SAP side"}}), "source")
+    text = to_mermaid(named)
+    assert "  subgraph source[Bank side]" in text and '  subgraph target["SAP Landscape (On-Premise)"]' in text
+
+
+def _stub(payload):
+    class Stub:
+        name = "fake"
+
+        def complete(self, system, user):
+            return ""
+
+        def complete_json(self, system, user, schema, name="result"):
+            self.schema, self.user = schema, user
+            return payload
+
+    return Stub()
+
+
+def test_plan_flows_keeps_subtitles_and_lane_headings(tmp_path):
+    from sdgen.plan import FlowRequest
+
+    request = FlowRequest(section="x", title="X", purpose="")
+    llm = _stub({"flows": [{"section": "x", "lanes": {"source": " Bank  side ", "middleware": "", "bogus": "No"}, "nodes": [{"id": "a", "label": "Bank", "subtitle": " SWIFT  FileAct ", "lane": "source"}, {"id": "b", "label": "S/4HANA", "lane": "target"}], "edges": [{"source": "a", "target": "b"}]}]})
+    flows = plan_flows(Brief(subject="s"), [request], llm)
+    flow_schema = llm.schema["properties"]["flows"]["items"]["properties"]
+    assert "subtitle" in flow_schema["nodes"]["items"]["properties"] and list(flow_schema["lanes"]["properties"]) == ["source", "middleware", "target"]
+    assert "subtitle" in SYSTEM_PROMPT and "Lanes: a heading" in SYSTEM_PROMPT
+    spec = flows["x"]
+    assert spec.lanes == {"source": "Bank side"} and [n.subtitle for n in spec.nodes] == ["SWIFT FileAct", ""]
+    spec.save(tmp_path / "f.yaml")
+    assert FlowSpec.load(tmp_path / "f.yaml") == spec
+    odd = _stub({"flows": [{"section": "x", "lanes": "none", "nodes": [{"id": "a", "label": "A", "lane": "source"}], "edges": []}]})
+    assert plan_flows(Brief(subject="s"), [request], odd)["x"].lanes == {}

@@ -27,6 +27,11 @@ class Icon(BaseModel):
     label: str
     file: str = ""
 
+    @property
+    def sap(self) -> bool:
+        """SAP service icons and the SAP-blue generic icons; the grey generic ones are not."""
+        return self.file.endswith(("_sd.svg", "-sap.svg"))
+
 
 def icon_dir() -> Path:
     return Path(os.environ.get("SDGEN_ICONS") or DEFAULT_ICON_DIR)

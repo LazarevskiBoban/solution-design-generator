@@ -82,6 +82,7 @@ FLOW_SCHEMA = {
                             "properties": {
                                 "id": {"type": "string"},
                                 "label": {"type": "string"},
+                                "subtitle": {"type": "string"},
                                 "kind": {"type": "string", "enum": ["system", "step", "store", "external"]},
                                 "lane": {"type": "string", "enum": list(LANES)},
                             },
@@ -103,6 +104,7 @@ FLOW_SCHEMA = {
                     },
                     "notes": {"type": "string"},
                     "steps": {"type": "array", "items": {"type": "string"}},
+                    "lanes": {"type": "object", "properties": {lane: {"type": "string"} for lane in LANES}},
                 },
                 "required": ["section", "nodes", "edges"],
             },
@@ -112,11 +114,15 @@ FLOW_SCHEMA = {
 }
 
 SYSTEM_PROMPT = """You design integration flow diagrams for a solution-design document.
-For each requested diagram return its nodes and edges.
+For each requested diagram return its nodes, edges and lane headings.
 Nodes: four to nine, fewer when the diagram line caps them, each with a short label (at most
-four words), a kind (system, step, store or external) and a lane that follows the direction of
-the data: source, middleware or target. Steps that happen inside a system go in that system's
-lane, right after it. Small drawing areas get at most two lanes and few nodes.
+four words), a subtitle (at most four words naming the edition, deployment or role, such as
+"Outbound-only tunnel" or "Backend system"; empty when nothing useful), a kind (system, step,
+store or external) and a lane that follows the direction of the data: source, middleware or
+target. Steps that happen inside a system go in that system's lane, right after it. Small
+drawing areas get at most two lanes and few nodes.
+Lanes: a heading of at most five words for every lane used, naming whose landscape it is: the
+customer's system landscape, the integration platform, the partner or provider side.
 Edges: from node to node in flow order, each with a short label (at most three words) naming
 the protocol, format or trigger, and a kind: sync, async or file.
 Steps: three to eight numbered sentences a developer reads next to the diagram, one per edge in
@@ -131,6 +137,7 @@ class FlowNode(BaseModel):
     kind: NodeKind = "system"
     lane: Lane = "middleware"
     icon: str = ""  # a key of the icon catalogue, empty for a plain shape
+    subtitle: str = ""  # a second line: edition, deployment or role
 
 
 class FlowEdge(BaseModel):
@@ -146,6 +153,7 @@ class FlowSpec(BaseModel):
     edges: list[FlowEdge] = Field(default_factory=list)
     notes: str = ""
     steps: list[str] = Field(default_factory=list)  # what happens along the edges, in order
+    lanes: dict[str, str] = Field(default_factory=dict)  # a heading per lane, else the generic lane title
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(yaml.safe_dump(self.model_dump(mode="json"), sort_keys=False, allow_unicode=True, width=100), encoding="utf-8")
@@ -158,6 +166,28 @@ class FlowSpec(BaseModel):
 def uses_sap(brief: Brief) -> bool:
     """Whether the brief talks about an SAP landscape, which turns the SAP icon set on."""
     return bool(SAP_RE.search(dump_brief(brief)))
+
+
+def lane_title(spec: FlowSpec, lane: str) -> str:
+    """The lane's heading from the model, else the generic one."""
+    return spec.lanes.get(lane) or LANE_TITLES.get(lane, lane)
+
+
+def node_is_sap(node: FlowNode) -> bool:
+    """Whether a node draws in the SAP look: its icon decides, else the words of its label."""
+    icon = catalogue().get(node.icon) if node.icon else None
+    if icon is not None:
+        return icon.sap
+    return bool(SAP_RE.search(f"{node.label} {node.subtitle}"))
+
+
+def lane_is_sap(spec: FlowSpec, lane: str) -> bool:
+    """A lane draws in the SAP look when its heading says so or SAP nodes make up at least half of it."""
+    if SAP_RE.search(spec.lanes.get(lane, "")):
+        return True
+    members = [n for n in spec.nodes if n.lane == lane]
+    sap = sum(node_is_sap(n) for n in members)
+    return sap > 0 and sap >= len(members) - sap
 
 
 def plan_flows(brief: Brief, requests: list, llm: LLMClient, icons: list[str] | None = None) -> dict[str, FlowSpec]:
@@ -184,7 +214,7 @@ def plan_flows(brief: Brief, requests: list, llm: LLMClient, icons: list[str] | 
         if key not in wanted:
             continue
         try:
-            spec = FlowSpec.model_validate({k: item.get(k) or ([] if k in ("nodes", "edges", "steps") else "") for k in ("title", "nodes", "edges", "notes", "steps")})
+            spec = FlowSpec.model_validate(_payload(item))
         except ValidationError:
             continue
         spec = clean_flow(spec)
@@ -196,6 +226,19 @@ def plan_flows(brief: Brief, requests: list, llm: LLMClient, icons: list[str] | 
 def node_cap(width_in: float, height_in: float) -> int:
     """Nodes a drawing area can show readably."""
     return max(4, min(9, int(width_in * height_in / NODES_PER_SQ_IN)))
+
+
+def _payload(item: dict) -> dict:
+    """The flow fields of one model item with safe defaults, so an odd or missing field cannot sink the flow."""
+    lanes = item.get("lanes")
+    return {
+        "title": item.get("title") or "",
+        "nodes": item.get("nodes") or [],
+        "edges": item.get("edges") or [],
+        "notes": item.get("notes") or "",
+        "steps": item.get("steps") or [],
+        "lanes": {str(k): str(v) for k, v in lanes.items()} if isinstance(lanes, dict) else {},
+    }
 
 
 def _area_hint(request) -> str:
@@ -223,14 +266,15 @@ def clean_flow(spec: FlowSpec) -> FlowSpec:
         if not node_id or node_id in seen or not node.label.strip():
             continue
         seen.add(node_id)
-        nodes.append(node.model_copy(update={"id": node_id, "label": " ".join(node.label.split()), "icon": node.icon if node.icon in known else ""}))
+        nodes.append(node.model_copy(update={"id": node_id, "label": " ".join(node.label.split()), "subtitle": " ".join(node.subtitle.split()), "icon": node.icon if node.icon in known else ""}))
     edges = []
     for edge in spec.edges:
         source, target = _ident(edge.source), _ident(edge.target)
         if source in seen and target in seen and source != target:
             edges.append(edge.model_copy(update={"source": source, "target": target, "label": " ".join(edge.label.split())}))
     steps = [" ".join(str(s).split()) for s in spec.steps if str(s).strip()]
-    return spec.model_copy(update={"nodes": nodes, "edges": edges, "steps": steps})
+    lanes = {lane: " ".join(str(title).split()) for lane, title in spec.lanes.items() if lane in LANES and str(title).strip()}
+    return spec.model_copy(update={"nodes": nodes, "edges": edges, "steps": steps, "lanes": lanes})
 
 
 def flow_steps(spec: FlowSpec) -> list[str]:
@@ -257,7 +301,7 @@ def to_mermaid(spec: FlowSpec) -> str:
         members = [n for n in spec.nodes if n.lane == lane]
         if not members:
             continue
-        lines.append(f"  subgraph {lane}[{LANE_TITLES[lane]}]")
+        lines.append(f"  subgraph {lane}[{_mermaid_title(lane_title(spec, lane))}]")
         for node in members:
             label = node.label.replace('"', "'")
             if node.kind == "step":
@@ -576,3 +620,8 @@ def _arrow_head(connector) -> None:
 
 def _ident(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "").strip()).strip("_")
+
+
+def _mermaid_title(text: str) -> str:
+    # Brackets and other punctuation inside a subgraph title need the quoted form.
+    return text if re.fullmatch(r"[A-Za-z0-9 _-]+", text) else '"' + text.replace('"', "'") + '"'

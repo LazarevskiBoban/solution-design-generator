@@ -13,6 +13,12 @@ def test_every_key_has_a_file_from_the_sap_repository():
         assert icon.file.endswith("_sd.svg") or (icon.file.startswith("generic-") and icon.file.endswith(("-sap.svg", "-nonsap.svg"))), icon.key
 
 
+def test_sap_icons_are_told_apart_by_file_name():
+    entries = icons.catalogue()
+    assert entries["s4hana"].sap and entries["btp_integration_suite"].sap and not entries["bank"].sap
+    assert not icons.Icon(key="x", label="X", file="generic-cloud-nonsap.svg").sap and not icons.Icon(key="y", label="Y").sap
+
+
 def test_library_svgs_are_named_after_the_catalogue():
     import base64
     import json
