@@ -184,6 +184,47 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     assert not (registry_with_demo / "demo").exists() and store.names() == [] and not (tmp_path / "designs" / "second").exists()
 
 
+def test_reference_material_can_be_added_and_removed(registry_with_demo, tmp_path, monkeypatch):
+    import io
+
+    from PIL import Image
+
+    import sdgen.material as material
+
+    monkeypatch.setattr(material, "fetch_link", lambda url, **_: ("ISO 20022", "Page text 12345", "fetched 2026-09-10"))
+    app = AppTest.from_file(str(APP), default_timeout=60).run()
+    app.text_input(key="design_name:demo").input("Lockbox").run()
+    state_key = "design:demo:lockbox"
+    assert any("Reference material" in m.value for m in app.markdown)
+    app.text_area(key=f"{state_key}:0:mat:paste").input("reception, emission, tmp")
+    app.text_input(key=f"{state_key}:0:mat:title").input("Folder layout")
+    app.run()
+    app.button(key=f"{state_key}:mat:add").click().run()
+    assert not app.exception
+    items = app.session_state[state_key].brief.material
+    assert [(m.kind, m.title, m.text, m.status) for m in items] == [("text", "Folder layout", "reception, emission, tmp", "pasted")]
+    app.text_input(key=f"{state_key}:1:mat:link").input("https://example.org/iso").run()
+    app.button(key=f"{state_key}:mat:add").click().run()
+    assert not app.exception
+    items = app.session_state[state_key].brief.material
+    assert (items[1].kind, items[1].title, items[1].text, items[1].status, items[1].url) == ("link", "ISO 20022", "Page text 12345", "fetched 2026-09-10", "https://example.org/iso")
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), "blue").save(buffer, format="PNG")
+    app.file_uploader(key=f"{state_key}:2:mat:files").set_value([("sketch.png", buffer.getvalue(), "image/png")]).run()
+    app.button(key=f"{state_key}:mat:add").click().run()
+    assert not app.exception
+    items = app.session_state[state_key].brief.material
+    assert items[2].kind == "image" and items[2].file.endswith("-sketch.png") and items[2].status.startswith("not transcribed (mock provider)")
+    folder = tmp_path / "designs" / "lockbox"
+    material_yaml = (folder / "material.yaml").read_text(encoding="utf-8")
+    assert "Folder layout" in material_yaml and "ISO 20022" in material_yaml and (folder / "material" / items[2].file).is_file()
+    app.text_area(key=f"{state_key}:3:mat:text:{items[2].id}").input("Bank -> SFTP -> S/4").run()
+    assert app.session_state[state_key].brief.material[2].text == "Bank -> SFTP -> S/4"
+    app.button(key=f"{state_key}:mat:rm:{items[2].id}").click().run()
+    assert not app.exception and not (folder / "material" / items[2].file).exists() and len(app.session_state[state_key].brief.material) == 2
+    assert "sketch" not in (folder / "material.yaml").read_text(encoding="utf-8")
+
+
 def test_design_page_picks_the_reasoning_deployment(registry_with_demo, monkeypatch):
     monkeypatch.setenv("SDGEN_LLM", "azure")
     monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1,gpt-5,gpt-4o-mini")

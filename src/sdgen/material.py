@@ -157,49 +157,66 @@ def describe_image(llm: LLMClient, data: bytes, mime: str, hint: str = "") -> st
     return llm.complete(TRANSCRIBE_SYSTEM, user, images=[(data, mime)]).strip()
 
 
-BLOCK_TAGS = {"p", "div", "br", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "table", "section", "article", "header", "footer", "pre", "blockquote", "dd", "dt", "hr"}
-SKIP_TAGS = {"script", "style", "noscript", "svg", "template"}
+BLOCK_TAGS = {"p", "div", "br", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "table", "section", "article", "main", "header", "pre", "blockquote", "dd", "dt", "hr"}
+SKIP_TAGS = {"script", "style", "noscript", "svg", "template", "nav", "aside", "footer"}
+MAIN_TAGS = {"main", "article"}
 
 
 class _TextExtractor(HTMLParser):
+    """Collects the readable text of a page; when the page marks its main content, only that part counts."""
+
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
+        self.main: list[str] = []
         self.title = ""
         self._skip = 0
+        self._in_main = 0
         self._in_title = False
 
     def handle_starttag(self, tag, attrs) -> None:
         if tag in SKIP_TAGS:
             self._skip += 1
-        elif tag == "title":
+            return
+        if tag == "title":
             self._in_title = True
-        elif tag in BLOCK_TAGS:
-            self.parts.append("\n")
+        if tag in MAIN_TAGS:
+            self._in_main += 1
+        if tag in BLOCK_TAGS:
+            self._emit("\n")
         elif tag in ("td", "th"):
-            self.parts.append(" ")
+            self._emit(" ")
 
     def handle_endtag(self, tag) -> None:
         if tag in SKIP_TAGS:
             self._skip = max(0, self._skip - 1)
-        elif tag == "title":
+            return
+        if tag == "title":
             self._in_title = False
-        elif tag in BLOCK_TAGS:
-            self.parts.append("\n")
+        if tag in BLOCK_TAGS:
+            self._emit("\n")
+        if tag in MAIN_TAGS:
+            self._in_main = max(0, self._in_main - 1)
 
     def handle_data(self, data) -> None:
         if self._in_title:
             self.title += data
         elif not self._skip:
-            self.parts.append(data)
+            self._emit(data)
+
+    def _emit(self, text: str) -> None:
+        self.parts.append(text)
+        if self._in_main:
+            self.main.append(text)
 
 
 def html_to_text(page: str) -> tuple[str, str]:
-    """(title, readable text) of an HTML page: scripts and styles dropped, one line per block."""
+    """(title, readable text) of an HTML page: navigation, scripts and styles dropped, one line per block, the main content when the page marks it."""
     parser = _TextExtractor()
     parser.feed(page)
     parser.close()
-    lines = [" ".join(line.split()) for line in "".join(parser.parts).splitlines()]
+    body = "".join(parser.main) if "".join(parser.main).strip() else "".join(parser.parts)
+    lines = [" ".join(line.split()) for line in body.splitlines()]
     return " ".join(parser.title.split()), "\n".join(line for line in lines if line)
 
 
@@ -222,6 +239,9 @@ def fetch_link(url: str, opener=urlopen) -> tuple[str, str, str]:
         return "", "", f"fetch failed ({getattr(exc, 'reason', None) or exc}): paste an excerpt"
     page = raw.decode(charset, errors="replace")
     title, text = html_to_text(page) if content_type.startswith("text/html") else ("", page.strip())
+    if not text:
+        # Portals behind a login answer with an empty script shell rather than an error.
+        return title, "", "fetch failed (empty page, probably behind a login): paste an excerpt"
     if len(text) > PAGE_MAX:
         text = text[:PAGE_MAX] + f"\n[... truncated, {len(text) - PAGE_MAX} more characters]"
     return title, text, f"fetched {now()[:10]}"

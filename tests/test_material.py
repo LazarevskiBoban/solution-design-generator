@@ -72,6 +72,9 @@ def test_html_to_text_drops_scripts_and_keeps_blocks():
     page = "<html><head><title> ISO   20022 </title><style>p{}</style></head><body><script>var x=1;</script><h1>Heading</h1><p>First <b>para</b>.</p><ul><li>one</li><li>two</li></ul><table><tr><td>A</td><td>B</td></tr></table><noscript>no</noscript></body></html>"
     title, text = html_to_text(page)
     assert title == "ISO 20022" and text.splitlines() == ["Heading", "First para.", "one", "two", "A B"] and "var x" not in text
+    framed = "<body><nav><a>Main menu</a></nav><header>Site</header><main><h1>Article</h1><p>Body text.</p></main><aside>Related</aside><footer>Legal</footer></body>"
+    assert html_to_text(framed)[1].splitlines() == ["Article", "Body text."]
+    assert html_to_text("<body><nav>Menu</nav><p>Plain page</p></body>")[1] == "Plain page"
 
 
 def _fake_response(body: bytes, content_type: str = "text/html; charset=utf-8", charset: str = "utf-8"):
@@ -111,6 +114,8 @@ def test_fetch_link_extracts_readable_text_and_reports_failures():
     long = fetch_link("https://example.org/l", opener=lambda r, timeout: _fake_response(b"<p>" + b"a" * (PAGE_MAX + 5) + b"</p>"))
     assert long[1].endswith("[... truncated, 5 more characters]")
     assert fetch_link("ftp://example.org")[2] == "fetch failed (not an http(s) link): paste an excerpt"
+    shell = fetch_link("https://portal.example.org/note", opener=lambda r, timeout: _fake_response(b"<html><head><title>Portal</title></head><body><script>boot()</script></body></html>"))
+    assert shell == ("Portal", "", "fetch failed (empty page, probably behind a login): paste an excerpt")
     assert fetch_link("https://example.org/pdf", opener=lambda r, timeout: _fake_response(b"%PDF", "application/pdf"))[2] == "fetch failed (not a text page): paste an excerpt"
 
     def forbidden(request, timeout=0):

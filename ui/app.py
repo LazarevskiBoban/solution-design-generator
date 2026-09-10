@@ -22,6 +22,7 @@ from sdgen.manifest import FieldSpec, GlobalSpec, Manifest
 from sdgen.mapping.extract import extract_fields
 from sdgen.mapping.model import MappingEntry, MappingSet, SourceSpec, TargetSpec
 from sdgen.mapping.workbook import write_workbook
+from sdgen import material as materials
 from sdgen.drawio import to_drawio
 from sdgen.flow import plan_flows, to_mermaid, uses_sap, walkthrough_text
 from sdgen.icons import icon_keys, installed_keys
@@ -450,6 +451,9 @@ def design_page() -> None:
                     st.rerun()
             if st.session_state.get(f"{state_key}:facts_note"):
                 st.info(st.session_state[f"{state_key}:facts_note"])
+        st.markdown("**Reference material**")
+        st.caption("Pictures of diagrams, notes and links the model reads next to the brief. A picture is transcribed once into text you can correct; the picture itself also goes to the model when it draws a diagram. Tag an item with the slides it is about, or leave it for all of them.")
+        _material_editor(state_key, prefix, version, design, store, blueprint, provider, settings)
         _complete_section(state_key, design, store, "brief", present)
 
     with st.expander(_plan_title(design), expanded=step == "plan", icon=_done("plan" in design.completed), key=_expander_key(state_key, "plan", step)):
@@ -1346,6 +1350,90 @@ def _merge_draft(current: dict, last: dict, fresh: dict) -> dict:
     return merged
 
 
+def _material_editor(state_key: str, prefix: str, version: int, design: Design, store: DesignStore, blueprint, provider: str, settings: dict) -> None:
+    """The reference material of the brief: existing items with their editable text, then the form that adds pictures, text or a link."""
+    options = [s.key for s in blueprint.sections if s.kind not in ("cover", "static", "divider") and not s.generated and not s.key.startswith("extra_")]
+    names = {s.key: design.titles.get(s.key, s.title) for s in blueprint.sections}
+    for item in design.brief.material:
+        with st.container(border=True):
+            col_text, col_meta = st.columns([3, 2])
+            with col_text:
+                st.markdown(f"**{item.label}** ({item.kind})")
+                item.text = st.text_area("Text the model reads", key=_init(f"{prefix}mat:text:{item.id}", item.text), height=140, label_visibility="collapsed", placeholder="No text yet.")
+            with col_meta:
+                st.caption(" · ".join(x for x in (item.status or "added", item.added[:10], item.url, item.file) if x))
+                if item.note:
+                    st.caption(f"Note: {item.note}")
+                item.tags = st.multiselect("For these slides (empty: all)", options, key=_init(f"{prefix}mat:tags:{item.id}", [t for t in item.tags if t in options]), format_func=lambda key: names.get(key, key))
+                col_redo, col_remove = st.columns(2)
+                with col_redo:
+                    if item.kind == "image" and st.button("Transcribe again", key=f"{state_key}:mat:redo:{item.id}"):
+                        path = store.material_path(design, item)
+                        _transcribe(item, path.read_bytes() if path is not None and path.is_file() else b"", provider, settings)
+                        _refresh_material(state_key, design, store, version)
+                    if item.kind == "link" and st.button("Fetch again", key=f"{state_key}:mat:redo:{item.id}"):
+                        title, text, item.status = materials.fetch_link(item.url)
+                        item.text, item.title = text or item.text, item.title or title
+                        _refresh_material(state_key, design, store, version)
+                with col_remove:
+                    if st.button("Remove", key=f"{state_key}:mat:rm:{item.id}"):
+                        store.remove_material(design, item.id)
+                        _refresh_material(state_key, design, store, version)
+    files = st.file_uploader("Pictures (PNG, JPG) or text files (Markdown, Mermaid, draw.io, CSV, XML, JSON)", type=[*materials.IMAGE_TYPES, *materials.TEXT_TYPES], accept_multiple_files=True, key=f"{prefix}mat:files")
+    pasted = st.text_area("Or paste text: notes, Markdown, Mermaid", key=f"{prefix}mat:paste", height=100)
+    link = st.text_input("Or a link", key=f"{prefix}mat:link", placeholder="https://", help="Public pages are fetched once and kept as text. Pages behind a login cannot be read: paste the relevant part as text instead.")
+    col_title, col_note = st.columns(2)
+    with col_title:
+        title = st.text_input("Title", key=f"{prefix}mat:title", placeholder="optional")
+    with col_note:
+        note = st.text_input("What it shows or why it matters", key=f"{prefix}mat:note", placeholder="optional")
+    tags = st.multiselect("For these slides (empty: all)", options, key=f"{prefix}mat:newtags", format_func=lambda key: names.get(key, key))
+    nothing = not files and not pasted.strip() and not link.strip()
+    if st.button("Add to the brief", key=f"{state_key}:mat:add", disabled=nothing):
+        added = _add_material(design, store, files or [], pasted, link, title, note, tags, provider, settings)
+        st.session_state[f"{state_key}:mat_note"] = "Added: " + ", ".join(added) + "." if added else "Nothing added."
+        _refresh_material(state_key, design, store, version)
+    if st.session_state.get(f"{state_key}:mat_note"):
+        st.info(st.session_state.pop(f"{state_key}:mat_note"))
+
+
+def _add_material(design: Design, store: DesignStore, files: list, pasted: str, link: str, title: str, note: str, tags: list[str], provider: str, settings: dict) -> list[str]:
+    added: list[str] = []
+    for file in files:
+        name, data = file.name, file.getvalue()
+        if Path(name).suffix.lower().lstrip(".") in materials.IMAGE_TYPES:
+            item = store.add_material(design, materials.new_material("image", title=title or Path(name).stem, note=note, tags=tags), data, file_name=name)
+            _transcribe(item, data, provider, settings)
+        else:
+            item = store.add_material(design, materials.new_material("text", title=title or Path(name).stem, note=note, tags=tags, text=materials.text_from_upload(name, data), status="uploaded"), data, file_name=name)
+        added.append(item.label)
+    if pasted.strip():
+        added.append(store.add_material(design, materials.new_material("text", title=title or "Pasted text", note=note, tags=tags, text=pasted.strip(), status="pasted")).label)
+    if link.strip():
+        page_title, text, status = materials.fetch_link(link)
+        added.append(store.add_material(design, materials.new_material("link", title=title or page_title or link.strip(), note=note, tags=tags, url=link.strip(), text=text, status=status)).label)
+    return added
+
+
+def _transcribe(item: materials.Material, data: bytes, provider: str, settings: dict) -> None:
+    if provider == "mock":
+        item.status = "not transcribed (mock provider): pick an AI provider and press Transcribe again"
+        return
+    try:
+        llm = get_llm(provider, **settings)
+        with st.spinner(f"Reading {item.label}."):
+            item.text = materials.describe_image(llm, data, materials.mime_of(item.file), hint=" ".join(x for x in (item.title, item.note) if x))
+        item.status = f"transcribed with {getattr(llm, 'label', llm.name)} on {materials.now()[:10]}"
+    except (LLMNotConfigured, LLMError, ValueError) as exc:
+        item.status = f"transcription failed: {exc}"
+
+
+def _refresh_material(state_key: str, design: Design, store: DesignStore, version: int) -> None:
+    store.save(design)
+    st.session_state[f"{state_key}:v"] = version + 1
+    st.rerun()
+
+
 def _draw_flows_for(state_key: str, design: Design, store: DesignStore, sections: list, requests: dict, provider: str, settings: dict) -> None:
     try:
         llm = get_llm(provider, **settings)
@@ -1353,7 +1441,7 @@ def _draw_flows_for(state_key: str, design: Design, store: DesignStore, sections
         wanted = [requests.get(s.key) or FlowRequest(section=s.key, title=design.titles.get(s.key, s.title), purpose=s.ask) for s in sections]
         wanted = _sized_requests(design, sections, wanted)
         with st.spinner("Designing the diagrams."):
-            specs = plan_flows(design.brief, wanted, planner, icons=_flow_icons(design))
+            specs = plan_flows(design.brief, wanted, planner, icons=_flow_icons(design), images=store.material_images(design, {s.key for s in sections}))
     except (LLMNotConfigured, LLMError) as exc:
         st.error(str(exc))
         return
