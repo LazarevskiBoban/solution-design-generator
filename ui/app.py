@@ -27,6 +27,7 @@ from sdgen.flow import plan_flows, to_mermaid, uses_sap, walkthrough_text
 from sdgen.icons import icon_keys, installed_keys
 from sdgen.plan import SOURCES, WALKTHROUGH_SUFFIX, FlowRequest, SectionDecision, SectionPlan, active_extras, apply_plan, extended_blueprint, extended_manifest, extra_slides, leftover_texts, plan_sections, walkthrough_extras
 from sdgen.preview import export_slides
+from sdgen.references import lookup as lookup_reference
 from sdgen.registry import Registry, safe_name
 from sdgen.tools import AnalyzeRequest, RenderRequest, analyze_template, continuation_slides, render_document
 from sdgen.writer import draft_content, extract_facts, redraft_section, writable_sections
@@ -535,7 +536,8 @@ def design_page() -> None:
                 col_draw, col_drawio, col_mermaid, col_remove = st.columns(4)
                 if flow is not None:
                     chosen = design.diagram_formats.get(section.key, design.diagram_format)
-                    st.caption("Drawn from the brief: " + " → ".join(n.label for n in flow.nodes[:6]) + (" …" if len(flow.nodes) > 6 else "") + f". Format: {DIAGRAM_FORMATS.get(chosen, chosen)}." + (" Open the file, adjust it, export a PNG and upload it above to replace the drawing." if chosen != "shapes" else "") + (" A how-it-works slide follows it." if section.key in walked else " The slide's own text explains it."))
+                    reference = lookup_reference(flow.reference)
+                    st.caption("Drawn from the brief: " + " → ".join(n.label for n in flow.nodes[:6]) + (" …" if len(flow.nodes) > 6 else "") + f". Format: {DIAGRAM_FORMATS.get(chosen, chosen)}." + (" Open the file, adjust it, export a PNG and upload it above to replace the drawing." if chosen != "shapes" else "") + (" A how-it-works slide follows it." if section.key in walked else " The slide's own text explains it.") + (f" Reference: [{reference[1].title}]({reference[0].url(reference[1])})." if reference else ""))
                     with col_draw:
                         if st.button("Redraw from brief", key=f"{state_key}:draw:{section.key}"):
                             _diagram_format_dialog(state_key, [section], requests, provider, settings)

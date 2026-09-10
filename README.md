@@ -25,8 +25,12 @@ sdgen ui
   non-functional facts and a decisions log for the developers) and answer the facts the
   template needs (dates, version, people, systems, counterparts, countries, targets, effort,
   investment, SAP objects); the app derives that list from the template's fields. Upload
-  diagram images, draft the sections, review them, generate. Designs are saved under
-  `designs/<name>/`; facts live in `brief.md` as `## fact:<key>` sections.
+  diagram images or let the app draw the flows from the brief, draft the sections, review them,
+  generate. Designs are saved under `designs/<name>/`; facts live in `brief.md` as
+  `## fact:<key>` sections. Drawn flows follow the conventions of the vendor's public reference
+  architectures (SAP Architecture Center first, see `assets/refs/README.md`): tinted lane
+  containers, uniform nodes with an icon and a subtitle, and a link to the closest reference
+  architecture; the same drawing is kept as a draw.io file next to the design.
 - **Mappings**: upload the target API definition (EDMX metadata, XSD or a sample payload) and
   one sample per source; map fields in a grid per source; download the workbook; push the
   summary into the brief.
@@ -67,6 +71,8 @@ sdgen preview out.pptx --pdf out.pdf      # open in PowerPoint to verify, export
 sdgen mapping extract sample.xml          # fields in a sample or schema
 sdgen mapping new camt --target metadata.xml --source "Bank A=a.xml" -o mappings.yaml
 sdgen mapping workbook mappings.yaml -o mapping.xlsx
+sdgen icons --fetch                       # diagram icons from the SAP BTP Solution Diagrams library
+sdgen refs --fetch                        # reference architecture sources of every pack (assets/refs/)
 pytest
 ```
 

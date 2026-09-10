@@ -360,3 +360,34 @@ def test_plan_flows_keeps_subtitles_and_lane_headings(tmp_path):
     assert FlowSpec.load(tmp_path / "f.yaml") == spec
     odd = _stub({"flows": [{"section": "x", "lanes": "none", "nodes": [{"id": "a", "label": "A", "lane": "source"}], "edges": []}]})
     assert plan_flows(Brief(subject="s"), [request], odd)["x"].lanes == {}
+
+
+def test_plan_flows_offers_the_matching_reference_pack(tmp_path, monkeypatch):
+    from sdgen.plan import FlowRequest
+
+    monkeypatch.setenv("SDGEN_REFS", str(tmp_path))
+    request = FlowRequest(section="x", title="X", purpose="")
+    sap_brief = Brief(subject="Lockbox", about="Files reach SAP S/4HANA through Cloud Integration as IDocs.")
+    answer = {"flows": [{"section": "x", "reference": "sap:RA0021", "nodes": [{"id": "a", "label": "A", "lane": "source"}], "edges": []}]}
+    llm = _stub(answer)
+    flows = plan_flows(sap_brief, [request], llm)
+    enum = llm.schema["properties"]["flows"]["items"]["properties"]["reference"]["enum"]
+    assert "sap:RA0021" in enum and "" in enum and len(enum) == 34
+    assert "# SAP Architecture Center reference architectures" in llm.user and "sap:RA0021 | Application to Application Integration" in llm.user
+    assert "How SAP Architecture Center names" not in llm.user and "Reference:" in SYSTEM_PROMPT
+    assert flows["x"].reference == "sap:RA0021"
+    flows["x"].save(tmp_path / "f.yaml")
+    assert FlowSpec.load(tmp_path / "f.yaml").reference == "sap:RA0021"
+    # a fetched kit adds the block names of the closest reference diagrams
+    folder = tmp_path / "sap" / "RA0021" / "drawio"
+    folder.mkdir(parents=True)
+    (folder / "a.drawio").write_text('<mxfile><diagram id="d" name="n"><mxGraphModel><root><mxCell id="1" value="SAP Cloud Connector" vertex="1"/></root></mxGraphModel></diagram></mxfile>', encoding="utf-8")
+    kit = _stub({"flows": []})
+    plan_flows(sap_brief, [request], kit)
+    assert "# How SAP Architecture Center names the blocks" in kit.user and "- Application to Application Integration: SAP Cloud Connector" in kit.user
+    # a brief about another system sees no catalogue and no reference property
+    plain = _stub(answer)
+    plan_flows(Brief(subject="Payroll", about="Workday sends files to the payroll provider."), [request], plain)
+    assert "reference" not in plain.schema["properties"]["flows"]["items"]["properties"] and "reference architectures" not in plain.user
+    assert clean_flow(FlowSpec(nodes=[FlowNode(id="a", label="A")], reference="sap:RA9999")).reference == ""
+    assert clean_flow(FlowSpec(nodes=[FlowNode(id="a", label="A")], reference=" sap:RA0022 ")).reference == "sap:RA0022"

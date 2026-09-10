@@ -17,6 +17,7 @@ from sdgen.brief import Brief, dump_brief
 from sdgen.icons import catalogue, icon_keys, icon_png
 from sdgen.llm import LLMClient
 from sdgen.palette import EDGE, GREY_FILL, SAP_BLUE, SAP_DARK, SAP_FILL, SLATE, SUBTITLE, TEXT, WHITE, rgb
+from sdgen.references import Pack, candidates, labels, lookup, matching
 from sdgen.references import pack as reference_pack
 from sdgen.textmetrics import FontSpec, text_width_pt
 
@@ -121,6 +122,8 @@ the protocol, format or trigger, and a kind: sync, async or file.
 Steps: three to eight numbered sentences a developer reads next to the diagram, one per edge in
 flow order: what is sent, over what, and what happens when it fails where the brief says so.
 Use only systems, protocols and steps named in the brief and the facts; never example names.
+Reference: when reference architectures are listed, give each diagram the id of the closest one
+(or an empty string) and name the blocks the way the listed reference diagrams do where it fits.
 Return only JSON matching the schema."""
 
 
@@ -147,6 +150,7 @@ class FlowSpec(BaseModel):
     notes: str = ""
     steps: list[str] = Field(default_factory=list)  # what happens along the edges, in order
     lanes: dict[str, str] = Field(default_factory=dict)  # a heading per lane, else the generic lane title
+    reference: str = ""  # "<system>:<id>" of the closest reference architecture, empty when none
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(yaml.safe_dump(self.model_dump(mode="json"), sort_keys=False, allow_unicode=True, width=100), encoding="utf-8")
@@ -198,6 +202,10 @@ def plan_flows(brief: Brief, requests: list, llm: LLMClient, icons: list[str] | 
         schema = _schema_with_icons(icons)
         known = catalogue()
         lines += ["", "# Icon keys: give every node the closest one; SAP systems take SAP keys, other systems the non-SAP ones", "; ".join(f"{k} = {known[k].label}" if k in known else k for k in icons)]
+    packs = matching(brief.facts_text() + "\n" + dump_brief(brief))
+    if packs:
+        schema = _schema_with_references(schema, packs)
+        lines += _reference_lines(packs, brief.facts_text() + "\n" + dump_brief(brief))
     lines += ["", "# Facts", brief.facts_text() or "(none)", "", "# Brief", dump_brief(brief)]
     data = llm.complete_json(SYSTEM_PROMPT, "\n".join(lines), schema, name="flows")
     wanted = {request.section for request in requests}
@@ -231,6 +239,7 @@ def _payload(item: dict) -> dict:
         "notes": item.get("notes") or "",
         "steps": item.get("steps") or [],
         "lanes": {str(k): str(v) for k, v in lanes.items()} if isinstance(lanes, dict) else {},
+        "reference": str(item.get("reference") or ""),
     }
 
 
@@ -250,6 +259,29 @@ def _schema_with_icons(icons: list[str]) -> dict:
     return schema
 
 
+def _schema_with_references(schema: dict, packs: list[Pack]) -> dict:
+    import copy
+
+    schema = copy.deepcopy(schema)
+    ids = [p.qualified(r) for p in packs for r in p.entries]
+    schema["properties"]["flows"]["items"]["properties"]["reference"] = {"type": "string", "enum": ids + [""]}
+    return schema
+
+
+def _reference_lines(packs: list[Pack], text: str) -> list[str]:
+    """The catalogue of every matching pack and, when fetched, the block names of its closest reference diagrams."""
+    lines: list[str] = []
+    for found in packs:
+        lines += ["", f"# {found.name} reference architectures: give every diagram the id of the closest one, or empty"]
+        lines += [f"- {found.qualified(r)} | {r.title} | {r.summary}" for r in found.entries]
+        named = [(r, labels(found.system, r.id)) for r in candidates(found, text)]
+        named = [(r, words) for r, words in named if words]
+        if named:
+            lines += ["", f"# How {found.name} names the blocks in the closest reference diagrams"]
+            lines += [f"- {r.title}: " + "; ".join(words) for r, words in named]
+    return lines
+
+
 def clean_flow(spec: FlowSpec) -> FlowSpec:
     seen: set[str] = set()
     known = set(icon_keys())
@@ -267,7 +299,8 @@ def clean_flow(spec: FlowSpec) -> FlowSpec:
             edges.append(edge.model_copy(update={"source": source, "target": target, "label": " ".join(edge.label.split())}))
     steps = [" ".join(str(s).split()) for s in spec.steps if str(s).strip()]
     lanes = {lane: " ".join(str(title).split()) for lane, title in spec.lanes.items() if lane in LANES and str(title).strip()}
-    return spec.model_copy(update={"nodes": nodes, "edges": edges, "steps": steps, "lanes": lanes})
+    reference = spec.reference.strip() if lookup(spec.reference.strip()) else ""
+    return spec.model_copy(update={"nodes": nodes, "edges": edges, "steps": steps, "lanes": lanes, "reference": reference})
 
 
 def flow_steps(spec: FlowSpec) -> list[str]:

@@ -9,6 +9,7 @@ from lxml import etree
 from sdgen.flow import LANES, FlowNode, FlowSpec, lane_is_sap, lane_title, node_is_sap
 from sdgen.icons import icon_file
 from sdgen.palette import EDGE, GREY_FILL, SAP_BLUE, SAP_DARK, SAP_FILL, SLATE, SUBTITLE, WHITE, css
+from sdgen.references import lookup
 
 MARGIN, LANE_GAP, PAD, HEADER = 40, 80, 20, 44
 NODE_W, NODE_H, NODE_GAP = 200, 55, 26  # the gap holds a 10 px edge label between stacked nodes
@@ -23,6 +24,8 @@ NODE = BOX + "verticalAlign=middle;align=center;"
 NODE_ICON = f"shape=label;spacing=6;imageWidth={ICON};imageHeight={ICON};imageAlign=left;imageVerticalAlign=middle;spacingLeft={ICON + 4};align=left;"
 TITLE = "text;html=1;align=left;verticalAlign=middle;fontStyle=1;fontSize=12;fontFamily=Helvetica;whiteSpace=wrap;"
 LOGO = "image;image=img/lib/sap/SAP_Logo.svg;imageAspect=0;"  # ships with draw.io
+FOOTNOTE = f"text;html=1;align=left;verticalAlign=middle;fontSize=10;fontFamily=Helvetica;whiteSpace=wrap;fontColor={css(SLATE)};"
+FOOTNOTE_H = 30
 EDGE_STYLE = f"edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor={css(EDGE)};strokeWidth=1.5;endArrow=block;endFill=1;fontSize=10;fontFamily=Helvetica;labelBackgroundColor={css(WHITE)};"
 
 
@@ -32,8 +35,9 @@ def to_drawio(spec: FlowSpec, icons: dict[str, Path] | None = None) -> str:
     diagram = etree.SubElement(mxfile, "diagram", id="flow", name=spec.title or "Flow")
     lanes = [lane for lane in LANES if any(n.lane == lane for n in spec.nodes)]
     tallest = max((sum(1 for n in spec.nodes if n.lane == lane) for lane in lanes), default=0)
+    reference = lookup(spec.reference)
     width = 2 * MARGIN + len(lanes) * LANE_W + max(0, len(lanes) - 1) * LANE_GAP
-    height = 2 * MARGIN + _lane_height(tallest)
+    height = 2 * MARGIN + _lane_height(tallest) + (FOOTNOTE_H + PAD if reference else 0)
     model = etree.SubElement(diagram, "mxGraphModel", dx="1200", dy="800", grid="1", gridSize="10", guides="1", tooltips="1", connect="1", arrows="1", fold="1", page="1", pageScale="1", pageWidth=str(max(width, PAGE_W)), pageHeight=str(max(height, PAGE_H)))
     root = etree.SubElement(model, "root")
     etree.SubElement(root, "mxCell", id="0")
@@ -64,6 +68,10 @@ def to_drawio(spec: FlowSpec, icons: dict[str, Path] | None = None) -> str:
         style = EDGE_STYLE + _ports(placed[edge.source], placed[edge.target]) + ("dashed=1;" if edge.kind != "sync" else "")
         cell = etree.SubElement(root, "mxCell", id=f"e_{number}", value=html.escape(edge.label), style=style, edge="1", parent="1", source=f"n_{edge.source}", target=f"n_{edge.target}")
         etree.SubElement(cell, "mxGeometry", relative="1", **{"as": "geometry"})
+    if reference is not None:
+        found, entry = reference
+        text = f"Reference: {found.name}, {entry.title} ({found.url(entry)})"
+        _vertex(root, "reference", html.escape(text), FOOTNOTE, MARGIN, MARGIN + _lane_height(tallest) + PAD, max(width - 2 * MARGIN, 600), FOOTNOTE_H, "1")
     return etree.tostring(mxfile, encoding="unicode", pretty_print=True)
 
 

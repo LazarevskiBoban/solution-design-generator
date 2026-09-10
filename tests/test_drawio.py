@@ -60,3 +60,12 @@ def test_drawio_writes_subtitles_and_headings():
     two = SPEC.model_copy(update={"nodes": [n for n in SPEC.nodes if n.lane != "target"], "edges": SPEC.edges[:1]})
     root, cells = _cells(two, {})
     assert "lane_target" not in cells and "lane_middleware" in cells
+
+
+def test_drawio_adds_the_reference_footnote():
+    root, cells = _cells(SPEC.model_copy(update={"reference": "sap:RA0021"}), {})
+    note = cells["reference"]
+    assert note.get("value") == "Reference: SAP Architecture Center, Application to Application Integration (https://architecture.learning.sap.com/docs/ref-arch/6501d5)"
+    lane = cells["lane_target"].find("mxGeometry")
+    assert float(note.find("mxGeometry").get("y")) >= float(lane.get("y")) + float(lane.get("height"))
+    assert "reference" not in _cells(SPEC, {})[1] and "reference" not in _cells(SPEC.model_copy(update={"reference": "sap:RA9999"}), {})[1]
