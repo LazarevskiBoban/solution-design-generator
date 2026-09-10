@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
 import json
+import logging
 import os
 import re
 from typing import Any, Protocol
 
+LOG = logging.getLogger("sdgen.llm")
 CONTEXT_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 PROVIDERS = ("mock", "azure", "openai", "anthropic")
@@ -17,12 +20,15 @@ JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 MOCK_JSON: dict[str, dict] = {"facts": {}}
 
 
+Images = list[tuple[bytes, str]]  # (data, mime) pairs a vision model may look at
+
+
 class LLMClient(Protocol):
     name: str
 
-    def complete(self, system: str, user: str) -> str: ...
+    def complete(self, system: str, user: str, images: Images | None = None) -> str: ...
 
-    def complete_json(self, system: str, user: str, schema: dict, name: str = "result") -> dict: ...
+    def complete_json(self, system: str, user: str, schema: dict, name: str = "result", images: Images | None = None) -> dict: ...
 
 
 class LLMNotConfigured(RuntimeError):
@@ -38,12 +44,12 @@ class MockLLM:
     label = "mock"
     wants_context = True
 
-    def complete(self, system: str, user: str) -> str:
+    def complete(self, system: str, user: str, images: Images | None = None) -> str:
         match = CONTEXT_RE.search(user)
         context = json.loads(match.group(1)) if match else {}
         return mock_draft(context)
 
-    def complete_json(self, system: str, user: str, schema: dict, name: str = "result") -> dict:
+    def complete_json(self, system: str, user: str, schema: dict, name: str = "result", images: Images | None = None) -> dict:
         return dict(MOCK_JSON.get(name, {}))
 
 
@@ -67,13 +73,14 @@ class OpenAILLM:
     def with_effort(self, effort: str) -> OpenAILLM:
         return OpenAILLM(self._client, self.model, self.name, effort)
 
-    def complete(self, system: str, user: str) -> str:
+    def complete(self, system: str, user: str, images: Images | None = None) -> str:
+        # A picture is never dropped here: a transcription without the picture would be invented text.
         try:
-            return self._request(system, user)
+            return self._request(system, user, images=images)
         except Exception as exc:
-            raise _translate(exc, self.model) from exc
+            raise _translate(exc, self.model, images=bool(images)) from exc
 
-    def complete_json(self, system: str, user: str, schema: dict, name: str = "result") -> dict:
+    def complete_json(self, system: str, user: str, schema: dict, name: str = "result", images: Images | None = None) -> dict:
         # Newest first: schema-constrained output, JSON mode, then plain text parsed by hand.
         attempts = [
             {"response_format": {"type": "json_schema", "json_schema": {"name": name, "schema": schema}}},
@@ -82,24 +89,35 @@ class OpenAILLM:
         ]
         hint = f"\nReturn only a JSON object that matches this schema:\n{json.dumps(schema)}"
         failure: Exception | None = None
-        for index, extra in enumerate(attempts):
+        index = 0
+        while index < len(attempts):
             try:
-                text = self._request(system if index == 0 else system + hint, user, **extra)
+                text = self._request(system if index == 0 else system + hint, user, images=images, **attempts[index])
             except Exception as exc:
+                if _is_bad_request(exc) and images:
+                    LOG.warning("'%s' rejected the attached pictures; asking again without them", self.model)
+                    images = None
+                    continue
                 if _is_bad_request(exc) and index < len(attempts) - 1:
                     failure = exc
+                    index += 1
                     continue
                 raise _translate(exc, self.model) from exc
+            index += 1
             try:
                 return parse_json(text)
             except ValueError as exc:
                 failure = exc
         raise LLMError(f"'{self.model}' did not return valid JSON: {failure}")
 
-    def _request(self, system: str, user: str, **extra: Any) -> str:
+    def _request(self, system: str, user: str, images: Images | None = None, **extra: Any) -> str:
+        content: Any = user
+        if images:
+            content = [{"type": "text", "text": user}]
+            content += [{"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}", "detail": "high"}} for data, mime in images]
         kwargs: dict[str, Any] = {
             "model": self.model,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
             "max_completion_tokens": REASONING_OUTPUT_TOKENS if self.reasoning else MAX_OUTPUT_TOKENS,
         }
         if self.reasoning:
@@ -192,9 +210,11 @@ def _setting(value: str | None, env: str) -> str:
     return (value or "").strip() or (os.environ.get(env) or "").strip()
 
 
-def _translate(exc: Exception, model: str) -> Exception:
+def _translate(exc: Exception, model: str, images: bool = False) -> Exception:
     if isinstance(exc, (LLMError, LLMNotConfigured)):
         return exc
+    if images and _is_bad_request(exc):
+        return LLMError(f"'{model}' does not accept images; use a vision model such as gpt-4.1 or gpt-5 for transcriptions")
     try:
         import openai
     except ImportError:

@@ -5,13 +5,18 @@ from __future__ import annotations
 import mimetypes
 from collections.abc import Iterable
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Literal
+from urllib.error import HTTPError
+from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 from uuid import uuid4
 
 import yaml
 from pydantic import BaseModel, Field
 
+from sdgen.llm import LLMClient
 from sdgen.references import cell_texts
 
 MaterialKind = Literal["image", "text", "link"]
@@ -129,3 +134,94 @@ def text_from_upload(name: str, data: bytes) -> str:
 def mime_of(name: str) -> str:
     guess, _ = mimetypes.guess_type(name)
     return guess if guess in ("image/png", "image/jpeg") else ""
+
+
+TRANSCRIBE_SYSTEM = "You transcribe diagrams and screenshots into text for an integration architect. Write only what is visible; invent nothing."
+TRANSCRIBE_USER = """Transcribe this picture completely, as plain text:
+1. Every box, system and group with its label exactly as written, and what contains what.
+2. Folders, paths, hostnames, ports, identifiers and codes, verbatim.
+3. Every arrow: from, to, direction and its label.
+4. Legends, and what the colours or line styles mean.
+5. Tables verbatim, as pipe tables.
+6. Titles, free text and footnotes.
+Mark anything illegible as [unreadable]. No interpretation, no summary."""
+
+
+def describe_image(llm: LLMClient, data: bytes, mime: str, hint: str = "") -> str:
+    """The model's transcript of a picture; the picture always travels with the call."""
+    if mime not in ("image/png", "image/jpeg"):
+        raise ValueError(f"unsupported image type '{mime}': use PNG or JPEG")
+    if len(data) > IMAGE_BYTES_MAX:
+        raise ValueError(f"the picture is {len(data) / 1_000_000:.1f} MB; keep it under {IMAGE_BYTES_MAX // 1_000_000} MB")
+    user = TRANSCRIBE_USER + (f"\n\nContext from the author: {hint.strip()}" if hint.strip() else "")
+    return llm.complete(TRANSCRIBE_SYSTEM, user, images=[(data, mime)]).strip()
+
+
+BLOCK_TAGS = {"p", "div", "br", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "table", "section", "article", "header", "footer", "pre", "blockquote", "dd", "dt", "hr"}
+SKIP_TAGS = {"script", "style", "noscript", "svg", "template"}
+
+
+class _TextExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.title = ""
+        self._skip = 0
+        self._in_title = False
+
+    def handle_starttag(self, tag, attrs) -> None:
+        if tag in SKIP_TAGS:
+            self._skip += 1
+        elif tag == "title":
+            self._in_title = True
+        elif tag in BLOCK_TAGS:
+            self.parts.append("\n")
+        elif tag in ("td", "th"):
+            self.parts.append(" ")
+
+    def handle_endtag(self, tag) -> None:
+        if tag in SKIP_TAGS:
+            self._skip = max(0, self._skip - 1)
+        elif tag == "title":
+            self._in_title = False
+        elif tag in BLOCK_TAGS:
+            self.parts.append("\n")
+
+    def handle_data(self, data) -> None:
+        if self._in_title:
+            self.title += data
+        elif not self._skip:
+            self.parts.append(data)
+
+
+def html_to_text(page: str) -> tuple[str, str]:
+    """(title, readable text) of an HTML page: scripts and styles dropped, one line per block."""
+    parser = _TextExtractor()
+    parser.feed(page)
+    parser.close()
+    lines = [" ".join(line.split()) for line in "".join(parser.parts).splitlines()]
+    return " ".join(parser.title.split()), "\n".join(line for line in lines if line)
+
+
+def fetch_link(url: str, opener=urlopen) -> tuple[str, str, str]:
+    """(title, text, status) of a public page; a failure comes back as a status asking for a pasted excerpt, never as an exception."""
+    url = url.strip()
+    if urlsplit(url).scheme not in ("http", "https"):
+        return "", "", "fetch failed (not an http(s) link): paste an excerpt"
+    request = Request(url, headers={"User-Agent": "sdgen", "Accept": "text/html,text/plain;q=0.9,*/*;q=0.1"})
+    try:
+        with opener(request, timeout=30) as response:
+            content_type = str(response.headers.get("Content-Type") or "").lower()
+            if not content_type.startswith("text/"):
+                return "", "", "fetch failed (not a text page): paste an excerpt"
+            raw = response.read(FETCH_BYTES_MAX)
+            charset = response.headers.get_content_charset() or "utf-8"
+    except HTTPError as exc:
+        return "", "", f"fetch failed ({exc.code}): paste an excerpt"
+    except (OSError, ValueError) as exc:
+        return "", "", f"fetch failed ({getattr(exc, 'reason', None) or exc}): paste an excerpt"
+    page = raw.decode(charset, errors="replace")
+    title, text = html_to_text(page) if content_type.startswith("text/html") else ("", page.strip())
+    if len(text) > PAGE_MAX:
+        text = text[:PAGE_MAX] + f"\n[... truncated, {len(text) - PAGE_MAX} more characters]"
+    return title, text, f"fetched {now()[:10]}"

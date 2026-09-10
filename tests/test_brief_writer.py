@@ -126,6 +126,33 @@ def test_complete_json_falls_back_from_schema_to_json_mode():
     assert MockLLM().complete_json("s", "u", {}, name="facts") == {}
 
 
+def test_openai_adapter_sends_image_parts_and_drops_them_only_for_json():
+    client, completions = _fake_client("transcript")
+    llm = OpenAILLM(client, "gpt-4.1", name="azure")
+    assert llm.complete("sys", "usr", images=[(b"\x89PNG", "image/png")]) == "transcript"
+    content = completions.calls[0]["messages"][1]["content"]
+    assert content[0] == {"type": "text", "text": "usr"}
+    assert content[1]["type"] == "image_url" and content[1]["image_url"]["url"].startswith("data:image/png;base64,iVBORw") and content[1]["image_url"]["detail"] == "high"
+
+    class BadRequestError(Exception):
+        pass
+
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        if isinstance(kwargs["messages"][1]["content"], list):
+            raise BadRequestError("images not supported")
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok": 1}'), finish_reason="stop")])
+
+    text_only = OpenAILLM(SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))), "o3-mini", name="azure")
+    assert text_only.complete_json("s", "u", {"type": "object"}, images=[(b"x", "image/png")]) == {"ok": 1}
+    assert [c["response_format"]["type"] for c in calls] == ["json_schema", "json_schema"] and isinstance(calls[1]["messages"][1]["content"], str)
+    with pytest.raises(LLMError, match="does not accept images"):
+        text_only.complete("s", "u", images=[(b"x", "image/png")])
+    assert MockLLM().complete_json("s", "u", {}, name="facts", images=[(b"x", "image/png")]) == {}
+
+
 def test_openai_adapter_reports_truncation_and_failures():
     client, _ = _fake_client("partial", finish="length")
     with pytest.raises(LLMError, match="output limit"):
@@ -334,9 +361,11 @@ class _ScriptedLLM:
     def __init__(self, replies):
         self.replies = list(replies)
         self.prompts = []
+        self.images = []
 
-    def complete(self, system, user):
+    def complete(self, system, user, images=None):
         self.prompts.append(user)
+        self.images.append(images)
         return self.replies.pop(0)
 
     def complete_json(self, system, user, schema, name="result"):
