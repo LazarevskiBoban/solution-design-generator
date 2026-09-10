@@ -42,9 +42,11 @@ keeps the writer offline; `SDGEN_ICONS` and `SDGEN_REFS` redirect the icon and r
 
 ## Drive it
 
-- Pages and widgets: `streamlit.testing.v1.AppTest` works for everything except dialogs and file
-  uploads; see `tests/test_ui.py` for the fixture that points the registries at a temp folder.
-  Note that AppTest lists an expander with an icon under `app.status`.
+- Pages and widgets: `streamlit.testing.v1.AppTest` works for everything except dialogs, file
+  uploads included (`app.file_uploader(key=...).set_value([(name, bytes, mime)])`); see
+  `tests/test_ui.py` for the fixture that points the registries at a temp folder. Note that
+  AppTest lists an expander with an icon under `app.status`, and that expanders cannot be nested,
+  so per-item editors inside a step use bordered containers.
 - Dialogs and a real browser: Playwright with the Edge channel (`pip install playwright` in the
   venv, it is not a project dependency). Wait for `[data-testid='stAppViewContainer']`, then a
   short pause for the websocket render, then `page.screenshot`. Streamlit ignores a changed

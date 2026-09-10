@@ -28,7 +28,11 @@ names the files: `... -m pytest -q tests/test_flow.py tests/test_drawio.py`.
 `SDGEN_LLM=mock` is the default. `MockLLM` returns no flows, so planner tests inject a small
 stub with `name`, `complete` and `complete_json` that records the prompt and schema and returns a
 fixed payload (see `_stub` in `tests/test_flow.py`). Assert on what the prompt contains and on
-what survives `clean_flow`, not on model behaviour.
+what survives `clean_flow`, not on model behaviour. Calls that attach pictures pass
+`images=[(bytes, mime)]`; a stub that may receive them declares the parameter (see
+`_ScriptedLLM` in `tests/test_brief_writer.py`), and callers pass it only when it is non-empty.
+Reference material never needs a real fetch: patch `sdgen.material.fetch_link` (see
+`tests/test_ui.py`) and keep the mock provider, which records "not transcribed" for pictures.
 
 ## Isolating folders
 

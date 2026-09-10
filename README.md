@@ -22,12 +22,18 @@ sdgen ui
   every drawn diagram replaced by an image slot. Templates live under `templates/<name>/`.
 - **New design**: pick a template, write the brief (what it is about, problem and outcome,
   approach, APIs and references, investigation notes, plus acceptance criteria, operations,
-  non-functional facts and a decisions log for the developers) and answer the facts the
-  template needs (dates, version, people, systems, counterparts, countries, targets, effort,
-  investment, SAP objects); the app derives that list from the template's fields. Upload
+  non-functional facts, decisions and open questions for the developers) and answer the facts
+  the template needs (dates, version, people, systems, counterparts, countries, targets, effort,
+  investment, SAP objects); the app derives that list from the template's fields. Attach
+  reference material: pictures of diagrams (transcribed once by the model into text you can
+  correct, and shown to the model again when it draws a diagram), text files or pasted notes
+  (Markdown, Mermaid, draw.io, CSV), and links (public pages are kept as text; paste an excerpt
+  for pages behind a login), each tagged with the slides it is about. Open questions get their
+  own slide in the draft. Upload
   diagram images or let the app draw the flows from the brief, draft the sections, review them,
   generate. Designs are saved under `designs/<name>/`; facts live in `brief.md` as
-  `## fact:<key>` sections. Drawn flows follow the conventions of the vendor's public reference
+  `## fact:<key>` sections, reference material in `material.yaml` and `material/` next to it
+  (`sdgen draft` reads them too). Drawn flows follow the conventions of the vendor's public reference
   architectures (SAP Architecture Center first, see `assets/refs/README.md`): tinted lane
   containers, uniform nodes with an icon and a subtitle, and a link to the closest reference
   architecture; the same drawing is kept as a draw.io file next to the design.
