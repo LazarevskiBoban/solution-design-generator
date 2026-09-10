@@ -2,6 +2,7 @@ from pptx import Presentation
 from pptx.oxml.ns import qn
 from pptx.util import Inches
 
+from sdgen import palette
 from sdgen.brief import Brief
 from sdgen.flow import SYSTEM_PROMPT, FlowEdge, FlowNode, FlowSpec, clean_flow, draw_flow, plan_flows, to_mermaid
 from sdgen.llm import MockLLM
@@ -37,7 +38,7 @@ def test_draw_flow_in_columns_glues_connectors_and_stays_in_the_box():
     created = draw_flow(slide, box, SPEC, prefix="Flow x")
     names = [s.name for s in created]
     assert names[0] == "Flow x canvas" and created[0].width == box[2]
-    assert sum(n.startswith("Flow x lane") for n in names) == 3
+    assert [n for n in names if n.startswith("Flow x lane") and not n.endswith(" mark")] == ["Flow x lane source", "Flow x lane middleware", "Flow x lane target"]
     assert sum(n.startswith("Flow x node") for n in names) == 5
     connectors = [s for s in created if s.name.startswith("Flow x edge") and not s.name.endswith("label")]
     labels = [s for s in created if s.name.endswith("label")]
@@ -220,13 +221,41 @@ def test_rows_layout_labels_lanes_on_the_side_and_routes_far_edges():
     )
     created = draw_flow(slide, (Inches(0.5), Inches(1.0), Inches(6.0), Inches(5.5)), spec, prefix="Flow r")
     by_name = {s.name: s for s in created}
-    assert by_name["Flow r lane source"].rotation == 270.0
+    assert by_name["Flow r lane source title"].rotation == 270.0 and by_name["Flow r lane source"].rotation == 0.0
+    assert by_name["Flow r lane source"].fill.fore_color.rgb == palette.rgb(palette.GREY_FILL) and "Flow r lane source mark" not in by_name
     s, t = by_name["Flow r node s"], by_name["Flow r node t"]
     assert s.top < t.top and s.left >= Inches(0.5) + LANE_LABEL
     far = by_name["Flow r edge 4"]
     rightmost = max(n.left + n.width for n in created if " node " in n.name)
     assert far.left + far.width > rightmost and far._element.find(".//" + qn("a:stCxn")) is None
     assert _labels_clear_of_nodes(created)
+
+
+def test_nodes_and_lanes_take_the_sap_look():
+    from pptx.enum.dml import MSO_LINE
+
+    import sdgen.flow as flow_module
+
+    prs, slide = _blank_slide()
+    named = SPEC.model_copy(update={"lanes": {"target": "SAP Landscape (RISE)"}, "nodes": [SPEC.nodes[0].model_copy(update={"subtitle": "SWIFT FileAct"})] + SPEC.nodes[1:]})
+    created = draw_flow(slide, (Inches(0.5), Inches(1.0), Inches(12.0), Inches(5.5)), named, prefix="Flow x")
+    by_name = {s.name: s for s in created}
+    source, target = by_name["Flow x lane source"], by_name["Flow x lane target"]
+    assert source.fill.fore_color.rgb == palette.rgb(palette.GREY_FILL) and target.fill.fore_color.rgb == palette.rgb(palette.SAP_FILL)
+    assert source.text_frame.text == "Source" and target.text_frame.text == "SAP Landscape (RISE)"
+    assert "Flow x lane source mark" not in by_name and by_name["Flow x lane target mark"].text_frame.text == "SAP"
+    bank, s4 = by_name["Flow x node bank"], by_name["Flow x node s4"]
+    assert bank.line.dash_style == MSO_LINE.ROUND_DOT and bank.line.color.rgb == palette.rgb(palette.SLATE)
+    assert s4.line.dash_style is None and s4.line.color.rgb == palette.rgb(palette.SAP_BLUE) and s4.fill.fore_color.rgb == palette.rgb(palette.WHITE)
+    assert [p.text for p in bank.text_frame.paragraphs] == ["Bank (SWIFT FileAct)", "SWIFT FileAct"]
+    lane_of = {n.id: n.lane for n in named.nodes}
+    for shape in created:
+        if " node " in shape.name:
+            lane = _box(by_name[f"Flow x lane {lane_of[shape.name.split(' node ')[1]]}"])
+            node = _box(shape)
+            assert node[0] >= lane[0] and node[1] >= lane[1] and node[2] <= lane[2] and node[3] <= lane[3]
+    short = flow_module._node(_blank_slide()[1], FlowNode(id="a", label="A", subtitle="tiny"), 0, 0, Inches(2), Inches(0.45), "Flow y")
+    assert [p.text for p in short.text_frame.paragraphs] == ["A"]
 
 
 def test_flat_box_falls_back_to_columns():

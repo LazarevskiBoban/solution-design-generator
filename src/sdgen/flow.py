@@ -6,7 +6,6 @@ from typing import Literal
 
 import yaml
 from lxml import etree
-from pptx.dml.color import RGBColor
 from pptx.enum.dml import MSO_LINE
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
@@ -17,6 +16,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sdgen.brief import Brief, dump_brief
 from sdgen.icons import catalogue, icon_keys, icon_png
 from sdgen.llm import LLMClient
+from sdgen.palette import EDGE, GREY_FILL, SAP_BLUE, SAP_DARK, SAP_FILL, SLATE, SUBTITLE, TEXT, WHITE, rgb
 from sdgen.textmetrics import FontSpec, text_width_pt
 
 Lane = Literal["source", "middleware", "target"]
@@ -49,20 +49,10 @@ ROUTE_STEP = Inches(0.3)
 MIN_ROW_NODE = Inches(0.45)
 NODES_PER_SQ_IN = 3.5
 SMALL_AREA_SQ_IN = 20.0
-FILL = {
-    "system": RGBColor(0xDC, 0xE8, 0xF7),
-    "step": RGBColor(0xEE, 0xEE, 0xEE),
-    "store": RGBColor(0xDF, 0xF0, 0xDF),
-    "external": RGBColor(0xFF, 0xFF, 0xFF),
-}
-SHAPES = {
-    "system": MSO_SHAPE.ROUNDED_RECTANGLE,
-    "step": MSO_SHAPE.RECTANGLE,
-    "store": MSO_SHAPE.CAN,
-    "external": MSO_SHAPE.ROUNDED_RECTANGLE,
-}
-LINE = RGBColor(0x40, 0x40, 0x40)
-TEXT = RGBColor(0x20, 0x20, 0x20)
+LANE_GAP = Inches(0.3)  # white seam between lane containers, where far edges travel
+NODE_INSET = Inches(0.25)
+SUBTITLE_MIN_HEIGHT = Inches(0.55)
+MARK_WIDTH = Inches(0.4)
 TOP, LEFT, BOTTOM, RIGHT = 0, 1, 2, 3
 
 FLOW_SCHEMA = {
@@ -329,7 +319,7 @@ def draw_flow(slide, box: tuple[int, int, int, int], spec: FlowSpec, prefix: str
     lane_of = {n.id: index_of.get(n.lane, 0) for n in spec.nodes}
     far = any(abs(lane_of[e.source] - lane_of[e.target]) >= 2 for e in spec.edges if e.source in lane_of and e.target in lane_of)
     columns = width >= COLUMNS_MIN_WIDTH or len(lanes) == 1
-    if not columns and (height - 2 * PAD) // len(lanes) - 2 * PAD < MIN_ROW_NODE:
+    if not columns and (height - 2 * PAD) // len(lanes) - LANE_GAP - 2 * PAD < MIN_ROW_NODE:
         columns = True  # too flat for rows: columns keep every node readable
     created = [_canvas(slide, left, top, width, height, f"{prefix} canvas")]
     placed: dict[str, tuple] = {}
@@ -338,13 +328,14 @@ def draw_flow(slide, box: tuple[int, int, int, int], spec: FlowSpec, prefix: str
     geometry = {"columns": columns, "left": left, "top": top, "width": width, "height": height, "lanes": len(lanes)}
     if columns:
         lane_width = width // len(lanes)
-        node_width = min(NODE_WIDTH, lane_width - 2 * PAD)
+        box_w, box_h = lane_width - LANE_GAP, height - channel
+        node_width = min(NODE_WIDTH, box_w - 2 * NODE_INSET)
         geometry.update(lane_width=lane_width, channel_y=top + height - channel // 2)
         for index, lane in enumerate(lanes):
             x0 = left + index * lane_width
-            created.append(_header(slide, x0, top, lane_width, HEADER, LANE_TITLES[lane], f"{prefix} lane {lane}"))
+            created.extend(_lane_box(slide, x0 + LANE_GAP // 2, top, box_w, box_h, lane_title(spec, lane), lane_is_sap(spec, lane), f"{prefix} lane {lane}"))
             members = [n for n in spec.nodes if n.lane == lane]
-            node_height, gap = _fit(len(members), height - channel - HEADER - PAD, NODE_HEIGHT, GAP)
+            node_height, gap = _fit(len(members), box_h - HEADER - 2 * PAD, NODE_HEIGHT, GAP)
             y = top + HEADER + PAD
             for position, node in enumerate(members):
                 shape = _node(slide, node, x0 + (lane_width - node_width) // 2, y, node_width, node_height, prefix, created)
@@ -353,14 +344,17 @@ def draw_flow(slide, box: tuple[int, int, int, int], spec: FlowSpec, prefix: str
                 y += node_height + gap
     else:
         lane_height = height // len(lanes)
+        box_w, box_h = width - channel, lane_height - LANE_GAP
         usable = width - LANE_LABEL - channel
         geometry.update(lane_height=lane_height, channel_x=left + width - channel // 2)
         for index, lane in enumerate(lanes):
             y0 = top + index * lane_height
-            created.append(_lane_label(slide, left, y0, LANE_LABEL, lane_height, LANE_TITLES[lane], f"{prefix} lane {lane}"))
+            sap = lane_is_sap(spec, lane)
+            created.extend(_lane_box(slide, left, y0 + LANE_GAP // 2, box_w, box_h, "", sap, f"{prefix} lane {lane}"))
+            created.append(_lane_label(slide, left, y0 + LANE_GAP // 2, LANE_LABEL, box_h, lane_title(spec, lane), f"{prefix} lane {lane} title", sap))
             members = [n for n in spec.nodes if n.lane == lane]
             node_width, gap = _fit(len(members), usable - 2 * PAD, NODE_WIDTH, GAP)
-            node_height = max(MIN_NODE, min(NODE_HEIGHT, lane_height - 2 * PAD))
+            node_height = max(MIN_NODE, min(NODE_HEIGHT, box_h - 2 * PAD))
             x = left + LANE_LABEL + PAD
             for position, node in enumerate(members):
                 shape = _node(slide, node, x, y0 + (lane_height - node_height) // 2, node_width, node_height, prefix, created)
@@ -390,49 +384,88 @@ def _canvas(slide, x: int, y: int, width: int, height: int, name: str):
     shape = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, x, y, width, height)
     shape.name = name
     shape.fill.solid()
-    shape.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-    shape.line.color.rgb = RGBColor(0xBF, 0xBF, 0xBF)
-    shape.line.width = Pt(0.75)
+    shape.fill.fore_color.rgb = rgb(WHITE)
+    shape.line.fill.background()
     shape.shadow.inherit = False
     shape.text_frame.text = ""
     return shape
 
 
-def _header(slide, x: int, y: int, width: int, height: int, text: str, name: str):
-    box = slide.shapes.add_textbox(x, y, width, height)
+def _lane_box(slide, x: int, y: int, width: int, height: int, title: str, sap: bool, name: str) -> list:
+    """The tinted rounded container of a lane with its heading top-left; SAP lanes carry the SAP word mark before it."""
+    shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, x, y, width, height)
+    shape.name = name
+    shape.adjustments[0] = 0.05
+    shape.shadow.inherit = False
+    shape.fill.solid()
+    shape.fill.fore_color.rgb = rgb(SAP_FILL if sap else GREY_FILL)
+    shape.line.color.rgb = rgb(SAP_BLUE if sap else SLATE)
+    shape.line.width = Pt(1.5)
+    frame = shape.text_frame
+    frame.word_wrap = True
+    frame.vertical_anchor = MSO_ANCHOR.TOP
+    frame.margin_left = PAD + (MARK_WIDTH if sap and title else 0)
+    frame.margin_top = Inches(0.06)
+    paragraph = frame.paragraphs[0]
+    paragraph.text = title
+    paragraph.alignment = PP_ALIGN.LEFT
+    for run in paragraph.runs:
+        run.font.size = Pt(10)
+        run.font.bold = True
+        run.font.color.rgb = rgb(SAP_DARK if sap else SLATE)
+    created = [shape]
+    if sap and title:
+        created.append(_lane_mark(slide, x + PAD, y + Inches(0.07), f"{name} mark"))
+    return created
+
+
+def _lane_mark(slide, x: int, y: int, name: str):
+    box = slide.shapes.add_textbox(x, y, MARK_WIDTH, Inches(0.2))
     box.name = name
     frame = box.text_frame
-    frame.word_wrap = True
+    frame.word_wrap = False
+    frame.margin_left = frame.margin_right = frame.margin_top = frame.margin_bottom = 0
+    frame.vertical_anchor = MSO_ANCHOR.TOP
+    paragraph = frame.paragraphs[0]
+    paragraph.text = "SAP"
+    paragraph.alignment = PP_ALIGN.LEFT
+    for run in paragraph.runs:
+        run.font.size = Pt(9)
+        run.font.bold = True
+        run.font.color.rgb = rgb(SAP_BLUE)
+    return box
+
+
+def _lane_label(slide, x: int, y: int, width: int, height: int, text: str, name: str, sap: bool = False):
+    """A lane heading standing on its side along the left edge of its container, so the lane keeps its full height for nodes."""
+    box = slide.shapes.add_textbox(x + width // 2 - height // 2, y + height // 2 - width // 2, height, width)
+    box.name = name
+    box.rotation = 270.0
+    frame = box.text_frame
+    frame.word_wrap = False
+    frame.vertical_anchor = MSO_ANCHOR.MIDDLE
     paragraph = frame.paragraphs[0]
     paragraph.text = text
     paragraph.alignment = PP_ALIGN.CENTER
     for run in paragraph.runs:
-        run.font.size = Pt(10)
-        run.font.bold = True
-        run.font.color.rgb = LINE
-    return box
-
-
-def _lane_label(slide, x: int, y: int, width: int, height: int, text: str, name: str):
-    """A lane title standing on its side along the left edge, so the lane keeps its full height for nodes."""
-    box = _header(slide, x + width // 2 - height // 2, y + height // 2 - width // 2, height, width, text, name)
-    box.rotation = 270.0
-    box.text_frame.vertical_anchor = MSO_ANCHOR.MIDDLE
-    box.text_frame.word_wrap = False
-    for run in box.text_frame.paragraphs[0].runs:
         run.font.size = Pt(9)
+        run.font.bold = True
+        run.font.color.rgb = rgb(SAP_DARK if sap else SLATE)
     return box
 
 
 def _node(slide, node: FlowNode, x: int, y: int, width: int, height: int, prefix: str, created: list | None = None):
-    shape = slide.shapes.add_shape(SHAPES.get(node.kind, MSO_SHAPE.ROUNDED_RECTANGLE), x, y, width, height)
+    sap = node_is_sap(node)
+    shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, x, y, width, height)
     shape.name = f"{prefix} node {node.id}"
+    shape.adjustments[0] = 0.2
+    shape.shadow.inherit = False
     shape.fill.solid()
-    shape.fill.fore_color.rgb = FILL.get(node.kind, FILL["system"])
-    shape.line.color.rgb = LINE
-    shape.line.width = Pt(1)
-    if node.kind == "external":
-        shape.line.dash_style = MSO_LINE.DASH
+    shape.fill.fore_color.rgb = rgb(WHITE if sap else GREY_FILL)
+    shape.line.color.rgb = rgb(SAP_BLUE if sap else SLATE)
+    shape.line.width = Pt(1.5)
+    if not sap:
+        shape.line.dash_style = MSO_LINE.ROUND_DOT
     frame = shape.text_frame
     frame.word_wrap = True
     frame.vertical_anchor = MSO_ANCHOR.MIDDLE
@@ -455,7 +488,15 @@ def _node(slide, node: FlowNode, x: int, y: int, width: int, height: int, prefix
     size = Pt(11) if len(node.label) <= 24 else Pt(9)
     for run in paragraph.runs:
         run.font.size = size
-        run.font.color.rgb = TEXT
+        run.font.bold = True
+        run.font.color.rgb = rgb(TEXT)
+    if node.subtitle and height >= SUBTITLE_MIN_HEIGHT:
+        second = frame.add_paragraph()
+        second.text = node.subtitle
+        second.alignment = PP_ALIGN.CENTER
+        for run in second.runs:
+            run.font.size = Pt(8)
+            run.font.color.rgb = rgb(SUBTITLE)
     return shape
 
 
@@ -513,8 +554,8 @@ def _polyline(slide, points: list[tuple[int, int]], edge: FlowEdge, name: str, p
 
 
 def _style_line(shape, edge: FlowEdge) -> None:
-    shape.line.color.rgb = LINE
-    shape.line.width = Pt(1.25)
+    shape.line.color.rgb = rgb(EDGE)
+    shape.line.width = Pt(1.5)
     if edge.kind != "sync":
         shape.line.dash_style = MSO_LINE.DASH
     _arrow_head(shape)
@@ -534,17 +575,17 @@ def _side_route(a, b, columns: bool, staggered: int, above: bool = False) -> lis
 
 
 def _channel_route(a, b, lane_a: int, lane_b: int, geometry: dict) -> list[tuple[int, int]]:
-    """Through the gap next to the start, along the free channel past the lanes in between, into the target."""
+    """Through the seam next to the start, along the free channel past the lanes in between, into the target."""
     forward = lane_b > lane_a
     if geometry["columns"]:
-        boundary = lambda i: geometry["left"] + i * geometry["lane_width"] + ROUTE_STEP  # noqa: E731
+        boundary = lambda i: geometry["left"] + i * geometry["lane_width"]  # noqa: E731
         y = geometry["channel_y"]
         if forward:
             x_out, x_in = boundary(lane_a + 1), boundary(lane_b)
             return [(a.left + a.width, _cy(a)), (x_out, _cy(a)), (x_out, y), (x_in, y), (x_in, _cy(b)), (b.left, _cy(b))]
         x_out, x_in = boundary(lane_a), boundary(lane_b + 1)
         return [(a.left, _cy(a)), (x_out, _cy(a)), (x_out, y), (x_in, y), (x_in, _cy(b)), (b.left + b.width, _cy(b))]
-    boundary = lambda i: geometry["top"] + i * geometry["lane_height"] + ROUTE_STEP  # noqa: E731
+    boundary = lambda i: geometry["top"] + i * geometry["lane_height"]  # noqa: E731
     x = geometry["channel_x"]
     if forward:
         y_out, y_in = boundary(lane_a + 1), boundary(lane_b)
@@ -581,7 +622,7 @@ def _label(slide, points: list[tuple[int, int]], text: str, name: str, placement
     label.rotation = rotation
     label.name = f"{name} label"
     label.fill.solid()
-    label.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+    label.fill.fore_color.rgb = rgb(WHITE)
     label.line.fill.background()
     frame = label.text_frame
     frame.word_wrap = False
@@ -593,7 +634,7 @@ def _label(slide, points: list[tuple[int, int]], text: str, name: str, placement
     paragraph.alignment = PP_ALIGN.CENTER
     for run in paragraph.runs:
         run.font.size = Pt(font.size_pt)
-        run.font.color.rgb = TEXT
+        run.font.color.rgb = rgb(SUBTITLE)
     return [label]
 
 
