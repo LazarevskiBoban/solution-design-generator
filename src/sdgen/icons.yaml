@@ -132,6 +132,51 @@ abap_environment:
 cloud_alm:
   label: SAP Cloud ALM (monitoring)
   file: 34156-sap-cloud-alm_sd.svg
+event_broker:
+  label: SAP Cloud Application Event Hub (formerly SAP Event Broker)
+  file: 32082-sap-event-broker-for-sap-cloud-applications_sd.svg
+business_accelerator_hub:
+  label: SAP Business Accelerator Hub (API and integration content catalogue)
+  file: 32153-sap-business-accelerator-hub_sd.svg
+document_reporting_compliance:
+  label: SAP Document and Reporting Compliance (e-invoicing, statutory reporting)
+  file: 31026-sap-document-and-reporting-compliance_sd.svg
+master_data_governance:
+  label: SAP Master Data Governance
+  file: 31119-sap-master-data-governance_sd.svg
+business_data_cloud:
+  label: SAP Business Data Cloud
+  file: 34152-sap-business-data-cloud_sd.svg
+work_zone:
+  label: SAP Build Work Zone (launchpad, portal)
+  file: 31068-sap-build-work-zone_sd.svg
+build_apps:
+  label: SAP Build Apps (low-code app)
+  file: 31066-sap-build-apps_sd.svg
+build_code:
+  label: SAP Build Code
+  file: 31109-sap-build-code_sd.svg
+task_center:
+  label: SAP Task Center (central inbox)
+  file: 31046-sap-task-center_sd.svg
+ai_core:
+  label: SAP AI Core (models, generative AI hub)
+  file: 20058-sap-ai-core_sd.svg
+ai_launchpad:
+  label: SAP AI Launchpad
+  file: 20059-sap-ai-launchpad_sd.svg
+authorization_trust:
+  label: SAP Authorization and Trust Management (XSUAA)
+  file: 31015-sap-authorization-and-trust-management-service_sd.svg
+application_logging:
+  label: SAP Application Logging service
+  file: 20062-sap-application-logging-service-for-sap-btp_sd.svg
+custom_domain:
+  label: SAP Custom Domain service
+  file: 20074-sap-custom-domain-service_sd.svg
+cicd:
+  label: SAP Continuous Integration and Delivery
+  file: 10022-sap-continuous-integration-and-delivery_sd.svg
 
 # Non-SAP systems
 server:

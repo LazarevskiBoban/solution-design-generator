@@ -301,3 +301,26 @@ def icons(fetch: bool) -> None:
     except (RuntimeError, OSError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"{len(built)} icon(s) built under {icon_dir() / 'png'}")
+
+
+@main.command()
+@click.option("--system", default=None, help="Only this reference pack (default: all).")
+@click.option("--fetch", is_flag=True, help="Download the diagram sources and pages of the pack(s) into the reference folder first.")
+def refs(system: str | None, fetch: bool) -> None:
+    """Lists the reference architecture packs and, with --fetch, downloads their sources."""
+    from sdgen.references import fetch as fetch_pack, installed, packs, ref_dir
+
+    chosen = [pack for name, pack in packs().items() if system in (None, name)]
+    if not chosen:
+        raise click.ClickException(f"no reference pack named '{system}'")
+    for pack in chosen:
+        if fetch:
+            try:
+                files = fetch_pack(pack.system)
+            except (OSError, ValueError) as exc:
+                raise click.ClickException(str(exc)) from exc
+            click.echo(f"{len(files)} file(s) downloaded into {ref_dir() / pack.system}")
+        have = installed(pack.system)
+        click.echo(f"{pack.name} ({pack.system}): {len(pack.entries)} reference architectures, {len(have)} fetched")
+        for reference in pack.entries:
+            click.echo(f"  {'*' if reference.id in have else ' '} {reference.id}  {reference.title}  {pack.url(reference)}")

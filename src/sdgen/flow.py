@@ -17,6 +17,7 @@ from sdgen.brief import Brief, dump_brief
 from sdgen.icons import catalogue, icon_keys, icon_png
 from sdgen.llm import LLMClient
 from sdgen.palette import EDGE, GREY_FILL, SAP_BLUE, SAP_DARK, SAP_FILL, SLATE, SUBTITLE, TEXT, WHITE, rgb
+from sdgen.references import pack as reference_pack
 from sdgen.textmetrics import FontSpec, text_width_pt
 
 Lane = Literal["source", "middleware", "target"]
@@ -24,7 +25,9 @@ NodeKind = Literal["system", "step", "store", "external"]
 EdgeKind = Literal["sync", "async", "file"]
 LANES: tuple[str, ...] = ("source", "middleware", "target")
 LANE_TITLES = {"source": "Source", "middleware": "Middleware", "target": "Target"}
-SAP_RE = re.compile(r"\bSAP\b|S/4|S4HANA|\bECC\b|\bBTP\b|Integration Suite|\bCPI\b|PI/PO|Cloud Connector|IDoc|\bRFC\b|OData", re.IGNORECASE)
+_SAP_PACK = reference_pack("sap")
+# The SAP pack's detect rule decides what counts as SAP; the literal is the fallback without the pack.
+SAP_RE = re.compile(_SAP_PACK.detect if _SAP_PACK is not None and _SAP_PACK.detect else r"\bSAP\b|S/4|S4HANA|\bECC\b|\bBTP\b|Integration Suite|\bCPI\b|PI/PO|Cloud Connector|IDoc|\bRFC\b|OData", re.IGNORECASE)
 ICON_PAD = Inches(0.06)
 ICON_MAX = Inches(0.45)
 ICON_MIN = Inches(0.16)

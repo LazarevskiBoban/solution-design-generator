@@ -10,4 +10,6 @@ out/
 templates/
 designs/
 assets/icons/sap/
+assets/refs/*
+!assets/refs/README.md
 .streamlit/secrets.toml

@@ -1,0 +1,210 @@
+# Reference pack: the public reference architectures of one system. The planner offers a pack's entries to
+# the model only when the brief matches `detect`; `sdgen refs --fetch` downloads the diagram sources named by
+# `root` and `keep` from the repository into assets/refs/<system>/<id>/ for the conventions and the vocabulary.
+system: sap
+name: SAP Architecture Center
+site: https://architecture.learning.sap.com/docs/ref-arch/
+repo: SAP/architecture-center
+branch: main
+root: docs/ref-arch
+keep: ["*.drawio", "readme.md"]
+detect: '\bSAP\b|S/4|S4HANA|\bECC\b|\bBTP\b|Integration Suite|\bCPI\b|PI/PO|Cloud Connector|IDoc|\bRFC\b|OData'
+entries:
+  - id: RA0001
+    title: Designing Event-Driven Applications
+    slug: 196eba
+    tags: [integration, eda, appdev, aws, azure]
+    summary: Event-driven applications with SAP Event Mesh, Advanced Event Mesh and CAP, loosely coupled and asynchronous.
+    keywords: [event, event mesh, advanced event mesh, event-driven, asynchronous, pub/sub, kafka, webhook, event broker]
+  - id: RA0002
+    title: Architecting Multi-Region HA/DR resiliency patterns
+    slug: bbfc34
+    tags: [appdev, integration, aws, azure, gcp]
+    summary: High availability and disaster recovery across regions for SAP BTP solutions.
+    keywords: [multi-region, disaster recovery, high availability, failover, resiliency]
+  - id: RA0003
+    title: Federated Machine Learning with SAP Datasphere
+    slug: 17c8c5
+    tags: [data, aws, azure, gcp, databricks]
+    summary: Federate SAP and non-SAP data with SAP Datasphere for machine learning without replication.
+    keywords: [datasphere, machine learning, federated, fedml]
+  - id: RA0004
+    title: Explore your Hyperscaler data with SAP Business Data Cloud
+    slug: b27373
+    tags: [data, bdc, aws, azure, gcp, snowflake, databricks]
+    summary: SAP Business Data Cloud as the business-centric layer over Snowflake, Databricks and hyperscaler data.
+    keywords: [business data cloud, bdc, snowflake, databricks, data lake]
+  - id: RA0005
+    title: Generative AI on SAP BTP
+    slug: 39eb58
+    tags: [genai, agents, aws, azure, gcp]
+    summary: Generative AI on SAP BTP with SAP AI Core, the HANA Cloud vector engine, RAG and conversational patterns.
+    keywords: [generative ai, llm, rag, vector, ai core, embeddings, chatbot]
+  - id: RA0006
+    title: Secure connectivity with SAP Private Link service
+    slug: c16841
+    tags: [appdev, security, azure, aws]
+    summary: Private connectivity between SAP BTP and hyperscaler services with SAP Private Link service.
+    keywords: [private link, private endpoint, private network, vnet, vpc]
+  - id: RA0007
+    title: Multitenant SaaS Application using CAP
+    slug: 5942d2
+    tags: [appdev, cap]
+    summary: Multitenant SaaS applications on SAP BTP built with CAP, from tenant models to lifecycle and authentication.
+    keywords: [multitenant, saas, cap, subscription]
+  - id: RA0008
+    title: Edge Integration Cell on Hyperscalers
+    slug: 0a229d
+    tags: [integration, eic, appdev, aws, azure, gcp]
+    summary: SAP Integration Suite Edge Integration Cell on AWS, Azure or GCP for hybrid integration inside the customer network.
+    keywords: [edge integration cell, kubernetes, hybrid, on-premise runtime, private landscape]
+  - id: RA0009
+    title: Establish a central inbox with SAP Task Center
+    slug: c1e07f
+    tags: [appdev, aws, azure, gcp]
+    summary: One inbox for approvals and tasks from SAP applications with SAP Task Center.
+    keywords: [task center, inbox, approvals, workflow tasks]
+  - id: RA0010
+    title: Establish a central entry point with SAP Build Work Zone
+    slug: 1a8cb9
+    tags: [appdev, buildworkzone, aws, azure, gcp]
+    summary: A central entry point for applications and workflows with SAP Build Work Zone.
+    keywords: [work zone, launchpad, portal, entry point]
+  - id: RA0011
+    title: SAP HANA Cloud as an Esri Geodatabase
+    slug: e4f25a
+    tags: [data, aws, azure, gcp]
+    summary: Esri ArcGIS on SAP HANA Cloud for geospatial and business data analysis.
+    keywords: [esri, arcgis, geospatial, gis]
+  - id: RA0012
+    title: Medallion Reference Architecture for Big Data Processing in SAP HANA Cloud
+    slug: 8aceea
+    tags: [data, aws, azure, gcp]
+    summary: Bronze, silver and gold data layers in SAP HANA Cloud and its data lake.
+    keywords: [medallion, big data, data lake, hana cloud]
+  - id: RA0013
+    title: Transforming Enterprise Data Strategy with SAP Business Data Cloud
+    slug: e1732d
+    tags: [data, aws, azure, gcp, databricks, snowflake]
+    summary: Data products, intelligent content and analytics on SAP Business Data Cloud.
+    keywords: [business data cloud, data products, bw, analytics, databricks]
+  - id: RA0014
+    title: Understanding Network Performance in a Multi Regional Solution
+    slug: 24c626
+    tags: [appdev, integration, security, aws, azure, gcp]
+    summary: Network latency and the placement of services and regions for SAP BTP solutions calling S/4HANA.
+    keywords: [latency, network performance, region, odata call, app router]
+  - id: RA0015
+    title: Business to Government Integration
+    slug: b3c3ac
+    tags: [integration]
+    summary: Electronic document exchange with authorities (e-invoicing, tax, statutory reporting) through SAP Integration Suite.
+    keywords: [government, e-invoicing, e-invoice, tax authority, peppol, statutory, compliance, regulatory, b2g, document and reporting compliance]
+  - id: RA0016
+    title: Secure Service Consumption Across Hyperscalers
+    slug: 8e8d58
+    tags: [security, aws, gcp]
+    summary: Consuming AWS or GCP services from outside without long-lived secrets, through OIDC federation and IAM roles.
+    keywords: [oidc, iam roles, workload identity, federation, secrets]
+  - id: RA0017
+    title: Connect Business Processes with SAP Master Data Integration
+    slug: ffc84b
+    tags: [integration]
+    summary: Master data distribution across SAP and third-party systems with SAP Master Data Integration and the One Domain Model.
+    keywords: [master data, mdi, business partner, one domain model, product master, cost center, master data replication]
+  - id: RA0018
+    title: Integrate and Extend with SAP Build Process Automation
+    slug: b86487
+    tags: [build, appdev, aws, azure, gcp]
+    summary: Workflows and automations across SAP and non-SAP systems with SAP Build Process Automation.
+    keywords: [process automation, workflow, approval, rpa, bot]
+  - id: RA0019
+    title: SAP IAM integration with SAP Cloud Identity Services
+    slug: 89ab6b
+    tags: [security, genai]
+    summary: Authentication, single sign-on and identity lifecycle for SAP SaaS with SAP Cloud Identity Services.
+    keywords: [identity, sso, single sign-on, ias, ips, authentication, authorization, identity provider]
+  - id: RA0020
+    title: Business to Business Integration
+    slug: e9b7df
+    tags: [integration]
+    summary: Electronic document exchange with trading partners (EDI, AS2, X12, EDIFACT) through SAP Integration Suite.
+    keywords: [b2b, edi, edifact, x12, as2, trading partner, supplier, customer portal, purchase order, invoice exchange]
+  - id: RA0021
+    title: Application to Application Integration
+    slug: 6501d5
+    tags: [integration]
+    summary: Near real-time exchange of transactional data between SAP and non-SAP applications through SAP Integration Suite.
+    keywords: [a2a, application to application, idoc, odata, rfc, soap, rest, cloud integration, iflow, synchronous, near real-time, file, sftp, cloud connector, s/4hana]
+  - id: RA0022
+    title: API Managed Integration
+    slug: 5f90af
+    tags: [integration]
+    summary: Governed, secured API access to business applications through SAP Integration Suite API Management.
+    keywords: [api management, api, apis, developer portal, oauth, api proxy, rate limit, omni-channel]
+  - id: RA0023
+    title: DevOps with SAP BTP
+    slug: b51e91
+    tags: [appdev, build, cap, aws, azure, gcp]
+    summary: Agile DevOps on SAP BTP with CI/CD, transport and lifecycle management.
+    keywords: [devops, ci/cd, pipeline, transport, cloud alm]
+  - id: RA0024
+    title: Integrating and Extending Joule
+    slug: 464deb
+    tags: [genai, agents, build, appdev]
+    summary: Joule integration with SAP S/4HANA and SAP SuccessFactors and extensions with Joule Studio.
+    keywords: [joule, copilot, assistant, joule studio]
+  - id: RA0025
+    title: Transitioning Architectures from SAP NetWeaver
+    slug: 4b76ae
+    tags: [integration, transition, community-contrib]
+    summary: Moving from SAP NetWeaver products such as SAP PI/PO and Portal to their successors before end of maintenance.
+    keywords: [netweaver, pi/po, process orchestration, migration, transition, end of maintenance, successor]
+  - id: RA0026
+    title: Embodied AI Agents & Robotics
+    slug: 0f87e5
+    tags: [genai, agents]
+    summary: Agentic AI with cognitive robots inside business processes, from warehouse picking to inspections.
+    keywords: [robot, robotics, embodied, warehouse]
+  - id: RA0027
+    title: Log-Driven Security Operations with SAP Enterprise Threat Detection and SIEM/SOAR Platforms
+    slug: a3e184
+    tags: [security, integration, eda, community-contrib]
+    summary: SAP Enterprise Threat Detection signals correlated in a SIEM and orchestrated by a SOAR platform.
+    keywords: [threat detection, siem, soar, security operations, logs]
+  - id: RA0028
+    title: SAP SuccessFactors Suite
+    slug: 14d25a
+    tags: [successfactors, community-contrib]
+    summary: The SAP SuccessFactors modules and the data flows between them, Employee Central and Payroll included.
+    keywords: [successfactors, employee central, payroll, hr, hcm]
+  - id: RA0029
+    title: Agentic AI & AI Agents
+    slug: 98efa0
+    tags: [genai, agents, appdev, aws, azure, gcp, ibm]
+    summary: Building, integrating and orchestrating AI agents on the SAP Business AI platform, Joule agents and MCP included.
+    keywords: [agent, agents, agentic, mcp, a2a protocol, joule studio]
+  - id: RA0030
+    title: SAP Document AI
+    slug: 766aa3
+    tags: [genai, cap, aws, azure, gcp]
+    summary: Document ingestion, enrichment and posting with SAP Document AI.
+    keywords: [document ai, ocr, invoice extraction, document processing]
+  - id: RA0031
+    title: Decentralized Identity Verification
+    slug: 458ff4
+    tags: [appdev, integration, security]
+    summary: Self-sovereign identity and verifiable credentials for inter-company communication on SAP BTP.
+    keywords: [verifiable credentials, self-sovereign, wallet, decentralized identity]
+  - id: RA0032
+    title: SAP Data Accelerator
+    slug: a22904
+    tags: [data]
+    summary: Governed near-real-time access to SAP on-premise and private cloud data for external partners such as Palantir.
+    keywords: [data accelerator, palantir, external partner data access, data replication]
+  - id: RA0033
+    title: HANA AI Toolkit - Local MCP Server
+    slug: 2ecb7e
+    tags: [agents, data]
+    summary: A local MCP server for the Generative AI Toolkit for SAP HANA Cloud.
+    keywords: [mcp server, hana ai toolkit]
