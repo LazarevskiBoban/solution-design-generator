@@ -16,14 +16,15 @@ BRIEF_FIELDS: list[tuple[str, str, str]] = [
     ("problem_outcome", "Problem and expected outcome", "What hurts today and what must be true once this is live."),
     ("approach", "How we plan to solve it", "Source, middleware, target; protocols, frequency, volumes, error handling, security."),
     ("apis_references", "APIs and references", "One per line: title | URL | note."),
-    ("investigation_notes", "Investigation details", "Findings, constraints, assumptions, open questions."),
+    ("investigation_notes", "Investigation details", "Findings, constraints, assumptions."),
     ("acceptance_criteria", "Acceptance criteria and test scenarios", "Numbered, testable criteria per flow: happy path, duplicate file, unmatched item, failure and retry."),
     ("operations", "Error handling, monitoring and operations", "What happens on each failure, alerts, reprocessing, who is notified and who acts."),
     ("non_functional", "Non-functional facts", "Volumes, frequency, file sizes, security, retention, environments, availability."),
-    ("decisions_log", "Decisions and open questions", "One per line: question or decision | owner | status."),
+    ("decisions_log", "Decisions", "One per line: decision | owner | status."),
+    ("open_questions", "Open questions", "One per line: question | who to ask. They get their own slide in the draft, so reviewers can answer them."),
     ("mapping_summary", "Mappings", "Filled from the mapping workbook; add remarks if needed."),
 ]
-DEVELOPER_FIELDS = {"acceptance_criteria", "operations", "non_functional", "decisions_log"}
+DEVELOPER_FIELDS = {"acceptance_criteria", "operations", "non_functional", "decisions_log", "open_questions"}
 FACT_PREFIX = "fact:"
 
 
@@ -89,6 +90,7 @@ class Brief(BaseModel):
     operations: str = ""
     non_functional: str = ""
     decisions_log: str = ""
+    open_questions: str = ""
     mapping_summary: str = ""
     facts: dict[str, str] = Field(default_factory=dict)
     material: list[Material] = Field(default_factory=list)  # pictures, notes and links the model reads next to the brief

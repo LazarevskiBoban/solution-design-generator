@@ -18,7 +18,7 @@ EXAMPLE_CHARS = 400
 FENCE_RE = re.compile(r"^```(?:markdown|md)?\s*\n(.*?)\n```\s*$", re.DOTALL)
 NUMBER_RE = re.compile(r"\d[\d,.]*\s?%?")
 INTEGRATION_RE = re.compile(r"integration|architecture|mapping|flow|interface|api|duplicate|file|format", re.IGNORECASE)
-QUALITY_RE = re.compile(r"deviation|success|criteria|report|analytic|effort|decision|acceptance|operation|test|risk|build", re.IGNORECASE)
+QUALITY_RE = re.compile(r"deviation|success|criteria|report|analytic|effort|decision|question|acceptance|operation|test|risk|build", re.IGNORECASE)
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 MIN_DUPLICATE_WORDS = 8
 CHARS_PER_WORD = 6
@@ -66,7 +66,7 @@ ROUTING = {
     "quality": [
         "Deviations list only true departures from the SAP standard (custom code, non-standard process); candidates come from the investigation details and the approach. If there is none, write one row saying that the standard is followed.",
         "Success criteria and measures: one row per measurable target from the facts and the acceptance criteria; no invented percentages.",
-        "Decisions and open questions come from the decisions log and the investigation details, numbered.",
+        "Decisions come from the decisions log, numbered. Open questions have their own slide built from the brief's open questions field; write them only into a slide titled for them.",
         "Operations and error handling come from the operations text.",
         "Build notes hold what a developer needs that fits nowhere else: file naming, cut-off times, reprocessing steps, configuration keys, as short labelled paragraphs (Label: text).",
     ],

@@ -90,6 +90,16 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     need = next(s for s in slide.shapes if s.name == "Business Need Box").text_frame.text
     assert need.startswith("Business Need: [Draft] Bank statements arrive daily.")
 
+    app.text_area(key=f"{state_key}:1:b:open_questions").input("Which bank sends BAI2? | Treasury").run()
+    app.button(key=f"{state_key}:generate").click().run()
+    assert not app.exception
+    _, data, _, slides = app.session_state[f"{state_key}:output"]
+    assert slides == 3
+    saved.write_bytes(data)
+    titles = [s.shapes.title.text for s in Presentation(str(saved)).slides if s.shapes.title is not None]
+    assert any(t.startswith("Open Questions") for t in titles)
+    assert "## open_questions\nWhich bank sends BAI2? | Treasury" in (tmp_path / "designs" / "camt-053" / "brief.md").read_text(encoding="utf-8")
+
     section_key = Registry(registry_with_demo).load("demo").blueprint.sections[0].key
     app.radio(key=f"{state_key}:1:mode:{section_key}").set_value("keep").run()
     app.button(key=f"{state_key}:generate").click().run()

@@ -23,11 +23,14 @@ EFFORT_RE = re.compile(r"effort", re.IGNORECASE)
 VERSION_TITLE_RE = re.compile(r"version|author|contributor", re.IGNORECASE)
 GIST_CHARS = 200
 WALKTHROUGH_SUFFIX = "_walkthrough"
+OPEN_QUESTIONS_KEY = "extra_open_questions"
+OPEN_QUESTIONS_COLUMNS = ["Ref", "Question", "Ask", "Status"]
+OPEN_QUESTIONS_RE = re.compile(r"open questions?", re.IGNORECASE)
 
 EXTRA_DEFAULTS = {
     "acceptance_criteria": ("Acceptance Criteria and Test Scenarios", "table", ["Ref", "Scenario", "Expected result", "Evidence"]),
     "operations": ("Error Handling, Monitoring and Operations", "text", []),
-    "decisions_log": ("Decisions and Open Questions", "table", ["Ref", "Question or decision", "Owner", "Status"]),
+    "decisions_log": ("Decisions", "table", ["Ref", "Decision", "Owner", "Status"]),
     "build_notes": ("Build Notes", "text", []),
 }
 
@@ -102,11 +105,11 @@ For every section decide:
 When several sections share a title, the template repeats a slide type; keep only as many
 of them as the brief needs and mark the rest not used, so the document has no duplicates.
 Propose extra slides only when the brief has content for them: an acceptance criteria table
-(columns Ref, Scenario, Expected result, Evidence), an operations text slide, a decisions and
-open questions table (columns Ref, Question or decision, Owner, Status), and a build notes text
-slide (key build_notes) for developer detail such as file naming, cut-off times, reprocessing
-steps and configuration keys, when the brief carries operations, investigation or non-functional
-detail. Place extras before the effort estimation.
+(columns Ref, Scenario, Expected result, Evidence), an operations text slide, a decisions table
+(columns Ref, Decision, Owner, Status), and a build notes text slide (key build_notes) for
+developer detail such as file naming, cut-off times, reprocessing steps and configuration keys,
+when the brief carries operations, investigation or non-functional detail. Place extras before
+the effort estimation. Open questions get their own slide from the brief; never propose one.
 For every diagram section in use without an uploaded image, add a flow entry with the title
 and purpose of the diagram to draw from the brief.
 The outline may end with template texts that belong to no field. List in "clear" the ones
@@ -392,6 +395,46 @@ def walkthrough_extras(design, blueprint: Blueprint, manifest: Manifest, flows: 
         title = design.titles.get(section.key, section.title)
         extras.append(ExtraSection(key=f"{section.key}{WALKTHROUGH_SUFFIX}", title=f"{title}: how it works", kind="text", prototype=prototype, before=following, reason="numbered steps taken from the drawing", generated=True))
     return extras
+
+
+def open_questions_extras(design, blueprint: Blueprint, manifest: Manifest) -> list[ExtraSection]:
+    """One generated slide listing the brief's open questions, unless the template already has such a slide."""
+    text = design.brief.open_questions.strip()
+    if not text or OPEN_QUESTIONS_KEY in design.hidden:
+        return []
+    if any(OPEN_QUESTIONS_RE.search(s.title) and not s.generated and s.key not in design.hidden for s in blueprint.sections):
+        return []
+    extra = ExtraSection(key=OPEN_QUESTIONS_KEY, title="Open Questions", kind="table", columns=list(OPEN_QUESTIONS_COLUMNS), prototype=_prototype(blueprint, "table", OPEN_QUESTIONS_COLUMNS, manifest), before=_before(blueprint), reason="from the brief's open questions", generated=True)
+    spec = _prototype_spec(manifest, blueprint, extra) if extra.prototype else None
+    if spec is not None and spec.kind == "table" and len(spec.columns) >= 3:
+        # A cloned table keeps its physical width, so the columns follow the prototype.
+        return [extra.model_copy(update={"columns": OPEN_QUESTIONS_COLUMNS[: len(spec.columns)]})]
+    prototype = _prototype(blueprint, "text", manifest=manifest)
+    return [extra.model_copy(update={"kind": "text", "columns": [], "prototype": prototype})] if prototype else []
+
+
+def open_question_lines(text: str) -> list[tuple[str, str]]:
+    """(question, who to ask) per non-empty line of the brief field."""
+    found = []
+    for raw in text.splitlines():
+        line = raw.strip().lstrip("-*• ").strip()
+        if line:
+            question, _, who = line.partition("|")
+            found.append((question.strip(), who.strip()))
+    return found
+
+
+def open_question_rows(text: str, columns: list[str] | None = None) -> list[dict]:
+    columns = columns or OPEN_QUESTIONS_COLUMNS
+    rows = []
+    for number, (question, who) in enumerate(open_question_lines(text), 1):
+        values = [str(number), question, who]
+        rows.append({column: (values[index] if index < len(values) else "") for index, column in enumerate(columns)})
+    return rows
+
+
+def open_questions_text(text: str) -> str:
+    return "\n".join(f"{number}. {question}" + (f" (ask: {who})" if who else "") for number, (question, who) in enumerate(open_question_lines(text), 1))
 
 
 def _prototype_section(blueprint: Blueprint, extra: ExtraSection) -> Section | None:

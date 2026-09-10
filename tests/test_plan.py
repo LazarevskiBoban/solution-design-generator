@@ -167,6 +167,46 @@ def test_build_notes_extra_is_a_text_slide(sample_deck, tmp_path):
 
 
 
+def test_open_questions_extra_is_built_from_the_brief(sample_deck, tmp_path):
+    from sdgen.blueprint import Blueprint, Section
+    from sdgen.manifest import Binding, FieldSpec, Manifest, ShapeRef
+    from sdgen.plan import OPEN_QUESTIONS_KEY, extended_blueprint, open_question_rows, open_questions_extras, open_questions_text
+
+    text = "Which bank sends BAI2? | Treasury\n- Is PGP needed for lockbox?\n\n"
+    assert open_question_rows(text, ["Ref", "Question", "Ask"]) == [{"Ref": "1", "Question": "Which bank sends BAI2?", "Ask": "Treasury"}, {"Ref": "2", "Question": "Is PGP needed for lockbox?", "Ask": ""}]
+    assert open_questions_text(text) == "1. Which bank sends BAI2? (ask: Treasury)\n2. Is PGP needed for lockbox?"
+
+    entry = _template(sample_deck, tmp_path)
+    design = Design(name="d", template="demo", brief=Brief(subject="L", open_questions=text))
+    extras = open_questions_extras(design, entry.blueprint, entry.manifest)
+    assert [e.key for e in extras] == [OPEN_QUESTIONS_KEY] and extras[0].kind == "text" and extras[0].generated and extras[0].title == "Open Questions"
+    extended = extended_blueprint(entry.blueprint, extras)
+    assert extended.section(OPEN_QUESTIONS_KEY).generated and open_questions_extras(design, extended, entry.manifest) == extras
+    assert open_questions_extras(Design(name="d", template="demo"), entry.blueprint, entry.manifest) == []
+    design.hidden = [OPEN_QUESTIONS_KEY]
+    assert open_questions_extras(design, entry.blueprint, entry.manifest) == []
+
+    manifest = Manifest(
+        name="m",
+        fields=[
+            FieldSpec(key="criteria", label="Success Criteria", kind="table", columns=["Ref", "Success Criteria", "Adoption Measure", "Notes"], bindings=[Binding(slide=9, shape=ShapeRef(id=1))]),
+            FieldSpec(key="effort", label="Effort", kind="table", columns=["Ref", "Role", "M1", "Total"], bindings=[Binding(slide=26, shape=ShapeRef(id=1))]),
+        ],
+    )
+    blueprint = Blueprint(
+        name="m",
+        sections=[
+            Section(key="criteria", title="Success Criteria", kind="table", slide=9, fields=["criteria"]),
+            Section(key="effort", title="Effort Estimation", kind="table", slide=26, fields=["effort"]),
+        ],
+    )
+    wide = Design(name="w", template="m", brief=Brief(subject="L", open_questions=text))
+    extra = open_questions_extras(wide, blueprint, manifest)[0]
+    assert extra.kind == "table" and extra.columns == ["Ref", "Question", "Ask", "Status"] and extra.prototype == "criteria" and extra.before == "effort"
+    owned = blueprint.model_copy(update={"sections": blueprint.sections + [Section(key="oq", title="Open Questions", kind="table", slide=30, fields=["criteria"])]})
+    assert open_questions_extras(wide, owned, manifest) == []
+
+
 def test_walkthrough_extras_follow_diagram_only_slides():
     from sdgen.blueprint import Blueprint, Section
     from sdgen.design import Design

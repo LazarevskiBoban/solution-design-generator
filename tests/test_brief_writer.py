@@ -48,6 +48,10 @@ def test_brief_roundtrip_and_skeleton():
     assert "## fact:version\n0.1\n" in dumped and "## acceptance_criteria\n1. Every file is posted once." in dumped
     assert load_brief(dumped) == with_facts
     assert with_facts.facts_text().startswith("Document version: 0.1\nEffort by role:\nArchitect")
+    asked = BRIEF.model_copy(update={"open_questions": "Which bank sends BAI2? | Treasury"})
+    assert "## open_questions\nWhich bank sends BAI2? | Treasury" in dump_brief(asked) and load_brief(dump_brief(asked)) == asked
+    assert load_brief(text).open_questions == "" and "## open_questions" in brief_skeleton()
+    assert load_brief("---\nsubject: X\n---\n## decisions_log\nold notes\n").decisions_log == "old notes"
 
 
 def test_fact_questions_follow_the_template(sample_deck, tmp_path):

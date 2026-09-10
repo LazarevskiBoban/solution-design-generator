@@ -26,7 +26,7 @@ from sdgen import material as materials
 from sdgen.drawio import to_drawio
 from sdgen.flow import plan_flows, to_mermaid, uses_sap, walkthrough_text
 from sdgen.icons import icon_keys, installed_keys
-from sdgen.plan import SOURCES, WALKTHROUGH_SUFFIX, FlowRequest, SectionDecision, SectionPlan, active_extras, apply_plan, extended_blueprint, extended_manifest, extra_slides, leftover_texts, plan_sections, walkthrough_extras
+from sdgen.plan import OPEN_QUESTIONS_KEY, SOURCES, WALKTHROUGH_SUFFIX, FlowRequest, SectionDecision, SectionPlan, active_extras, apply_plan, extended_blueprint, extended_manifest, extra_slides, leftover_texts, open_question_rows, open_questions_extras, open_questions_text, plan_sections, walkthrough_extras
 from sdgen.preview import export_slides
 from sdgen.references import lookup as lookup_reference
 from sdgen.registry import Registry, safe_name
@@ -372,8 +372,8 @@ def design_page() -> None:
         st.session_state[state_key] = store.load(name) if name in existing else Design(name=name, template=template)
         st.session_state[f"{state_key}:v"] = 0
     design: Design = st.session_state[state_key]
-    extras = active_extras(design.plan) + walkthrough_extras(design, entry.blueprint, entry.manifest, store.flows(design), _section_order(design, entry.blueprint))
-    walked = {e.key[: -len(WALKTHROUGH_SUFFIX)] for e in extras if e.generated}
+    extras = active_extras(design.plan) + walkthrough_extras(design, entry.blueprint, entry.manifest, store.flows(design), _section_order(design, entry.blueprint)) + open_questions_extras(design, entry.blueprint, entry.manifest)
+    walked = {e.key[: -len(WALKTHROUGH_SUFFIX)] for e in extras if e.generated and e.key.endswith(WALKTHROUGH_SUFFIX)}
     if extras:
         entry = entry.model_copy(update={"manifest": extended_manifest(entry.manifest, entry.blueprint, extras), "blueprint": extended_blueprint(entry.blueprint, extras)})
         manifest, blueprint = entry.manifest, entry.blueprint
@@ -921,7 +921,7 @@ def _refresh_section_pictures(state_key: str, entry, design: Design, store: Desi
     by_key = {s.key: s for s in blueprint.sections}
     keys = response.slide_keys or [""] * len(response.slide_map)
     section = next(s for s in blueprint.sections if s.key == key)
-    is_extra = key in {e.key for e in active_extras(design.plan)}
+    is_extra = key.startswith("extra_") or key.endswith(WALKTHROUGH_SUFFIX) or key in {e.key for e in active_extras(design.plan)}
     targets = [i for i, (number, k) in enumerate(zip(response.slide_map, keys), 1) if (k == key if is_extra else (not k and number == section.slide))]
     entries, notes = st.session_state[f"{state_key}:board"]
     pictures: dict[int, bytes] = {}
@@ -1239,9 +1239,13 @@ def _render_design(entry, store: DesignStore, design: Design, subject: str, name
     manifest, blueprint = entry.manifest, entry.blueprint
     fields, field_modes = _render_fields(design, entry)
     drawn_flows = store.flows(design)
-    extras = active_extras(design.plan) + walkthrough_extras(design, blueprint, manifest, drawn_flows, _section_order(design, blueprint))
+    extras = active_extras(design.plan) + walkthrough_extras(design, blueprint, manifest, drawn_flows, _section_order(design, blueprint)) + open_questions_extras(design, blueprint, manifest)
     for extra in extras:
-        if extra.generated:
+        if not extra.generated:
+            continue
+        if extra.key == OPEN_QUESTIONS_KEY:
+            fields[extra.key] = open_question_rows(design.brief.open_questions, extra.columns) if extra.kind == "table" else open_questions_text(design.brief.open_questions)
+        else:
             fields[extra.key] = walkthrough_text(drawn_flows[extra.key[: -len(WALKTHROUGH_SUFFIX)]])
     extra_keys = {e.key for e in extras}
     slides_extra = extra_slides(SectionPlan(extras=extras), manifest, blueprint, fields, design.hidden)
