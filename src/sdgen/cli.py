@@ -16,6 +16,7 @@ from sdgen.mapping.model import MappingSet, SourceSpec, TargetSpec
 from sdgen.mapping.workbook import write_workbook
 from sdgen.writer import draft_content
 from sdgen.manifest import Manifest
+from sdgen.material import load_material
 from sdgen.preview import preview as run_preview
 from sdgen.registry import MANIFEST_FILE, Registry, TemplateEntry
 from sdgen.tools import (
@@ -121,9 +122,11 @@ def draft(template: str, brief_file: Path, output: Path, llm_name: str | None, m
     if entry.blueprint is None:
         click.echo(f"template '{entry.name}' has no outline; re-add it to create one")
         raise SystemExit(1)
+    brief = load_brief(brief_file.read_text(encoding="utf-8"))
+    brief.material = load_material(brief_file.with_name("material.yaml"))  # the reference material a design keeps next to its brief
     try:
         llm = get_llm(llm_name, model=model)
-        result = draft_content(load_brief(brief_file.read_text(encoding="utf-8")), entry.blueprint, entry.manifest, llm, original=entry.original)
+        result = draft_content(brief, entry.blueprint, entry.manifest, llm, original=entry.original)
     except (LLMNotConfigured, LLMError) as exc:
         click.echo(str(exc))
         raise SystemExit(1)

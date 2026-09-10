@@ -129,6 +129,42 @@ def test_last_draft_is_persisted(tmp_path):
     assert store.load("lockbox").last_draft == design.last_draft
 
 
+def test_material_is_persisted_and_files_removed(tmp_path):
+    from sdgen.material import new_material
+
+    store = DesignStore(tmp_path / "designs")
+    design = Design(name="lockbox", template="demo", brief=Brief(subject="Lockbox"))
+    picture = store.add_material(design, new_material("image", title="Landscape", tags=["flow"]), _png(), file_name="Landscape v1.png")
+    note = store.add_material(design, new_material("text", title="Notes", text="reception, emission"))
+    store.save(design)
+    folder = tmp_path / "designs" / "lockbox"
+    assert picture.file == f"{picture.id}-Landscape v1.png" and (folder / "material" / picture.file).is_file()
+    assert (folder / "material.yaml").is_file() and "Landscape" not in (folder / "brief.md").read_text(encoding="utf-8")
+    loaded = store.load("lockbox")
+    assert loaded.brief.material == [picture, note]
+    assert store.material_images(loaded, {"flow"}) == [(_png(), "image/png")] and store.material_images(loaded, {"other"}) == []
+    store.remove_material(loaded, picture.id)
+    store.save(loaded)
+    assert not (folder / "material" / picture.file).exists() and [m.id for m in store.load("lockbox").brief.material] == [note.id]
+    store.remove_material(loaded, note.id)
+    store.save(loaded)
+    assert not (folder / "material.yaml").exists() and store.load("lockbox").brief.material == []
+
+
+def test_material_images_prefer_tagged_then_newest(tmp_path):
+    from sdgen.material import new_material
+
+    store = DesignStore(tmp_path / "designs")
+    design = Design(name="d", template="demo")
+    for title, tags, added in (("old", [], "2026-01-01T00:00:00+00:00"), ("new", [], "2026-02-01T00:00:00+00:00"), ("tagged", ["flow"], "2025-01-01T00:00:00+00:00"), ("other", ["x"], "2024-01-01T00:00:00+00:00")):
+        store.add_material(design, new_material("image", title=title, tags=tags, added=added), title.encode(), file_name=f"{title}.png")
+    store.add_material(design, new_material("text", title="note", text="t"))
+    assert [d for d, _ in store.material_images(design, {"flow"})] == [b"tagged", b"new", b"old"]
+    assert [d for d, _ in store.material_images(design, {"flow"}, limit=2)] == [b"tagged", b"new"]
+    assert [d for d, _ in store.material_images(design)] == [b"tagged", b"other", b"new", b"old"]
+    assert all(mime == "image/png" for _, mime in store.material_images(design))
+
+
 def test_diagram_format_is_persisted(tmp_path):
     from sdgen.design import Design, DesignStore
 

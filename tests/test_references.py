@@ -56,6 +56,13 @@ def test_labels_read_the_fetched_diagram_sources(tmp_path, monkeypatch):
     assert len(references.labels("sap", "RA0021")) == references.MAX_LABELS
 
 
+def test_cell_texts_returns_every_label(tmp_path):
+    path = tmp_path / "a.drawio"
+    path.write_text('<mxfile><diagram id="d" name="n"><mxGraphModel><root><mxCell id="1" value="&lt;b&gt;A&lt;/b&gt; long label with many words in it here" vertex="1"/><mxCell id="2" value="B"/><mxCell id="3" value="B"/><mxCell id="4" value=""/></root></mxGraphModel></diagram></mxfile>', encoding="utf-8")
+    assert references.cell_texts(path) == ["A long label with many words in it here", "B"]
+    assert references.cell_texts(path.read_bytes()) == references.cell_texts(path) and references.cell_texts(b"<mxfile>") == []
+
+
 @pytest.mark.skipif(not SAP_SOURCES.is_dir(), reason="run sdgen refs --fetch to compare the palette with the SAP sources")
 def test_palette_matches_the_fetched_sap_sources():
     from sdgen import palette

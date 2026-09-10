@@ -391,3 +391,38 @@ def test_plan_flows_offers_the_matching_reference_pack(tmp_path, monkeypatch):
     assert "reference" not in plain.schema["properties"]["flows"]["items"]["properties"] and "reference architectures" not in plain.user
     assert clean_flow(FlowSpec(nodes=[FlowNode(id="a", label="A")], reference="sap:RA9999")).reference == ""
     assert clean_flow(FlowSpec(nodes=[FlowNode(id="a", label="A")], reference=" sap:RA0022 ")).reference == "sap:RA0022"
+
+
+def test_plan_flows_lists_tagged_material_first_and_sends_pictures_only_when_given():
+    from sdgen.material import new_material
+    from sdgen.plan import FlowRequest
+
+    request = FlowRequest(section="level_2", title="L2", purpose="")
+    told = Brief(
+        subject="Lockbox",
+        about="Bank files to SAP S/4HANA.",
+        material=[
+            new_material("text", title="General note", text="Two lanes."),
+            new_material("image", title="Sketch", tags=["level_2"], file="a.png", text="Bank -> SFTP -> CI -> S/4"),
+            new_material("text", title="Elsewhere", tags=["other"], text="ignored"),
+        ],
+    )
+    llm = _stub({"flows": []})
+    plan_flows(told, [request], llm)
+    block = llm.user.split("# Reference material", 1)[1].split("# Brief", 1)[0]
+    assert block.index("## Sketch") < block.index("## General note") and "Elsewhere" not in llm.user
+    assert "attached pictures" in SYSTEM_PROMPT.lower()
+
+    class Seeing:
+        name = "fake"
+
+        def complete(self, system, user):
+            return ""
+
+        def complete_json(self, system, user, schema, name="result", images=None):
+            self.images = images
+            return {"flows": []}
+
+    seeing = Seeing()
+    plan_flows(told, [request], seeing, images=[(b"png", "image/png")])
+    assert seeing.images == [(b"png", "image/png")]

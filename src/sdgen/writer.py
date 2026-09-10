@@ -10,6 +10,7 @@ from sdgen.brief import Brief, FactQuestion, dump_brief
 from sdgen.content import Content, dump_markdown, load_markdown, validate_content
 from sdgen.llm import LLMClient, get_llm
 from sdgen.manifest import Manifest
+from sdgen.material import material_corpus, material_text
 from sdgen.mechanical import mechanical_fills
 
 SKIP_KINDS = {"static", "divider"}
@@ -24,9 +25,10 @@ CHARS_PER_WORD = 6
 
 SYSTEM_PROMPT = """You are a senior SAP integration solution architect writing a solution-design document
 that developers will build and test from.
-Write only from the brief and the facts. Names, dates, numbers, identifiers and system names
-come only from the facts or verbatim from the brief; where such a detail is missing write
-[TBC: short question] instead of inventing it.
+Write only from the brief, the facts and the reference material attached to the brief. Names,
+dates, numbers, identifiers and system names come only from the facts, verbatim from the brief or
+from the reference material; where such a detail is missing write [TBC: short question]
+instead of inventing it.
 You receive an answer skeleton. Return it filled in: keep every "## " heading exactly as written
 and in the same order, replace each <!-- hint --> with the content, and add nothing else: no other
 headings, no commentary, no code fence.
@@ -39,7 +41,8 @@ bullet, no nested bullets unless the structure shows them; a box of three lines 
 one or two short lines. Prose: at most three sentences per paragraph; no filler such as "the
 design must ensure that" or "it is important to note". Fields marked as a few words get at most
 four words. The earlier document quoted in the outline shows structure and tone only: never
-reuse its system names, wording or facts.
+reuse its system names, wording or facts. Reference material attached to the brief is the
+customer's own source material: use it like the brief.
 Overview fields summarise for management: what, why and with which systems. Developer detail
 (steps, checks, parameters, cut-off times, naming) goes to the build notes field when the
 skeleton has one, never into an overview.
@@ -175,11 +178,13 @@ def extract_facts(brief: Brief, questions: list[FactQuestion], llm: LLMClient) -
         "additionalProperties": False,
     }
     system = (
-        "You extract facts from a solution-design brief. Return a JSON object whose keys are the fact keys given. "
-        "Include a key only when the brief states the fact explicitly; copy values verbatim, do not guess or infer. "
+        "You extract facts from a solution-design brief and the reference material attached to it. Return a JSON object whose keys are the fact keys given. "
+        "Include a key only when the brief or its reference material states the fact explicitly; copy values verbatim, do not guess or infer. "
         "Multi-line facts use one line per item in the format described."
     )
-    user = "# Fact keys\n" + "\n".join(f"- {q.spec.key}: {q.spec.label}. {q.spec.guidance}" for q in questions) + "\n\n# Brief\n" + dump_brief(brief)
+    block = material_text(brief.material)
+    user = "# Fact keys\n" + "\n".join(f"- {q.spec.key}: {q.spec.label}. {q.spec.guidance}" for q in questions)
+    user += ("\n\n# Reference material\n" + block if block else "") + "\n\n# Brief\n" + dump_brief(brief)
     found = llm.complete_json(system, user, schema, name="facts")
     wanted = {q.spec.key for q in questions}
     return {k: str(v).strip() for k, v in found.items() if k in wanted and str(v).strip()}
@@ -211,7 +216,10 @@ def build_prompt(
     routing = ROUTING.get(group or "", [])
     if routing:
         lines += ["# How to use the brief", *[f"- {r}" for r in routing], ""]
-    lines += ["# Facts (the only source for names, dates, numbers and identifiers)", brief.facts_text() or "(no facts given: write [TBC: question] where one is needed)", ""]
+    lines += ["# Facts (with the brief and its reference material, the only source for names, dates, numbers and identifiers)", brief.facts_text() or "(no facts given: write [TBC: question] where one is needed)", ""]
+    block = material_text(brief.material, tags={s["section"] for s in sections})
+    if block:
+        lines += ["# Reference material (attached to the brief by its author; use it like the brief)", block, ""]
     lines += ["# Brief", dump_brief(brief), "# Answer skeleton", answer_skeleton(brief, sections)]
     if include_context:
         context = {
@@ -326,7 +334,7 @@ def group_sections(sections: list[dict]) -> list[tuple[str, list[dict]]]:
 
 
 def number_warnings(content: Content, brief: Brief, manifest: Manifest) -> list[str]:
-    known = " ".join([dump_brief(brief), brief.facts_text()])
+    known = " ".join([dump_brief(brief), brief.facts_text(), material_corpus(brief.material)])
     warnings = []
     for key, value in content.fields.items():
         spec = manifest.field(key)

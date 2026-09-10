@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sdgen.brief import Brief, dump_brief
 from sdgen.icons import catalogue, icon_keys, icon_png
 from sdgen.llm import LLMClient
+from sdgen.material import material_text
 from sdgen.palette import EDGE, GREY_FILL, SAP_BLUE, SAP_DARK, SAP_FILL, SLATE, SUBTITLE, TEXT, WHITE, rgb
 from sdgen.references import Pack, candidates, labels, lookup, matching
 from sdgen.references import pack as reference_pack
@@ -121,7 +122,9 @@ Edges: from node to node in flow order, each with a short label (at most three w
 the protocol, format or trigger, and a kind: sync, async or file.
 Steps: three to eight numbered sentences a developer reads next to the diagram, one per edge in
 flow order: what is sent, over what, and what happens when it fails where the brief says so.
-Use only systems, protocols and steps named in the brief and the facts; never example names.
+Use only systems, protocols and steps named in the brief, the facts and the reference material;
+never example names. Attached pictures are the author's own diagrams: keep their block names
+and arrows.
 Reference: when reference architectures are listed, give each diagram the id of the closest one
 (or an empty string) and name the blocks the way the listed reference diagrams do where it fits.
 Return only JSON matching the schema."""
@@ -187,10 +190,11 @@ def lane_is_sap(spec: FlowSpec, lane: str) -> bool:
     return sap > 0 and sap >= len(members) - sap
 
 
-def plan_flows(brief: Brief, requests: list, llm: LLMClient, icons: list[str] | None = None) -> dict[str, FlowSpec]:
+def plan_flows(brief: Brief, requests: list, llm: LLMClient, icons: list[str] | None = None, images: list[tuple[bytes, str]] | None = None) -> dict[str, FlowSpec]:
     """One model call for all requested diagrams; each request has section, title and purpose.
 
-    With `icons`, every node also gets the closest key of that catalogue.
+    With `icons`, every node also gets the closest key of that catalogue. With `images`, the author's
+    pictures (bytes, mime) travel with the call for models that can look at them.
     """
     if not requests:
         return {}
@@ -206,8 +210,12 @@ def plan_flows(brief: Brief, requests: list, llm: LLMClient, icons: list[str] | 
     if packs:
         schema = _schema_with_references(schema, packs)
         lines += _reference_lines(packs, brief.facts_text() + "\n" + dump_brief(brief))
-    lines += ["", "# Facts", brief.facts_text() or "(none)", "", "# Brief", dump_brief(brief)]
-    data = llm.complete_json(SYSTEM_PROMPT, "\n".join(lines), schema, name="flows")
+    lines += ["", "# Facts", brief.facts_text() or "(none)"]
+    block = material_text(brief.material, tags={request.section for request in requests})
+    if block:
+        lines += ["", "# Reference material (the author's own diagrams and notes; keep their block names and arrows)", block]
+    lines += ["", "# Brief", dump_brief(brief)]
+    data = llm.complete_json(SYSTEM_PROMPT, "\n".join(lines), schema, name="flows", **({"images": images} if images else {}))
     wanted = {request.section for request in requests}
     result: dict[str, FlowSpec] = {}
     for item in data.get("flows") or []:

@@ -13,11 +13,14 @@ from sdgen.drawio import to_drawio
 from sdgen.manifest import Manifest
 from sdgen.flow import FlowSpec, to_mermaid
 from sdgen.mapping.model import MappingSet
+from sdgen.material import Material, load_material, mime_of, relevant, save_material
 from sdgen.plan import SectionPlan
 from sdgen.registry import safe_name
 
 DESIGN_FILE = "design.yaml"
 BRIEF_FILE = "brief.md"
+MATERIAL_FILE = "material.yaml"
+MATERIAL_DIR = "material"
 CONTENT_FILE = "content.md"
 MAPPING_FILE = "mappings.yaml"
 PLAN_FILE = "plan.yaml"
@@ -86,10 +89,12 @@ class DesignStore:
         content_path = folder / CONTENT_FILE
         mapping_path = folder / MAPPING_FILE
         plan_path = folder / PLAN_FILE
+        brief = load_brief(brief_path.read_text(encoding="utf-8")) if brief_path.is_file() else Brief()
+        brief.material = load_material(folder / MATERIAL_FILE)
         return Design(
             name=name,
             template=data.get("template", ""),
-            brief=load_brief(brief_path.read_text(encoding="utf-8")) if brief_path.is_file() else Brief(),
+            brief=brief,
             content_markdown=content_path.read_text(encoding="utf-8") if content_path.is_file() else "",
             images={k: list(v) for k, v in (data.get("images") or {}).items()},
             mapping=MappingSet.load(mapping_path) if mapping_path.is_file() else None,
@@ -125,6 +130,7 @@ class DesignStore:
         }
         (folder / DESIGN_FILE).write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), encoding="utf-8")
         (folder / BRIEF_FILE).write_text(dump_brief(design.brief), encoding="utf-8")
+        save_material(design.brief.material, folder / MATERIAL_FILE)
         (folder / CONTENT_FILE).write_text(design.content_markdown, encoding="utf-8")
         if design.mapping is not None:
             design.mapping.save(folder / MAPPING_FILE)
@@ -186,6 +192,47 @@ class DesignStore:
         if target.name not in names:
             names.append(target.name)
         return str(target)
+
+    def material_dir(self, name: str) -> Path:
+        folder = self.root / safe_name(name) / MATERIAL_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def material_path(self, design: Design, item: Material) -> Path | None:
+        return self.material_dir(design.name) / item.file if item.file else None
+
+    def add_material(self, design: Design, item: Material, data: bytes | None = None, file_name: str = "") -> Material:
+        """Appends an item to the brief, storing its file under the item id when it has one."""
+        if data is not None:
+            item.file = f"{item.id}-{Path(file_name or item.file or item.title or 'file').name}"
+            (self.material_dir(design.name) / item.file).write_bytes(data)
+        design.brief.material.append(item)
+        return item
+
+    def remove_material(self, design: Design, item_id: str) -> None:
+        kept = []
+        for item in design.brief.material:
+            if item.id != item_id:
+                kept.append(item)
+                continue
+            path = self.material_path(design, item)
+            if path is not None and path.is_file():
+                path.unlink()
+        design.brief.material = kept
+
+    def material_images(self, design: Design, tags: set[str] | None = None, limit: int = 4) -> list[tuple[bytes, str]]:
+        """The pictures a diagram planner may look at: tagged for these sections first, then untagged, newest first."""
+        items = [m for m in relevant(design.brief.material, tags) if m.kind == "image" and m.file]
+        newest = lambda group: sorted(group, key=lambda m: m.added, reverse=True)  # noqa: E731
+        found: list[tuple[bytes, str]] = []
+        for item in newest([m for m in items if m.tags]) + newest([m for m in items if not m.tags]):
+            path = self.material_path(design, item)
+            mime = mime_of(item.file)
+            if path is not None and path.is_file() and mime:
+                found.append((path.read_bytes(), mime))
+            if len(found) >= limit:
+                break
+        return found
 
     def content(self, design: Design, manifest: Manifest) -> Content:
         content = load_markdown(design.content_markdown, manifest) if design.content_markdown.strip() else Content()

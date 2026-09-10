@@ -195,6 +195,52 @@ def test_prompt_lists_sections_fields_and_brief(sample_deck, tmp_path):
     assert "## business_need\n<!-- Business Need: text" in skeleton
     _, with_context = build_prompt(BRIEF, entry.blueprint, entry.manifest, include_context=True)
     assert "```json" in with_context
+    assert "# Reference material" not in user
+
+
+def test_prompt_carries_the_reference_material(sample_deck, tmp_path):
+    from sdgen.material import new_material
+
+    entry = _template(sample_deck, tmp_path)
+    told = BRIEF.model_copy(update={"material": [new_material("text", title="Bank list", text="BoA, JPMC, PNC serve company codes 1000 1002 2000"), new_material("image", title="Other slide", tags=["nowhere"], text="secret")]})
+    system, user = build_prompt(told, entry.blueprint, entry.manifest)
+    assert "customer's own source material" in system and "from the reference material" in system
+    block = user.split("# Reference material", 1)[1].split("# Brief", 1)[0]
+    assert "## Bank list (text)" in block and "BoA, JPMC" in block and "Other slide" not in user
+
+
+def test_number_warnings_accept_numbers_from_material():
+    from sdgen.material import new_material
+    from sdgen.writer import number_warnings
+
+    manifest = Manifest(name="m", fields=[FieldSpec(key="need", label="Need", bindings=[Binding(slide=1, shape=ShapeRef(id=1))])])
+    content = Content(fields={"need": "Files arrive from 3 banks for company codes 1000 and 2000."})
+    assert number_warnings(content, BRIEF, manifest)
+    told = BRIEF.model_copy(update={"material": [new_material("text", text="Company codes 1000, 1002, 2000 are illustrative.")]})
+    assert number_warnings(content, told, manifest) == []
+
+
+def test_extract_facts_reads_material(sample_deck, tmp_path):
+    from sdgen.brief import fact_questions
+    from sdgen.material import new_material
+
+    entry = _template(sample_deck, tmp_path)
+    seen = {}
+
+    class JsonLLM:
+        name = "j"
+
+        def complete(self, system, user):
+            return ""
+
+        def complete_json(self, system, user, schema, name="result"):
+            seen["system"], seen["user"] = system, user
+            return {}
+
+    told = BRIEF.model_copy(update={"material": [new_material("link", title="Country list", url="https://x", text="Operating countries: ZA, KE")]})
+    extract_facts(told, fact_questions(entry.blueprint, entry.manifest), JsonLLM())
+    assert "reference material" in seen["system"] and "# Reference material" in seen["user"] and "ZA, KE" in seen["user"]
+    assert seen["user"].index("# Reference material") < seen["user"].index("# Brief")
 
 
 def test_mock_draft_fills_every_writable_field(sample_deck, tmp_path):
@@ -258,6 +304,27 @@ def test_cli_draft_writes_content(sample_deck, tmp_path):
     assert "[Draft]" in out.read_text(encoding="utf-8")
     skeleton = CliRunner().invoke(main, ["brief"])
     assert skeleton.exit_code == 0 and "## approach" in skeleton.output
+
+
+def test_cli_draft_loads_material_next_to_the_brief(sample_deck, tmp_path, monkeypatch):
+    import sdgen.cli as cli
+    from sdgen.material import new_material, save_material
+    from sdgen.writer import DraftResult
+
+    _template(sample_deck, tmp_path)
+    brief_path = tmp_path / "brief.md"
+    brief_path.write_text(dump_brief(BRIEF), encoding="utf-8")
+    save_material([new_material("text", title="Pack", text="Slide 1 big picture")], tmp_path / "material.yaml")
+    seen = {}
+
+    def fake_draft(brief, blueprint, manifest, llm, original=None):
+        seen["material"] = [m.title for m in brief.material]
+        return DraftResult(markdown="## x\n", content=Content(), llm="mock")
+
+    monkeypatch.setattr(cli, "draft_content", fake_draft)
+    result = CliRunner().invoke(main, ["draft", "demo", str(brief_path), "-o", str(tmp_path / "content.md"), "--templates", str(tmp_path / "templates")])
+    assert result.exit_code == 0, result.output
+    assert seen["material"] == ["Pack"]
 
 
 class _ScriptedLLM:

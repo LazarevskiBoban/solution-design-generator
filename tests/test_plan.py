@@ -93,6 +93,20 @@ def test_plan_sections_merges_the_model_answer_and_applies(sample_deck, tmp_path
     assert loaded.plan == plan and loaded.titles == design.titles and (tmp_path / "designs" / "d" / "plan.yaml").is_file()
 
 
+def test_plan_prompt_includes_material(sample_deck, tmp_path):
+    from sdgen.material import new_material
+
+    entry = _template(sample_deck, tmp_path)
+    llm = _JsonLLM({"decisions": []})
+    told = BRIEF.model_copy(update={"material": [new_material("text", title="Pack", text="Slide 1 big picture")]})
+    plan_sections(told, entry.blueprint, entry.manifest, llm)
+    user = llm.prompts[0][1]
+    assert "# Reference material" in user and "Slide 1 big picture" in user and user.index("# Reference material") < user.index("# Brief")
+    plain = _JsonLLM({"decisions": []})
+    plan_sections(BRIEF, entry.blueprint, entry.manifest, plain)
+    assert "# Reference material" not in plain.prompts[0][1]
+
+
 def test_mock_plan_is_the_default(sample_deck, tmp_path):
     entry = _template(sample_deck, tmp_path)
     plan = plan_sections(BRIEF, entry.blueprint, entry.manifest, MockLLM())

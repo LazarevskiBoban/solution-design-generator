@@ -9,6 +9,7 @@ from sdgen.analyze import slugify
 from sdgen.blueprint import Blueprint
 from sdgen.content import parse_markdown_sections, strip_comments
 from sdgen.manifest import Manifest
+from sdgen.material import Material
 
 BRIEF_FIELDS: list[tuple[str, str, str]] = [
     ("about", "What the integration is about", "Two or three sentences: which business process, which systems, why now."),
@@ -77,12 +78,6 @@ class FactQuestion(BaseModel):
     used_by: list[str] = Field(default_factory=list)
 
 
-class DiagramInput(BaseModel):
-    section: str
-    path: str
-    caption: str = ""
-
-
 class Brief(BaseModel):
     subject: str = ""
     about: str = ""
@@ -96,7 +91,7 @@ class Brief(BaseModel):
     decisions_log: str = ""
     mapping_summary: str = ""
     facts: dict[str, str] = Field(default_factory=dict)
-    diagrams: list[DiagramInput] = Field(default_factory=list)
+    material: list[Material] = Field(default_factory=list)  # pictures, notes and links the model reads next to the brief
 
     @property
     def is_empty(self) -> bool:
@@ -193,7 +188,7 @@ def load_brief(text: str) -> Brief:
             continue
         if key not in Brief.model_fields:
             key = by_label.get(slugify(heading), slugify(heading))
-        if key in Brief.model_fields and key not in ("diagrams", "facts"):
+        if key in Brief.model_fields and key not in ("material", "facts"):
             data[key] = strip_comments(body).strip()
     return Brief(**data)
 

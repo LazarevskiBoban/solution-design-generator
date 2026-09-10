@@ -428,7 +428,7 @@ def design_page() -> None:
                         facts[spec.key] = st.text_input(spec.label, key=widget_key, help=help_text)
         design.brief = Brief(
             subject=subject.strip(),
-            diagrams=design.brief.diagrams,
+            material=design.brief.material,
             facts={k: v.strip() for k, v in facts.items() if v.strip()},
             **texts,
         )

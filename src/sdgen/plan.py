@@ -14,6 +14,7 @@ from sdgen.brief import Brief, dump_brief
 from sdgen.flow import FlowSpec
 from sdgen.llm import LLMClient
 from sdgen.manifest import FieldSpec, Manifest
+from sdgen.material import material_text
 from sdgen.render import ExtraSlide
 
 Source = Literal["draft", "keep", "blank", "diagram", "mechanical"]
@@ -433,6 +434,9 @@ def _prompt(brief: Brief, blueprint: Blueprint, manifest: Manifest, images: set[
     if leftovers:
         lines += ["", "# Template text not bound to any field (slide | shape id | text)"]
         lines += [f"- {item.slide} | {item.shape} | {item.text}" for item in leftovers]
+    block = material_text(brief.material, total=8000)
+    if block:
+        lines += ["", "# Reference material", block]
     lines += ["", "# Brief", dump_brief(brief)]
     return "\n".join(lines)
 

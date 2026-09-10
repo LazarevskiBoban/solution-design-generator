@@ -136,13 +136,22 @@ def labels(system: str, ref_id: str) -> list[str]:
     if not folder.is_dir():
         return found
     for path in sorted(folder.rglob("*.drawio")):
-        for model in _models(path):
-            for cell in model.iter("mxCell"):
-                text = _plain(cell.get("value") or "")
-                if text and len(text.split()) <= MAX_LABEL_WORDS and text not in found:
-                    found.append(text)
-                if len(found) >= MAX_LABELS:
-                    return found
+        for text in cell_texts(path):
+            if len(text.split()) <= MAX_LABEL_WORDS and text not in found:
+                found.append(text)
+            if len(found) >= MAX_LABELS:
+                return found
+    return found
+
+
+def cell_texts(source: Path | bytes) -> list[str]:
+    """Every distinct visible text on a draw.io drawing, in document order, HTML stripped."""
+    found: list[str] = []
+    for model in _models(source):
+        for cell in model.iter("mxCell"):
+            text = _plain(cell.get("value") or "")
+            if text and text not in found:
+                found.append(text)
     return found
 
 
@@ -169,10 +178,10 @@ def _plain(value: str) -> str:
     return " ".join(text.split())
 
 
-def _models(path: Path) -> list:
-    """The mxGraphModel elements of a draw.io file, inflating compressed diagrams."""
+def _models(source: Path | bytes) -> list:
+    """The mxGraphModel elements of a draw.io file or its bytes, inflating compressed diagrams."""
     try:
-        root = etree.fromstring(path.read_bytes())
+        root = etree.fromstring(source if isinstance(source, bytes) else Path(source).read_bytes())
     except (etree.XMLSyntaxError, OSError):
         return []
     models = []
