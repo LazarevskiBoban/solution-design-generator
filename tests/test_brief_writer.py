@@ -81,6 +81,15 @@ def test_resplit_lines_trusts_only_a_verbatim_reply():
     assert resplit_lines(reworded, "Open questions", text, 2) == "Which bank? | Treasury Is PGP needed?\nSecurity"
 
 
+def test_draft_warnings_include_ungrounded_terms(sample_deck, tmp_path):
+    entry = _template(sample_deck, tmp_path)
+    reply = "---\nsubject: X\n---\n## business_need\nBanks deliver statements daily; RFEBLB00 posts them.\n## scope\n| Function | Countries |\n|---|---|\n| Finance | ZA |\n## first_point\n- one\n"
+    result = draft_content(BRIEF, entry.blueprint, entry.manifest, _ScriptedLLM([reply]))
+    assert any("names things not in the brief: RFEBLB00" in w for w in result.warnings)
+    skeleton = build_prompt(BRIEF, entry.blueprint, entry.manifest)[1]
+    assert "Sources: the brief, its facts and the reference material" in build_prompt(BRIEF, entry.blueprint, entry.manifest)[0] and "## scope" in skeleton
+
+
 def test_label_prefixes_are_stripped_in_every_punctuation_form():
     from sdgen.writer import strip_label_prefixes
 
@@ -259,7 +268,7 @@ def test_prompt_lists_sections_fields_and_brief(sample_deck, tmp_path):
     keys = {f["key"] for f in sections[0]["fields"]}
     assert keys == {"business_need", "scope", "first_point"}
     system, user = build_prompt(BRIEF, entry.blueprint, entry.manifest)
-    assert "instead of inventing" in system and "skeleton" in system and "50 and 85 percent" in system
+    assert "[TBC: what to ask]" in system and "skeleton" in system and "50 and 85 percent" in system
     assert "## Executive Overview (" in user
     fields_line = next(line for line in user.splitlines() if line.startswith("Fields: "))
     assert set(fields_line[8:].split(", ")) == keys
@@ -280,7 +289,7 @@ def test_prompt_carries_the_reference_material(sample_deck, tmp_path):
     entry = _template(sample_deck, tmp_path)
     told = BRIEF.model_copy(update={"material": [new_material("text", title="Bank list", text="BoA, JPMC, PNC serve company codes 1000 1002 2000"), new_material("image", title="Other slide", tags=["nowhere"], text="secret")]})
     system, user = build_prompt(told, entry.blueprint, entry.manifest)
-    assert "customer's own source material" in system and "from the reference material" in system
+    assert "customer's own source material" in system and "the reference material attached to it" in system
     block = user.split("# Reference material", 1)[1].split("# Brief", 1)[0]
     assert "## Bank list (text)" in block and "BoA, JPMC" in block and "Other slide" not in user
 

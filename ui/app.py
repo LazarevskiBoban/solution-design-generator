@@ -1231,13 +1231,21 @@ def _globals(subject: str) -> dict[str, str]:
 
 
 def _show_draft_warnings(warnings: list[str]) -> None:
-    empty = []
+    empty, ungrounded, short = [], [], []
     for warning in warnings:
         match = EMPTY_FIELD_RE.match(warning)
         if match:
             empty.append(match.group(1))
+        elif "not in the brief" in warning:
+            ungrounded.append(warning)
+        elif " covers " in warning:
+            short.append(warning)
         else:
             st.warning(warning)
+    if ungrounded:
+        st.warning("Not in the brief (check or replace with [TBC]):\n" + "\n".join(f"- {w}" for w in ungrounded))
+    if short:
+        st.warning("Fewer entries than the brief lists:\n" + "\n".join(f"- {w}" for w in short))
     if empty:
         st.warning(f"{len(empty)} fields came back empty: " + ", ".join(empty))
 

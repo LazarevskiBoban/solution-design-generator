@@ -12,6 +12,7 @@ from sdgen.analyze import slugify
 from sdgen.blueprint import Blueprint, Section
 from sdgen.brief import Brief, dump_brief, looks_joined, split_joined
 from sdgen.flow import FlowSpec
+from sdgen.grounding import GROUNDING_RULE
 from sdgen.llm import LLMClient
 from sdgen.manifest import FieldSpec, Manifest
 from sdgen.material import material_text
@@ -115,6 +116,8 @@ and purpose of the diagram to draw from the brief.
 The outline may end with template texts that belong to no field. List in "clear" the ones
 that describe the earlier project (its systems, plans, dates, names, examples) so they are
 emptied; leave generic wording alone (labels, legends, headings, instructions, "see ...").
+Titles, extra slides and diagram purposes name only systems and flows from the brief.
+""" + GROUNDING_RULE + """
 Return only JSON matching the schema."""
 
 

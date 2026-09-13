@@ -17,6 +17,7 @@ from sdgen.brief import Brief, dump_brief
 from sdgen.icons import catalogue, icon_keys, icon_png
 from sdgen.llm import LLMClient
 from sdgen.material import material_text
+from sdgen.grounding import GROUNDING_RULE
 from sdgen.palette import EDGE, GREY_FILL, SAP_BLUE, SAP_DARK, SAP_FILL, SLATE, SUBTITLE, TEXT, WHITE, rgb
 from sdgen.references import Pack, candidates, labels, lookup, matching
 from sdgen.references import pack as reference_pack
@@ -122,8 +123,8 @@ Edges: from node to node in flow order, each with a short label (at most three w
 the protocol, format or trigger, and a kind: sync, async or file.
 Steps: three to eight numbered sentences a developer reads next to the diagram, one per edge in
 flow order: what is sent, over what, and what happens when it fails where the brief says so.
-Use only systems, protocols and steps named in the brief, the facts and the reference material;
-never example names. Attached pictures are the author's own diagrams: keep their block names
+""" + GROUNDING_RULE + """
+Never example names. Attached pictures are the author's own diagrams: keep their block names
 and arrows.
 Reference: when reference architectures are listed, give each diagram the id of the closest one
 (or an empty string) and name the blocks the way the listed reference diagrams do where it fits.

@@ -9,6 +9,7 @@ from sdgen.blueprint import Blueprint
 from sdgen.brief import Brief, FactQuestion, dump_brief, split_joined
 from sdgen.content import Content, dump_markdown, load_markdown, validate_content
 from sdgen.fill.text import strip_leading_label
+from sdgen.grounding import GROUNDING_RULE, coverage_warnings, grounding_warnings, is_listed
 from sdgen.llm import LLMClient, get_llm
 from sdgen.manifest import Manifest
 from sdgen.material import material_corpus, material_text
@@ -24,12 +25,9 @@ SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 MIN_DUPLICATE_WORDS = 8
 CHARS_PER_WORD = 6
 
-SYSTEM_PROMPT = """You are a senior SAP integration solution architect writing a solution-design document
+SYSTEM_PROMPT = f"""You are a senior SAP integration solution architect writing a solution-design document
 that developers will build and test from.
-Write only from the brief, the facts and the reference material attached to the brief. Names,
-dates, numbers, identifiers and system names come only from the facts, verbatim from the brief or
-from the reference material; where such a detail is missing write [TBC: short question]
-instead of inventing it.
+{GROUNDING_RULE}
 You receive an answer skeleton. Return it filled in: keep every "## " heading exactly as written
 and in the same order, replace each <!-- hint --> with the content, and add nothing else: no other
 headings, no commentary, no code fence.
@@ -48,7 +46,10 @@ Overview fields summarise for management: what, why and with which systems. Deve
 (steps, checks, parameters, cut-off times, naming) goes to the build notes field when the
 skeleton has one, never into an overview.
 A table keeps its header row and gets one row per entry, at least one row, with exactly the
-listed columns. Never write the same sentence into two fields; each field adds something new."""
+listed columns. A table fed by a list in the brief (acceptance criteria, decisions, operations,
+references) gets one row per entry of that list, never fewer; rows that do not fit one slide
+continue on a copy of it. A cell the brief does not state is [TBC]; the row stays. Never write
+the same sentence into two fields; each field adds something new."""
 
 ROUTING = {
     "overview": [
@@ -134,6 +135,8 @@ def draft_content(
         content.globals["subject"] = brief.subject.strip()
     warnings = [w for w in validate_content(content, manifest) if "image" not in w]
     warnings += number_warnings(content, brief, manifest)
+    warnings += grounding_warnings(content, brief, manifest)
+    warnings += coverage_warnings(content, brief, manifest)
     warnings += duplicate_warnings(content)
     return DraftResult(
         markdown=dump_markdown(content, manifest),
@@ -181,7 +184,7 @@ def extract_facts(brief: Brief, questions: list[FactQuestion], llm: LLMClient) -
     system = (
         "You extract facts from a solution-design brief and the reference material attached to it. Return a JSON object whose keys are the fact keys given. "
         "Include a key only when the brief or its reference material states the fact explicitly; copy values verbatim, do not guess or infer. "
-        "Multi-line facts use one line per item in the format described."
+        "Multi-line facts use one line per item in the format described. " + GROUNDING_RULE
     )
     block = material_text(brief.material)
     user = "# Fact keys\n" + "\n".join(f"- {q.spec.key}: {q.spec.label}. {q.spec.guidance}" for q in questions)
@@ -245,6 +248,10 @@ def answer_skeleton(brief: Brief, sections: list[dict]) -> str:
                     hint += f" on about {field['max_lines']} lines"
                 hint += f" (about {max(1, field['max_chars'] // CHARS_PER_WORD)} words; write 50 to 85 percent of it"
                 hint += "; a bullet takes at least one line)" if field.get("max_lines") else ")"
+            elif field["kind"] == "table" and field.get("listed"):
+                hint += ", one row per entry of the brief's list, never fewer"
+                if field.get("max_rows"):
+                    hint += f"; about {field['max_rows']} rows fit one slide and the rest continue on a copy of it"
             elif field["kind"] == "table" and field.get("max_rows"):
                 hint += f", about {field['max_rows']} rows fit the slide; further rows continue on a copy of it"
             if field["guidance"]:
@@ -319,6 +326,7 @@ def writable_sections(
                         "max_rows": max((b.max_rows or 0) for b in f.bindings) or None,
                         "token": any(b.mode == "token" for b in f.bindings),
                         "guidance": f.guidance,
+                        "listed": f.kind == "table" and is_listed(f.label, f.key),
                     }
                     for f in fields
                 ],
