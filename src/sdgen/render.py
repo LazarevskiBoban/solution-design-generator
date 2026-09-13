@@ -9,6 +9,7 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.enum.text import MSO_ANCHOR
 from pydantic import BaseModel, Field
 
+from sdgen.blueprint import cap_title, clean_title
 from sdgen.content import Content, ImageValue, images_of, parse_pipe_table
 from sdgen.diagrams import remove_shapes
 from sdgen.fill.image import replace_picture
@@ -84,6 +85,7 @@ def render(
     flows: dict[str, FlowSpec] | None = None,
     spill: bool = False,
     clear_shapes: list[tuple[int, int]] | None = None,
+    subject_slides: set[int] | list[int] | None = None,
 ) -> RenderResult:
     prs = Presentation(str(template))
     slides = list(prs.slides)
@@ -96,8 +98,11 @@ def render(
         prototypes |= set(continue_on)
     theme = theme_fonts(slides[0].part) if slides else ("Arial", "Arial")
 
+    keep_subject = {1} if subject_slides is None else set(subject_slides)
     for spec in manifest.globals:
         value = content.globals.get(spec.key, "")
+        if spec.key == "subject":
+            _strip_subject_from_titles(slides, spec.replaces, keep_subject)
         if not value:
             issues.append(RenderIssue(field=spec.key, message=f"no value; '{spec.replaces}' left in place"))
             continue
@@ -105,7 +110,6 @@ def render(
         if hits == 0:
             issues.append(RenderIssue(field=spec.key, message=f"'{spec.replaces}' not found in the template"))
 
-    subject = str(content.globals.get("subject", "") or "")
     for number, title in (titles or {}).items():
         if not 1 <= number <= len(slides) or not title.strip():
             continue
@@ -113,8 +117,7 @@ def render(
         if shape is None:
             issues.append(RenderIssue(slide=number, message="no title placeholder to retitle"))
             continue
-        current = shape.text_frame.text
-        set_rich_text(shape, f"{title.strip()}: {subject}" if subject and subject in current else title.strip())
+        set_rich_text(shape, _capped(title, issues, number))
         fit_text_shape(shape, theme=theme)
 
     # Cleared before anything is filled or copied, so continuation copies inherit the cleared state.
@@ -187,7 +190,7 @@ def render(
     for number, fields_pending in pending.items():
         _continue_slide(prs, slides[number - 1], layouts.get(number), manifest, number, fields_pending, theme, issues, kept)
 
-    extra_ids = _add_extras(prs, slides, extras or [], subject, issues, theme)
+    extra_ids = _add_extras(prs, slides, extras or [], issues, theme)
 
     for index in sorted(set(manifest.slides.exclude) | hidden_slides, reverse=True):
         if 1 <= index <= len(slides):
@@ -203,6 +206,29 @@ def render(
         slide_map=_slide_map(prs, numbers),
         slide_keys=[extra_ids.get(slide.slide_id, "") for slide in prs.slides],
     )
+
+
+def _strip_subject_from_titles(slides: list, replaces: str, keep: set[int]) -> int:
+    """Titles outside the cover lose the subject marker, so the section title stands alone."""
+    marker = " ".join(replaces.split())
+    count = 0
+    for number, slide in enumerate(slides, 1):
+        title = slide.shapes.title
+        if number in keep or title is None or not title.has_text_frame:
+            continue
+        text = title.text_frame.text
+        if marker not in " ".join(text.split()):
+            continue
+        set_rich_text(title, cap_title(clean_title(text, marker)))
+        count += 1
+    return count
+
+
+def _capped(title: str, issues: list[RenderIssue], slide: int | None = None) -> str:
+    capped = cap_title(title)
+    if capped != " ".join(title.split()):
+        issues.append(RenderIssue(level="info", slide=slide, message=f"title shortened to '{capped}'"))
+    return capped
 
 
 def _set_header(shape, columns: list[str]) -> None:
@@ -237,7 +263,7 @@ def _draw_flows(slides: list, manifest: Manifest, content: Content, flows: dict[
     return drawn
 
 
-def _add_extras(prs, slides: list, extras: list[ExtraSlide], subject: str, issues: list[RenderIssue], theme: tuple[str, str] | None = None) -> dict[int, str]:
+def _add_extras(prs, slides: list, extras: list[ExtraSlide], issues: list[RenderIssue], theme: tuple[str, str] | None = None) -> dict[int, str]:
     ids: dict[int, str] = {}
     for extra in extras:
         binding = extra.spec.bindings[0] if extra.spec.bindings else None
@@ -248,8 +274,7 @@ def _add_extras(prs, slides: list, extras: list[ExtraSlide], subject: str, issue
         ids[clone.slide_id] = extra.key
         title_shape = clone.shapes.title
         if title_shape is not None:
-            current = title_shape.text_frame.text
-            set_rich_text(title_shape, f"{extra.title}: {subject}" if subject and subject in current else extra.title)
+            set_rich_text(title_shape, _capped(extra.title, issues))
             fit_text_shape(title_shape, theme=theme)
         shape = find_shape(clone, binding.shape.id)
         copies: list = []

@@ -30,6 +30,16 @@ def test_clean_title_removes_subject_and_separators():
     assert clean_title(None, subject) == ""
 
 
+def test_cap_title_cuts_at_a_word_boundary():
+    from sdgen.blueprint import cap_title
+
+    assert cap_title("  Executive   Overview ") == "Executive Overview"
+    capped = cap_title("Integration architecture for the inbound lockbox, statement and status files")
+    assert capped == "Integration architecture for the inbound lockbox, statement" and len(capped) <= 60
+    assert cap_title("abcdefghij" * 7, 25) == "abcdefghij" * 2 + "abcde"
+    assert cap_title(None) == ""
+
+
 def test_fixture_sections(sample_deck):
     deck, analysis, manifest, blueprint = _derive(sample_deck)
     assert [s.slide for s in blueprint.sections] == [1, 2]

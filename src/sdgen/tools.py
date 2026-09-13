@@ -102,6 +102,7 @@ class RenderRequest(BaseModel):
     flows: dict[str, FlowSpec] = Field(default_factory=dict)
     spill: bool = True  # continue an overflowing box on a copy of its slide instead of shrinking below 80 percent
     clear_shapes: list[tuple[int, int]] = Field(default_factory=list)  # (slide, shape id) of template text to empty
+    subject_slides: list[int] | None = None  # slides whose title keeps the subject (the cover); None means slide 1
 
 
 class RenderResponse(BaseModel):
@@ -134,5 +135,6 @@ def render_document(request: RenderRequest) -> RenderResponse:
         flows=request.flows,
         spill=request.spill,
         clear_shapes=request.clear_shapes,
+        subject_slides=request.subject_slides,
     )
     return RenderResponse(output=result.output, slides=result.slides, issues=result.issues, slide_map=result.slide_map, slide_keys=result.slide_keys)

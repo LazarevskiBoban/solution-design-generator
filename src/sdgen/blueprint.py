@@ -22,6 +22,7 @@ MAPPING_RE = re.compile(r"mapping", re.IGNORECASE)
 REFERENCE_RE = re.compile(r"reference", re.IGNORECASE)
 STATIC_TITLE_RE = re.compile(r"\b(contents|agenda|table of contents|guiding principles)\b", re.IGNORECASE)
 MARKER_RE = re.compile(r"\{\{\s*[^{}]+?\s*\}\}")
+TITLE_MAX = 60
 
 
 class Section(BaseModel):
@@ -115,6 +116,17 @@ def clean_title(title: str | None, subject: str | None) -> str:
     text = " ".join(text.split())
     text = re.sub(r":\s+(?=[(|])", " ", text)
     return text.strip(" :|-–—")
+
+
+def cap_title(title: str | None, limit: int = TITLE_MAX) -> str:
+    """A slide title of at most `limit` characters, cut at a word boundary."""
+    text = " ".join((title or "").split())
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    if text[limit] != " " and " " in head:
+        head = head.rsplit(" ", 1)[0]
+    return head.rstrip(" :,;-–—")
 
 
 def _heading_fallback(slide, bound: set[int]) -> str | None:

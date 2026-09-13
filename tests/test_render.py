@@ -197,7 +197,7 @@ def test_carrier_deck_end_to_end(tmp_path):
     assert not result.errors, [str(i) for i in result.errors]
     deck = inspect_deck(out)
     assert len(deck.slides) == 30
-    assert deck.slides[4].title == "Executive Overview: Lockbox Integration"
+    assert deck.slides[4].title == "Executive Overview"
     need = next(s for s in deck.slides[4].walk() if s.text.startswith("Business Need: "))
     assert need.text == "Business Need: Bank statements arrive daily.\nCAMT.053 files\none per account"
     scope = next(s for s in deck.slides[4].walk() if s.kind == "table" and s.table.cells[0][0] == "Function")
@@ -238,12 +238,37 @@ def test_hidden_and_reordered_slides_with_slide_map(sample_deck, tmp_path):
     assert spread.slide_map[0] == 2 and set(spread.slide_map[1:]) == {1} and len(spread.slide_map) >= 3
 
 
-def test_titles_replace_slide_titles_keeping_the_subject(sample_deck, tmp_path):
+def test_titles_replace_slide_titles_without_the_subject(sample_deck, tmp_path):
     manifest = _fixture_manifest(sample_deck)
     out = tmp_path / "titles.pptx"
     result = render(sample_deck, manifest, Content(globals={"subject": "Carrier Invoices"}), out, titles={1: "Overview", 9: "Nothing"})
     assert not result.errors
-    assert Presentation(str(out)).slides[0].shapes.title.text == "Overview: Carrier Invoices"
+    assert Presentation(str(out)).slides[0].shapes.title.text == "Overview"
+
+
+def test_subject_stays_only_on_the_cover(sample_deck, tmp_path):
+    manifest = _fixture_manifest(sample_deck)
+    content = Content(globals={"subject": "Carrier Invoices"})
+    render(sample_deck, manifest, content, tmp_path / "plain.pptx", subject_slides=[])
+    assert Presentation(str(tmp_path / "plain.pptx")).slides[0].shapes.title.text == "Executive Overview"
+    render(sample_deck, manifest, content, tmp_path / "cover.pptx")
+    assert Presentation(str(tmp_path / "cover.pptx")).slides[0].shapes.title.text == "Executive Overview: Carrier Invoices"
+
+
+def test_long_titles_are_capped_at_sixty_characters(sample_deck, tmp_path):
+    from sdgen.render import ExtraSlide
+
+    manifest = _fixture_manifest(sample_deck)
+    manifest.slides.exclude = []
+    spec = manifest.field("scope").model_copy(update={"key": "extra_long", "label": "Long"})
+    title = "Interface inventory for lockbox, statements, payments and payment status across every bank"
+    extra = ExtraSlide(key="extra_long", title=title, spec=spec, value=[{"Function": "A", "Countries": "B"}], before=2)
+    result = render(sample_deck, manifest, Content(), tmp_path / "long.pptx", extras=[extra], titles={1: title})
+    prs = Presentation(str(tmp_path / "long.pptx"))
+    for slide in list(prs.slides)[:2]:
+        text = slide.shapes.title.text
+        assert len(text) <= 60 and title.startswith(text) and not text.endswith(" ")
+    assert sum("title shortened" in str(i) for i in result.issues) == 2
 
 
 def test_extra_slides_are_cloned_from_a_prototype(sample_deck, tmp_path):
@@ -259,7 +284,7 @@ def test_extra_slides_are_cloned_from_a_prototype(sample_deck, tmp_path):
     assert result.slides == 3 and result.slide_map == [1, 1, 2] and result.slide_keys == ["", "extra_acc", ""]
     prs = Presentation(str(out))
     added = prs.slides[1]
-    assert added.shapes.title.text == "Acceptance Criteria: Carrier Invoices"
+    assert added.shapes.title.text == "Acceptance Criteria"
     table = next(s for s in added.shapes if s.has_table).table
     assert [[c.text for c in r.cells] for r in table.rows] == [["Function", "Countries"], ["Test", "ZA"]]
 

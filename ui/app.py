@@ -1295,6 +1295,7 @@ def _render_design(entry, store: DesignStore, design: Design, subject: str, name
             extras=slides_extra,
             flows=flows,
             clear_shapes=[(c.slide, c.shape) for c in (design.plan.clear if design.plan else []) if c.include],
+            subject_slides=[s.slide for s in blueprint.sections if s.kind == "cover"],
         )
     )
     return output, response

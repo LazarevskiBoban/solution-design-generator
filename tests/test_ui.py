@@ -100,7 +100,7 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     saved = tmp_path / "generated.pptx"
     saved.write_bytes(data)
     slide = Presentation(str(saved)).slides[0]
-    assert slide.shapes.title.text == "Executive Overview: Lockbox Integration"
+    assert slide.shapes.title.text == "Executive Overview"
     need = next(s for s in slide.shapes if s.name == "Business Need Box").text_frame.text
     assert need.startswith("Business Need: [Draft] Bank statements arrive daily.")
 

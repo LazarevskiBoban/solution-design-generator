@@ -179,6 +179,7 @@ def render(template: str, content: Path, output: Path, missing: str, templates: 
             output=str(output),
             missing=missing,
             continue_on=continuation_slides(entry.blueprint),
+            subject_slides=[s.slide for s in entry.blueprint.sections if s.kind == "cover"] if entry.blueprint else None,
         )
     )
     for issue in result.issues:

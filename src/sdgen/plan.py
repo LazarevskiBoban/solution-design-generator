@@ -9,7 +9,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from sdgen.analyze import slugify
-from sdgen.blueprint import Blueprint, Section
+from sdgen.blueprint import TITLE_MAX, Blueprint, Section, cap_title
 from sdgen.brief import Brief, dump_brief, looks_joined, split_joined
 from sdgen.flow import FlowSpec
 from sdgen.grounding import GROUNDING_RULE
@@ -98,7 +98,8 @@ For every section decide:
 - title: a new title only when the template title names the earlier project's systems or
   flows and the slide's purpose still fits the new integration (for example a flow slide that
   becomes the new integration's equivalent flow); otherwise an empty string keeps the title.
-  A title has at most 50 characters and no arrows; the subject is appended automatically.
+  A title has at most 60 characters, no arrows, and never the integration's name: the subject
+  stays on the cover only.
 - source: "draft" when the model should write it, "keep" for template text that applies as it
   is (guiding principles, contents), "blank" when the slide should stay empty, "diagram" for
   diagram slides to draw from the brief, "mechanical" for cover, version control and references.
@@ -254,7 +255,7 @@ def merge_plan(
         if section.kind == "cover":
             continue
         decision.use = bool(item.get("use", decision.use))
-        title = str(item.get("title") or "").strip()
+        title = cap_title(str(item.get("title") or ""))
         decision.title = "" if title == section.title else title
         source = str(item.get("source") or decision.source)
         if source in SOURCES:
@@ -395,8 +396,9 @@ def walkthrough_extras(design, blueprint: Blueprint, manifest: Manifest, flows: 
             continue  # the slide's own text explains the drawing
         position = keys.index(section.key) if section.key in keys else -1
         following = keys[position + 1] if 0 <= position < len(keys) - 1 else ""
-        title = design.titles.get(section.key, section.title)
-        extras.append(ExtraSection(key=f"{section.key}{WALKTHROUGH_SUFFIX}", title=f"{title}: how it works", kind="text", prototype=prototype, before=following, reason="numbered steps taken from the drawing", generated=True))
+        suffix = ": how it works"
+        title = cap_title(design.titles.get(section.key, section.title), TITLE_MAX - len(suffix))
+        extras.append(ExtraSection(key=f"{section.key}{WALKTHROUGH_SUFFIX}", title=f"{title}{suffix}", kind="text", prototype=prototype, before=following, reason="numbered steps taken from the drawing", generated=True))
     return extras
 
 

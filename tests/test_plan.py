@@ -44,6 +44,17 @@ def test_default_plan_follows_section_kinds(sample_deck, tmp_path):
     assert all(d.use for d in plan.decisions) and plan.flows == [] and plan.extras == []
 
 
+def test_plan_titles_are_capped_at_a_word_boundary(sample_deck, tmp_path):
+    from sdgen.plan import merge_plan
+
+    entry = _template(sample_deck, tmp_path)
+    first = entry.blueprint.sections[0]
+    long_title = "Inbound lockbox, statement and payment status file transport for every bank in scope"
+    plan = merge_plan(default_plan(entry.blueprint), {"decisions": [{"key": first.key, "use": True, "title": long_title, "source": "draft"}]}, entry.blueprint, set())
+    title = plan.decision(first.key).title
+    assert len(title) <= 60 and long_title.startswith(title) and not title.endswith(" ") and title.endswith("transport")
+
+
 def test_plan_sections_merges_the_model_answer_and_applies(sample_deck, tmp_path):
     entry = _template(sample_deck, tmp_path)
     first, second = entry.blueprint.sections
