@@ -24,6 +24,32 @@ def _texts(frame):
     return [[cell.text for cell in row.cells] for row in frame.table.rows]
 
 
+def test_resize_columns_adds_and_removes_columns_keeping_the_total_width():
+    from sdgen.fill.table import resize_columns
+
+    prs, frame = _table_frame(rows=3, cols=3, footer=None)
+    total = sum(c.width for c in frame.table.columns)
+    resize_columns(frame, 5)
+    assert len(frame.table.columns) == 5 and sum(c.width for c in frame.table.columns) == total
+    assert all(len(row.cells) == 5 for row in frame.table.rows)
+    assert _texts(frame)[0] == ["Ref", "Item", "Notes", "", ""] and _texts(frame)[1] == ["1", "first", "", "", ""]
+    resize_columns(frame, 2)
+    assert len(frame.table.columns) == 2 and sum(c.width for c in frame.table.columns) == total
+    assert _texts(frame) == [["Ref", "Item"], ["1", "first"], ["", ""]]
+
+
+def test_resize_columns_refuses_merged_cells():
+    import pytest
+
+    from sdgen.fill.table import resize_columns
+
+    prs, frame = _table_frame(rows=2, cols=3, footer=None)
+    frame.table.cell(0, 0).merge(frame.table.cell(0, 1))
+    with pytest.raises(ValueError):
+        resize_columns(frame, 4)
+    assert len(frame.table.columns) == 3
+
+
 def test_dict_rows_clone_template_row_and_keep_footer():
     prs, frame = _table_frame()
     rows = [

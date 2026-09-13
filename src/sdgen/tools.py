@@ -6,7 +6,7 @@ from sdgen.analyze import Analysis, analyze_deck, slugify
 from sdgen.blueprint import Blueprint, derive_blueprint
 from sdgen.content import Content, load_markdown, skeleton_markdown, validate_content as _validate
 from sdgen.inventory import DeckInfo, inspect_deck
-from sdgen.manifest import Manifest
+from sdgen.manifest import FieldSpec, Manifest
 from sdgen.flow import FlowSpec
 from sdgen.render import ExtraSlide, MissingMode, RenderIssue, render
 
@@ -103,6 +103,7 @@ class RenderRequest(BaseModel):
     spill: bool = True  # continue an overflowing box on a copy of its slide instead of shrinking below 80 percent
     clear_shapes: list[tuple[int, int]] = Field(default_factory=list)  # (slide, shape id) of template text to empty
     subject_slides: list[int] | None = None  # slides whose title keeps the subject (the cover); None means slide 1
+    details: dict[str, FieldSpec] = Field(default_factory=dict)  # composite field key -> the field to fill on its detail slide
 
 
 class RenderResponse(BaseModel):
@@ -136,5 +137,6 @@ def render_document(request: RenderRequest) -> RenderResponse:
         spill=request.spill,
         clear_shapes=request.clear_shapes,
         subject_slides=request.subject_slides,
+        details=request.details,
     )
     return RenderResponse(output=result.output, slides=result.slides, issues=result.issues, slide_map=result.slide_map, slide_keys=result.slide_keys)

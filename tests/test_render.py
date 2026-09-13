@@ -545,6 +545,118 @@ def test_template_picture_under_written_text_is_removed(tmp_path):
     assert "Screenshot" in {s.name for s in Presentation(str(tmp_path / "kept.pptx")).slides[0].shapes}
 
 
+def _detail_deck(tmp_path):
+    """An executive overview with a small table, a plain text slide and a plain table slide to clone for the details."""
+    from pptx.util import Inches
+    from test_layout import overview_deck
+
+    prs, slide, shapes = overview_deck()
+    grid = slide.shapes.add_table(2, 2, Inches(5.2), Inches(5.85), Inches(4.3), Inches(0.6))
+    grid.name = "Scope Table"
+    grid.table.cell(0, 0).text, grid.table.cell(0, 1).text, grid.table.cell(1, 0).text = "Function", "Bank", "x"
+    notes = prs.slides.add_slide(prs.slide_layouts[5])
+    notes.shapes.title.text = "Notes"
+    body = notes.shapes.add_textbox(Inches(0.5), Inches(1.2), Inches(9), Inches(5.5))
+    body.name, body.text_frame.text = "Body", "body text"
+    tables = prs.slides.add_slide(prs.slide_layouts[5])
+    tables.shapes.title.text = "Table"
+    frame = tables.shapes.add_table(2, 3, Inches(0.5), Inches(1.2), Inches(9), Inches(0.8))
+    frame.name = "Big Table"
+    for column, name in enumerate(["A", "B", "C"]):
+        frame.table.cell(0, column).text = name
+    deck = tmp_path / "detail.pptx"
+    prs.save(deck)
+
+    def field(key, shape, slide_number=1, max_chars=None, kind="text", columns=None):
+        return FieldSpec(key=key, label=key.title(), kind=kind, columns=columns or [], bindings=[Binding(slide=slide_number, shape=ShapeRef(id=shape.shape_id), max_chars=max_chars)])
+
+    manifest = Manifest(
+        name="detail",
+        fields=[
+            field("need", shapes["need"], max_chars=60),
+            field("left", shapes["left"]),
+            field("inner", shapes["inner"], max_chars=45),
+            field("scope", grid, kind="table", columns=["Function", "Bank"]),
+            field("body", body, 2),
+            field("big", frame, 3, kind="table", columns=["A", "B", "C"]),
+        ],
+    )
+    text_proto = Binding(slide=2, shape=ShapeRef(id=body.shape_id))
+    table_proto = Binding(slide=3, shape=ShapeRef(id=frame.shape_id))
+    details = {
+        "need": FieldSpec(key="need_details", label="Need", kind="bullets", bindings=[text_proto]),
+        "left": FieldSpec(key="left_details", label="Left", kind="bullets", bindings=[text_proto.model_copy()]),
+        "inner": FieldSpec(key="inner_details", label="Inner", kind="bullets", bindings=[text_proto.model_copy()]),
+        "scope": FieldSpec(key="scope_details", label="Scope", kind="table", columns=["Function", "Bank"], bindings=[table_proto]),
+    }
+    return deck, manifest, details
+
+
+def _plain_fields():
+    return {"body": "Body text", "big": [{"A": "1", "B": "2", "C": "3"}]}
+
+
+def test_composite_fields_get_detail_slides_in_reading_order(tmp_path):
+    deck, manifest, details = _detail_deck(tmp_path)
+    need = "\n".join(f"Paragraph {i}: lockbox files arrive daily and are posted automatically." for i in range(1, 9))
+    inner = "\n".join(f"- Point {i} is short." for i in range(1, 7))
+    content = Content(fields={"need": need, "left": "Left text", "left_details": "- more on the left\n- and more", "inner": inner, "scope": [{"Function": "One", "Bank": "B"}], **_plain_fields()})
+    result = render(deck, manifest, content, tmp_path / "out.pptx", details=details, spill=True)
+    slides = list(Presentation(str(tmp_path / "out.pptx")).slides)
+    assert not result.errors
+    assert result.slide_keys == ["", "need_details", "left_details", "inner_details", "", ""] and result.slide_map == [1, 1, 1, 1, 2, 3]
+    first = {s.name: s for s in slides[0].shapes}
+    assert {"Need Box", "Left Box", "Right Inner", "Scope Table"} <= set(first) and not slides[0].shapes.title.text.endswith("(cont.)")
+    assert first["Need Box"].text_frame.text.startswith("Paragraph 1") and "Paragraph 8" not in first["Need Box"].text_frame.text
+    assert [s.shapes.title.text for s in slides[1:4]] == ["Need", "Left", "Inner"]
+    bodies = [{s.name: s for s in sl.shapes}["Body"].text_frame.text for sl in slides[1:4]]
+    assert bodies == [need, "more on the left\nand more", "\n".join(f"Point {i} is short." for i in range(1, 7))]
+    assert any("full content follows on a detail slide" in str(i) for i in result.issues)
+
+
+def test_composite_table_is_trimmed_at_a_row_boundary_and_detailed(tmp_path):
+    from pptx.util import Inches
+
+    deck, manifest, details = _detail_deck(tmp_path)
+    rows = [{"Function": f"Flow {i}", "Bank": f"Bank {i}"} for i in range(1, 7)]
+    content = Content(fields={"need": "Need.", "left": "L", "inner": "I", "scope": rows, **_plain_fields()})
+    result = render(deck, manifest, content, tmp_path / "out.pptx", details=details, spill=True)
+    slides = list(Presentation(str(tmp_path / "out.pptx")).slides)
+    assert not result.errors and result.slide_keys == ["", "scope_details", "", ""]
+    first = next(s for s in slides[0].shapes if s.has_table).table
+    assert 1 < len(first.rows) < 7 and [c.text for c in first.rows[1].cells] == ["Flow 1", "Bank 1"]
+    detail = next(s for s in slides[1].shapes if s.has_table).table
+    assert len(detail.columns) == 2 and sum(c.width for c in detail.columns) == Inches(9)
+    assert [c.text for c in detail.rows[0].cells] == ["Function", "Bank"] and len(detail.rows) == 7
+    assert [c.text for c in list(detail.rows)[-1].cells] == ["Flow 6", "Bank 6"] and slides[1].shapes.title.text == "Scope"
+
+
+def test_detail_slide_still_continues_on_a_copy(tmp_path):
+    deck, manifest, details = _detail_deck(tmp_path)
+    details["need"].bindings[0].max_chars = 120
+    need = "\n".join(f"Paragraph {i}: lockbox files arrive daily and are posted automatically." for i in range(1, 9))
+    content = Content(fields={"need": need, "left": "L", "inner": "I", "scope": [{"Function": "One", "Bank": "B"}], **_plain_fields()})
+    result = render(deck, manifest, content, tmp_path / "out.pptx", details=details, spill=True)
+    slides = list(Presentation(str(tmp_path / "out.pptx")).slides)
+    assert not result.errors and result.slide_keys[:2] == ["", "need_details"] and result.slide_keys.count("need_details") >= 2
+    assert result.slide_keys[-2:] == ["", ""] and result.slide_map[-2:] == [2, 3]
+    assert slides[1].shapes.title.text == "Need" and slides[2].shapes.title.text == "Need (cont.)"
+    texts = [{s.name: s for s in sl.shapes}["Body"].text_frame.text for sl in slides[1 : result.slide_keys.count("need_details") + 1]]
+    assert "\n".join(t for t in texts if t) == need
+
+
+def test_planned_extras_follow_the_detail_slides(tmp_path):
+    from sdgen.render import ExtraSlide
+
+    deck, manifest, details = _detail_deck(tmp_path)
+    spec = details["scope"].model_copy(update={"key": "extra_acc", "label": "Acceptance"})
+    extra = ExtraSlide(key="extra_acc", title="Acceptance", spec=spec, value=[{"Function": "Case", "Bank": "ok"}], before=2)
+    content = Content(fields={"need": "Need.", "left": "L", "left_details": "- more", "inner": "I", "scope": [{"Function": "One", "Bank": "B"}], **_plain_fields()})
+    result = render(deck, manifest, content, tmp_path / "out.pptx", details=details, extras=[extra], spill=True)
+    assert not result.errors
+    assert result.slide_keys == ["", "left_details", "extra_acc", "", ""] and result.slide_map == [1, 1, 1, 2, 3]
+
+
 def test_table_pushes_the_kept_block_below_on_the_copy(tmp_path):
     from pptx.util import Inches
 

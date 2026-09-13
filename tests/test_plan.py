@@ -44,6 +44,38 @@ def test_default_plan_follows_section_kinds(sample_deck, tmp_path):
     assert all(d.use for d in plan.decisions) and plan.flows == [] and plan.extras == []
 
 
+def test_detail_prototypes_pick_plain_slides_of_the_same_kind(sample_deck, tmp_path):
+    from sdgen.blueprint import Blueprint, Section, composite_fields
+    from sdgen.manifest import Binding, FieldSpec, Manifest, ShapeRef
+    from sdgen.plan import detail_prototypes
+
+    entry = _template(sample_deck, tmp_path)
+    assert set(composite_fields(entry.blueprint, entry.manifest)) == {"business_need", "scope", "first_point"}
+    assert detail_prototypes(entry.blueprint, entry.manifest) == {}  # the sample deck has no plain slide to clone
+
+    manifest = Manifest(
+        name="m",
+        fields=[
+            FieldSpec(key="a", label="Need", bindings=[Binding(slide=1, shape=ShapeRef(id=1), keep_prefix="Need:")]),
+            FieldSpec(key="t", label="Scope", kind="table", columns=["Function", "Bank"], bindings=[Binding(slide=1, shape=ShapeRef(id=2))]),
+            FieldSpec(key="n", label="Notes", kind="bullets", bindings=[Binding(slide=2, shape=ShapeRef(id=3), max_chars=900)]),
+            FieldSpec(key="g", label="Grid", kind="table", columns=["A", "B", "C"], bindings=[Binding(slide=3, shape=ShapeRef(id=4), keep_last_row_if="Total")]),
+        ],
+    )
+    blueprint = Blueprint(
+        name="m",
+        sections=[
+            Section(key="over", title="Overview", kind="composite", slide=1, fields=["a", "t"]),
+            Section(key="notes", title="Notes", kind="text", slide=2, fields=["n"]),
+            Section(key="grid", title="Grid", kind="table", slide=3, fields=["g"]),
+        ],
+    )
+    found = detail_prototypes(blueprint, manifest)
+    assert set(found) == {"a", "t"}
+    assert found["a"].key == "a_details" and found["a"].kind == "bullets" and found["a"].bindings[0].slide == 2 and found["a"].bindings[0].keep_prefix is None
+    assert found["t"].kind == "table" and found["t"].columns == ["Function", "Bank"] and found["t"].bindings[0].slide == 3 and found["t"].bindings[0].keep_last_row_if is None
+
+
 def test_plan_titles_are_capped_at_a_word_boundary(sample_deck, tmp_path):
     from sdgen.plan import merge_plan
 

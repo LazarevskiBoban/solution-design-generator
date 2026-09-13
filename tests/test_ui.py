@@ -165,6 +165,8 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     assert [e["section"] for e in ui._visible_entries(entries, fresh, blueprint)] == [keys[0]]
     twice = entries + [dict(entries[0])]
     assert [e["title"] for e in ui._visible_entries(twice, fresh, blueprint)] == ["A", "A (cont.)"]
+    with_detail = [entries[0], {**entries[0], "title": "Need", "detail": "need_details"}, dict(entries[0])]
+    assert [e["title"] for e in ui._visible_entries(with_detail, fresh, blueprint)] == ["A", "Need", "A (cont.)"]
     assert ui.SHORTCUTS == {"previous": "Left", "next": "Right", "up": "Up", "down": "Down", "hide": "Delete"}
     assert "max-height" in ui.VIEWER_CSS and "100vw" in ui.FULL_VIEW_CSS and "viewer_details" in ui.FULL_VIEW_CSS and ui._write_title(fresh) == "3. Write the slides"
     assert f"{state_key}:draw_after_write" not in app.session_state

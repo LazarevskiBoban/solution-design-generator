@@ -118,6 +118,18 @@ def clean_title(title: str | None, subject: str | None) -> str:
     return text.strip(" :|-–—")
 
 
+def composite_fields(blueprint: Blueprint, manifest: Manifest) -> list[str]:
+    """Fields whose box may hold only a summary: on a composite section or on a slide with several written fields."""
+    keys: list[str] = []
+    for section in blueprint.sections:
+        if section.kind in ("cover", "static", "divider"):
+            continue
+        specs = [f for f in (manifest.field(k) for k in section.fields) if f is not None and f.kind != "image" and not f.static and any(b.mode == "replace" for b in f.bindings)]
+        if section.kind == "composite" or len(specs) >= 2:
+            keys.extend(f.key for f in specs if f.key not in keys)
+    return keys
+
+
 def cap_title(title: str | None, limit: int = TITLE_MAX) -> str:
     """A slide title of at most `limit` characters, cut at a word boundary."""
     text = " ".join((title or "").split())

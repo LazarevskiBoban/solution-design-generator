@@ -47,11 +47,31 @@ class Content(BaseModel):
     unknown: list[str] = Field(default_factory=list)
 
 
+DETAILS_SUFFIX = "_details"
+
+
+def detail_key(key: str) -> str:
+    """The field that holds the complete version of a box for its detail slide."""
+    return f"{key}{DETAILS_SUFFIX}"
+
+
+def is_detail_key(key: str) -> bool:
+    return key.endswith(DETAILS_SUFFIX) and len(key) > len(DETAILS_SUFFIX)
+
+
+def stem_of(key: str) -> str:
+    return key[: -len(DETAILS_SUFFIX)] if is_detail_key(key) else key
+
+
 def load_markdown(text: str, manifest: Manifest | None = None, base_dir: str | Path | None = None) -> Content:
     front, body = _split_front_matter(text)
     content = Content(globals={str(k): _scalar(v) for k, v in front.items()})
     for heading, section in _sections(body):
         spec = _match_field(heading, manifest)
+        stem = _match_field(stem_of(heading.strip()), manifest) if spec is None and is_detail_key(heading.strip()) else None
+        if stem is not None:
+            content.fields[detail_key(stem.key)] = _parse_value(stem.kind, section, base_dir)
+            continue
         if spec is None and manifest is not None:
             global_spec = _match_global(heading, manifest)
             if global_spec is not None:
@@ -82,12 +102,12 @@ def dump_markdown(content: Content, manifest: Manifest | None = None) -> str:
         lines.append(yaml.safe_dump(content.globals, sort_keys=False, allow_unicode=True).rstrip())
         lines.append("---")
         lines.append("")
-    ordered = [f.key for f in manifest.fields] if manifest else []
+    ordered = [k for f in manifest.fields for k in (f.key, detail_key(f.key))] if manifest else []
     ordered += [k for k in content.fields if k not in ordered]
     for key in ordered:
         if key not in content.fields:
             continue
-        spec = manifest.field(key) if manifest else None
+        spec = manifest.field(stem_of(key)) if manifest else None
         lines.append(f"## {key}")
         lines.append(_format_value(content.fields[key], spec))
         lines.append("")

@@ -240,6 +240,7 @@ def mock_draft(context: dict) -> str:
         lines += ["---", f"subject: {json.dumps(subject)}", "---", ""]
     for section in context.get("sections", []):
         source = _pick_source(section, brief)
+        full = source
         for field in section.get("fields", []):
             lines.append(f"## {field['key']}")
             kind = field.get("kind", "text")
@@ -250,6 +251,9 @@ def mock_draft(context: dict) -> str:
                 continue
             if budget:
                 source = _fit(source, max(budget - 8, 20))
+            if field.get("details") and kind != "table" and len(full) > len(source):
+                lines += [f"[Draft] {source}", "", f"## {field['key']}_details", f"[Draft] {full}", ""]
+                continue
             if kind == "table":
                 columns = field.get("columns") or ["value"]
                 if _is_reference(columns):

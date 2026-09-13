@@ -66,6 +66,22 @@ def test_load_with_manifest_matches_keys_and_labels(tmp_path):
     assert content.unknown == ["Something else"]
 
 
+def test_details_headings_load_and_dump_next_to_their_field():
+    text = (
+        "## scope\n| Function | Countries |\n|---|---|\n| Finance | ZA |\n\n"
+        "## business_need_details\nThe long version.\n\n"
+        "## scope_details\n| Function | Countries |\n|---|---|\n| Finance | ZA |\n| Sales | KE |\n\n"
+        "## business_need\nShort.\n"
+    )
+    content = load_markdown(text, _manifest())
+    assert content.fields["business_need_details"] == "The long version."
+    assert content.fields["scope_details"] == [{"Function": "Finance", "Countries": "ZA"}, {"Function": "Sales", "Countries": "KE"}]
+    assert content.unknown == []
+    dumped = dump_markdown(content, _manifest())
+    assert [line for line in dumped.splitlines() if line.startswith("## ")] == ["## business_need", "## business_need_details", "## scope", "## scope_details"]
+    assert "| Sales | KE |" in dumped
+
+
 def test_load_without_manifest_guesses_kinds():
     content = load_markdown(SAMPLE)
     assert isinstance(content.fields["scope"], list)

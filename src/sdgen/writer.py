@@ -5,9 +5,9 @@ import re
 
 from pydantic import BaseModel, Field
 
-from sdgen.blueprint import Blueprint
+from sdgen.blueprint import Blueprint, composite_fields
 from sdgen.brief import Brief, FactQuestion, dump_brief, split_joined
-from sdgen.content import Content, dump_markdown, load_markdown, validate_content
+from sdgen.content import Content, detail_key, dump_markdown, is_detail_key, load_markdown, stem_of, validate_content
 from sdgen.fill.text import strip_leading_label
 from sdgen.grounding import GROUNDING_RULE, coverage_warnings, grounding_warnings, is_listed
 from sdgen.llm import LLMClient, get_llm
@@ -45,6 +45,9 @@ customer's own source material: use it like the brief.
 Overview fields summarise for management: what, why and with which systems. Developer detail
 (steps, checks, parameters, cut-off times, naming) goes to the build notes field when the
 skeleton has one, never into an overview.
+A field followed by a details field: the box holds the summary within its target; the details
+field holds the complete, self-contained version for a plain slide that follows it, or stays
+empty when the box already says everything; never a paraphrase of the box.
 A table keeps its header row and gets one row per entry, at least one row, with exactly the
 listed columns. A table fed by a list in the brief (acceptance criteria, decisions, operations,
 references) gets one row per entry of that list, never fewer; rows that do not fit one slide
@@ -162,6 +165,7 @@ def redraft_section(
     if not sections:
         return {}
     keys = [f["key"] for f in sections[0]["fields"]]
+    keys += [detail_key(k) for k in keys]
     existing = "\n".join(f"## {k}\n{_as_text(current.fields.get(k))}" for k in keys if current.fields.get(k) not in (None, "", []))
     note = "Rewrite this section. Instruction from the reviewer: " + instruction.strip()
     if existing:
@@ -262,6 +266,13 @@ def answer_skeleton(brief: Brief, sections: list[dict]) -> str:
                 lines.append("| " + " | ".join(field["columns"]) + " |")
                 lines.append("|" + "---|" * len(field["columns"]))
             lines.append("")
+            if field.get("details"):
+                lines.append(f"## {detail_key(field['key'])}")
+                lines.append(f"<!-- Optional. The complete {field['label']} for a plain slide right after this one when the box cannot hold it all: full text, or the full table with the same columns; leave empty when the box text says it all. -->")
+                if field["kind"] == "table" and field["columns"]:
+                    lines.append("| " + " | ".join(field["columns"]) + " |")
+                    lines.append("|" + "---|" * len(field["columns"]))
+                lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -299,6 +310,7 @@ def writable_sections(
 ) -> list[dict]:
     """Sections and fields to write; `token_only` sections are kept as they are except for their placeholder tokens."""
     result = []
+    detailed = set(composite_fields(blueprint, manifest))
     for section in blueprint.sections:
         if section.kind in SKIP_KINDS or section.key in (skip_sections or set()) or section.generated:
             continue
@@ -327,6 +339,7 @@ def writable_sections(
                         "token": any(b.mode == "token" for b in f.bindings),
                         "guidance": f.guidance,
                         "listed": f.kind == "table" and is_listed(f.label, f.key),
+                        "details": f.key in detailed and not any(b.mode == "token" for b in f.bindings),
                     }
                     for f in fields
                 ],
@@ -373,6 +386,8 @@ def duplicate_fields(content: Content) -> dict[str, str]:
     seen: dict[str, str] = {}
     repeats: dict[str, str] = {}
     for key, value in content.fields.items():
+        if is_detail_key(key):
+            continue  # the complete version repeats its box by design
         for sentence in _sentences_of(value):
             normalised = " ".join(sentence.lower().split())
             if len(normalised.split()) < MIN_DUPLICATE_WORDS:
@@ -416,7 +431,7 @@ def _repair_duplicates(brief: Brief, blueprint: Blueprint, manifest: Manifest, l
 def strip_label_prefixes(content: Content, manifest: Manifest) -> None:
     # Models tend to start a value with the label; the template already shows it.
     for key, value in content.fields.items():
-        spec = manifest.field(key)
+        spec = manifest.field(stem_of(key))
         if spec is None or not isinstance(value, str):
             continue
         content.fields[key] = strip_leading_label(value, [spec.label] + [b.keep_prefix or "" for b in spec.bindings])

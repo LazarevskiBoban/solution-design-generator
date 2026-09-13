@@ -9,8 +9,9 @@ import yaml
 from pydantic import BaseModel, Field
 
 from sdgen.analyze import slugify
-from sdgen.blueprint import TITLE_MAX, Blueprint, Section, cap_title
+from sdgen.blueprint import TITLE_MAX, Blueprint, Section, cap_title, composite_fields
 from sdgen.brief import Brief, dump_brief, looks_joined, split_joined
+from sdgen.content import detail_key
 from sdgen.flow import FlowSpec
 from sdgen.grounding import GROUNDING_RULE
 from sdgen.llm import LLMClient
@@ -491,7 +492,26 @@ def _prompt(brief: Brief, blueprint: Blueprint, manifest: Manifest, images: set[
     return "\n".join(lines)
 
 
-def _prototype(blueprint: Blueprint, kind: str, columns: list[str] | None = None, manifest: Manifest | None = None) -> str:
+def detail_prototypes(blueprint: Blueprint, manifest: Manifest) -> dict[str, FieldSpec]:
+    """Per composite field, the field to fill on a cloned plain slide with the complete content."""
+    found: dict[str, FieldSpec] = {}
+    for key in composite_fields(blueprint, manifest):
+        spec = manifest.field(key)
+        if spec is None:
+            continue
+        table = spec.kind == "table"
+        prototype = _prototype(blueprint, "table" if table else "text", spec.columns if table else None, manifest, allow_composite=False)
+        if not prototype:
+            continue
+        proto_spec = _prototype_spec(manifest, blueprint, ExtraSection(key=key, title=spec.label, kind="table" if table else "text", prototype=prototype))
+        if proto_spec is None or not proto_spec.bindings or (proto_spec.kind == "table") != table:
+            continue
+        binding = proto_spec.bindings[0].model_copy(update={"keep_prefix": None, "keep_last_row_if": None})
+        found[key] = FieldSpec(key=detail_key(key), label=spec.label, kind="table" if table else "bullets", columns=list(spec.columns), bindings=[binding])
+    return found
+
+
+def _prototype(blueprint: Blueprint, kind: str, columns: list[str] | None = None, manifest: Manifest | None = None, allow_composite: bool = True) -> str:
     """The template slide to clone for an extra: a plain slide of the same kind, tables by closest column count."""
     wanted = "table" if kind == "table" else "text"
     best, best_score = "", None
@@ -510,7 +530,9 @@ def _prototype(blueprint: Blueprint, kind: str, columns: list[str] | None = None
             score = -max((b.max_chars or 0) for b in spec.bindings) if spec is not None and spec.bindings else 0
         if best_score is None or score < best_score:
             best, best_score = section.key, score
-    return best or next((s.key for s in blueprint.sections if s.kind == "composite"), "")
+    if best or not allow_composite:
+        return best
+    return next((s.key for s in blueprint.sections if s.kind == "composite"), "")
 
 
 def _before(blueprint: Blueprint) -> str:

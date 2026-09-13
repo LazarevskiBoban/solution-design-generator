@@ -17,6 +17,7 @@ from sdgen.mapping.workbook import write_workbook
 from sdgen.writer import draft_content
 from sdgen.manifest import Manifest
 from sdgen.material import load_material
+from sdgen.plan import detail_prototypes
 from sdgen.preview import preview as run_preview
 from sdgen.registry import MANIFEST_FILE, Registry, TemplateEntry
 from sdgen.tools import (
@@ -180,6 +181,7 @@ def render(template: str, content: Path, output: Path, missing: str, templates: 
             missing=missing,
             continue_on=continuation_slides(entry.blueprint),
             subject_slides=[s.slide for s in entry.blueprint.sections if s.kind == "cover"] if entry.blueprint else None,
+            details=detail_prototypes(entry.blueprint, entry.manifest) if entry.blueprint else {},
         )
     )
     for issue in result.issues:

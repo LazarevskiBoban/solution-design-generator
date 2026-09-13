@@ -7,15 +7,16 @@ from typing import Any, Literal
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.enum.text import MSO_ANCHOR
+from pptx.util import Inches
 from pydantic import BaseModel, Field
 
 from sdgen.blueprint import cap_title, clean_title
-from sdgen.content import Content, ImageValue, images_of, parse_pipe_table
+from sdgen.content import Content, ImageValue, detail_key, images_of, parse_pipe_table
 from sdgen.diagrams import remove_shapes
 from sdgen.fill.image import replace_picture
 from sdgen.flow import FlowSpec, draw_flow
 from sdgen.fill.slides import clone_slide, move_slide, remove_slide
-from sdgen.fill.table import append_rows, clear_table_body, fill_table, has_footer, row_heights
+from sdgen.fill.table import append_rows, clear_table_body, fill_table, has_footer, resize_columns, row_heights
 from sdgen.fill.text import Block, Span, capacity_chars_of, capacity_lines_of, fit_text_shape, line_chars_of, overflow_ratio, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text, strip_leading_label, theme_fonts
 from sdgen.inventory import find_shape, walk_shapes
 from sdgen.layout import BLOCK_GAP, CONTAIN_TOL, Box, SlideLayout, analyse_slide, pin_geometry, shift_shapes
@@ -28,6 +29,7 @@ SMALL_BOX_LINES = 4
 PICTURE_OVERLAP = 0.3
 SMALL_BOX_SHRINK_RATIO = 1.5
 STALE_BUDGET_RATIO = 1.25
+ROW_TOL = Inches(0.35)  # blocks whose tops differ by less sit on the same row of the slide
 MissingMode = Literal["keep", "blank", "placeholder"]
 PLACEHOLDER_ROW = "[To be completed]"
 
@@ -56,6 +58,7 @@ class ExtraSlide(BaseModel):
     spec: FieldSpec  # bound to the prototype slide and the shape to fill
     value: Any = None
     before: int = 0  # template slide number to insert in front of; 0 appends at the end
+    after: int = 0  # template slide number to follow, past its copies and earlier detail slides; wins over `before`
 
 
 class RenderResult(BaseModel):
@@ -86,6 +89,7 @@ def render(
     spill: bool = False,
     clear_shapes: list[tuple[int, int]] | None = None,
     subject_slides: set[int] | list[int] | None = None,
+    details: dict[str, FieldSpec] | None = None,
 ) -> RenderResult:
     prs = Presentation(str(template))
     slides = list(prs.slides)
@@ -141,6 +145,7 @@ def render(
             for binding in spec.bindings:
                 image_ids.setdefault(binding.slide, set()).add(binding.shape.id)
     pending: dict[int, dict] = {}
+    wanted: dict[int, list[tuple]] = {}  # composite fields with more to say than their box holds
     for spec in manifest.fields:
         if spec.key in drawn:
             continue
@@ -177,12 +182,21 @@ def render(
                 issues.append(RenderIssue(level="error", field=spec.key, slide=binding.slide, message=f"shape {binding.shape.id} ({binding.shape.name}) not found"))
                 continue
             try:
-                allow = binding.slide in prototypes or (continue_on is None and shape.is_placeholder)
+                detailed = spec.key in (details or {})
+                allow = not detailed and (binding.slide in prototypes or (continue_on is None and shape.is_placeholder))
                 room = _room(layouts.get(binding.slide), shape) if spec.kind == "table" else None
-                remaining = _apply(prs, slide, shape, spec, binding, value, issues, allow, spill=spill, theme=theme, room=room)
+                remaining = _apply(prs, slide, shape, spec, binding, value, issues, allow, spill=spill or detailed, theme=theme, room=room)
                 if written and binding.mode == "replace":
                     _remove_pictures_under(slide, shape, layouts.get(binding.slide), image_ids.get(binding.slide, set()), issues, binding.slide)
-                if remaining:
+                if detailed:
+                    if remaining and spec.kind != "table":
+                        _trim_to_box(shape, spec, binding, remaining, theme, issues)
+                    full = content.fields.get(detail_key(spec.key))
+                    if remaining or full not in (None, "", []):
+                        wanted.setdefault(binding.slide, []).append((spec, binding, details[spec.key], full if full not in (None, "", []) else value))
+                    if remaining:
+                        issues.append(RenderIssue(level="info", field=spec.key, slide=binding.slide, message="box shows the first part; the full content follows on a detail slide"))
+                elif remaining:
                     pending.setdefault(binding.slide, {})[spec.key] = (spec, binding, remaining)
             except Exception as exc:  # keep rendering the rest of the document
                 issues.append(RenderIssue(level="error", field=spec.key, slide=binding.slide, message=str(exc)))
@@ -190,7 +204,7 @@ def render(
     for number, fields_pending in pending.items():
         _continue_slide(prs, slides[number - 1], layouts.get(number), manifest, number, fields_pending, theme, issues, kept)
 
-    extra_ids = _add_extras(prs, slides, extras or [], issues, theme)
+    extra_ids = _add_extras(prs, slides, _detail_slides(slides, layouts, wanted) + list(extras or []), issues, theme, numbers)
 
     for index in sorted(set(manifest.slides.exclude) | hidden_slides, reverse=True):
         if 1 <= index <= len(slides):
@@ -263,7 +277,42 @@ def _draw_flows(slides: list, manifest: Manifest, content: Content, flows: dict[
     return drawn
 
 
-def _add_extras(prs, slides: list, extras: list[ExtraSlide], issues: list[RenderIssue], theme: tuple[str, str] | None = None) -> dict[int, str]:
+def _trim_to_box(shape, spec: FieldSpec, binding: Binding, blocks: list, theme, issues: list[RenderIssue]) -> None:
+    """The box keeps the first paragraphs that fit; the rest belongs to the detail slide."""
+    chunks = _split_blocks(blocks, _capacity(shape, binding, blocks, theme), line_chars_of(shape, theme))
+    set_rich_text(shape, chunks[0], keep_prefix=binding.keep_prefix)
+    _shrink(shape, spec, binding, issues, theme)
+
+
+def _detail_slides(slides: list, layouts: dict[int, SlideLayout], wanted: dict[int, list[tuple]]) -> list[ExtraSlide]:
+    """One plain slide per composite field with more to say, in the reading order of the blocks on its slide."""
+    result: list[ExtraSlide] = []
+    for number in sorted(wanted):
+        layout = layouts.get(number)
+        placed = []
+        for spec, binding, proto, full in wanted[number]:
+            shape = find_shape(slides[number - 1], binding.shape.id)
+            block = layout.block_of(binding.shape.id) if layout is not None else None
+            if block is not None:
+                top, left = block.box.top, block.box.left
+            elif shape is not None and None not in (shape.top, shape.left):
+                top, left = shape.top, shape.left
+            else:
+                top, left = 0, 0
+            placed.append((top, left, spec, proto, full))
+        rows: list[list] = []
+        for item in sorted(placed, key=lambda p: (p[0], p[1])):
+            if rows and abs(item[0] - rows[-1][0][0]) <= ROW_TOL:
+                rows[-1].append(item)
+            else:
+                rows.append([item])
+        for row in rows:
+            for _, _, spec, proto, full in sorted(row, key=lambda p: p[1]):
+                result.append(ExtraSlide(key=detail_key(spec.key), title=cap_title(spec.label), spec=proto, value=full, after=number))
+    return result
+
+
+def _add_extras(prs, slides: list, extras: list[ExtraSlide], issues: list[RenderIssue], theme: tuple[str, str] | None = None, numbers: dict[int, int] | None = None) -> dict[int, str]:
     ids: dict[int, str] = {}
     for extra in extras:
         binding = extra.spec.bindings[0] if extra.spec.bindings else None
@@ -287,6 +336,11 @@ def _add_extras(prs, slides: list, extras: list[ExtraSlide], issues: list[Render
                 issues.append(RenderIssue(level="info", field=extra.key, message="no value; placeholder shown"))
             try:
                 if extra.spec.kind == "table" and extra.spec.columns and getattr(shape, "has_table", False):
+                    if len(extra.spec.columns) != len(shape.table.columns):
+                        try:
+                            resize_columns(shape, len(extra.spec.columns))
+                        except ValueError as exc:
+                            issues.append(RenderIssue(level="info", field=extra.key, message=f"table keeps the prototype's {len(shape.table.columns)} columns: {exc}"))
                     _set_header(shape, extra.spec.columns)
                 layout = analyse_slide(clone, {binding.shape.id: extra.key}, prs.slide_height)
                 room = _room(layout, shape) if extra.spec.kind == "table" else None
@@ -301,9 +355,14 @@ def _add_extras(prs, slides: list, extras: list[ExtraSlide], issues: list[Render
         for copy in copies:
             ids[copy.slide_id] = extra.key
         chain_ids = {s.slide_id for s in chain}
-        target = slides[extra.before - 1] if 1 <= extra.before <= len(slides) else None
         others = [s.slide_id for s in prs.slides if s.slide_id not in chain_ids]
-        position = others.index(target.slide_id) if target is not None else len(others)
+        if 1 <= extra.after <= len(slides):
+            position = others.index(slides[extra.after - 1].slide_id) + 1
+            while position < len(others) and others[position] not in (numbers or {}):
+                position += 1  # past the anchor's own copies and the detail slides already placed after it
+        else:
+            target = slides[extra.before - 1] if 1 <= extra.before <= len(slides) else None
+            position = others.index(target.slide_id) if target is not None else len(others)
         for offset, member in enumerate(chain):
             move_slide(prs, member, position + offset)
     return ids

@@ -10,9 +10,9 @@ import pandas as pd
 import streamlit as st
 
 from sdgen.analyze import Analysis, slugify
-from sdgen.blueprint import Blueprint, derive_blueprint
+from sdgen.blueprint import Blueprint, composite_fields, derive_blueprint
 from sdgen.brief import BRIEF_FIELDS, DEVELOPER_FIELDS, FACT_CELLS, FACT_PREFIX, FACTS_BY_KEY, SEPARATED_FIELDS, Brief, brief_lint, fact_questions, split_joined
-from sdgen.content import Content, dump_markdown, load_markdown
+from sdgen.content import Content, detail_key, dump_markdown, is_detail_key, load_markdown, stem_of
 from sdgen.design import Design, DesignStore
 from pptx import Presentation
 
@@ -26,7 +26,7 @@ from sdgen import material as materials
 from sdgen.drawio import to_drawio
 from sdgen.flow import plan_flows, to_mermaid, uses_sap, walkthrough_text
 from sdgen.icons import icon_keys, installed_keys
-from sdgen.plan import OPEN_QUESTIONS_KEY, SOURCES, WALKTHROUGH_SUFFIX, FlowRequest, SectionDecision, SectionPlan, active_extras, apply_plan, extended_blueprint, extended_manifest, extra_slides, leftover_texts, open_question_rows, open_questions_extras, open_questions_text, plan_sections, walkthrough_extras
+from sdgen.plan import OPEN_QUESTIONS_KEY, SOURCES, WALKTHROUGH_SUFFIX, FlowRequest, SectionDecision, SectionPlan, active_extras, apply_plan, detail_prototypes, extended_blueprint, extended_manifest, extra_slides, leftover_texts, open_question_rows, open_questions_extras, open_questions_text, plan_sections, walkthrough_extras
 from sdgen.preview import export_slides
 from sdgen.references import lookup as lookup_reference
 from sdgen.registry import Registry, safe_name
@@ -610,35 +610,21 @@ def design_page() -> None:
         with col_generate:
             generate = st.button("Generate document", type="primary", key=f"{state_key}:generate")
         if preview_clicked:
-            output, response = _render_design(entry, store, design, subject, name, missing)
+            output, response, keyed = _render_design(entry, store, design, subject, name, missing)
             notes = [str(i) for i in response.issues if not str(i).startswith("info")]
             overflows: dict[int, list[str]] = {}
+            pictures: dict[int, bytes] = {}
             try:
                 with st.spinner("Rendering slide pictures with PowerPoint."):
-                    exported = export_slides(output, output.parent / "png", width=PREVIEW_WIDTH, interest=_overflow_interest(entry, response))
-                pictures: list = [p.read_bytes() for p in exported.files]
+                    exported = export_slides(output, output.parent / "png", width=PREVIEW_WIDTH, interest=_overflow_interest(entry, response, keyed))
+                pictures = {position: p.read_bytes() for position, p in enumerate(exported.files, 1)}
                 for item in exported.overflows:
                     overflows.setdefault(item.slide, []).append(item.shape)
             except RuntimeError as exc:
                 logging.getLogger("sdgen.ui").warning("slide preview without pictures: %s", exc)
                 notes.insert(0, f"Slide pictures are not available: {exc}. The board shows the slide texts instead.")
-                pictures = [None] * len(response.slide_map)
-            by_slide = {s.slide: s for s in blueprint.sections if not s.key.startswith("extra_")}
-            by_key = {s.key: s for s in blueprint.sections}
-            keys = response.slide_keys or [""] * len(response.slide_map)
             current, _ = _render_fields(design, entry)
-            entries = []
-            for position, (number, slide_key, png) in enumerate(zip(response.slide_map, keys, pictures), 1):
-                section = by_key.get(slide_key) if slide_key else by_slide.get(number)
-                entries.append(
-                    {
-                        "section": section.key if section else f"slide-{number}",
-                        "title": design.titles.get(section.key, section.title) if section else f"Slide {number}",
-                        "png": png,
-                        "text": _slide_text(section, current) if section else "",
-                        "overflow": overflows.get(position, []),
-                    }
-                )
+            entries = _board_entries(entry, design, response, current, pictures, overflows)
             st.session_state[f"{state_key}:board"] = (entries, _with_overflow_note(entries, notes))
             st.session_state.pop(f"{state_key}:stale", None)
             st.session_state[f"{state_key}:viewer"] = 0
@@ -663,7 +649,7 @@ def design_page() -> None:
             elif not any(v not in ("", [], None) for v in _render_fields(design, entry)[0].values()):
                 st.warning("No section text yet, so the document will only show placeholders. Draft the sections with AI first, or fill them under Review sections.")
             store.save(design)
-            output, response = _render_design(entry, store, design, subject, name, missing)
+            output, response, _ = _render_design(entry, store, design, subject, name, missing)
             st.session_state[f"{state_key}:output"] = (output.name, output.read_bytes(), [str(i) for i in response.issues], response.slides)
             if drafted_now:
                 st.session_state[f"{state_key}:v"] = version + 1
@@ -728,12 +714,20 @@ def _section_editor(entry, design: Design, content: Content, section, fields, pr
     )
     if mode == "text":
         design.modes.pop(section.key, None)
+        detailed = set(composite_fields(entry.blueprint, entry.manifest))
         for spec in fields:
             value = _review_widget(spec, f"{prefix}f:{spec.key}", content.fields.get(spec.key))
             if value in (None, "", []):
                 content.fields.pop(spec.key, None)
             else:
                 content.fields[spec.key] = value
+            if spec.key in detailed:
+                more_spec = spec.model_copy(update={"label": f"{spec.label} (detail slide, optional)", "bindings": []})
+                more = _review_widget(more_spec, f"{prefix}f:{detail_key(spec.key)}", content.fields.get(detail_key(spec.key)))
+                if more in (None, "", []):
+                    content.fields.pop(detail_key(spec.key), None)
+                else:
+                    content.fields[detail_key(spec.key)] = more
     else:
         design.modes[section.key] = mode
         if mode == "keep":
@@ -917,24 +911,68 @@ def _visible_entries(entries: list[dict], design: Design, blueprint: Blueprint) 
 
 
 def _continued(matches: list[dict]) -> list[dict]:
-    return [e if i == 0 else {**e, "title": f"{e['title']} (cont.)"} for i, e in enumerate(matches)]
+    shown: list[dict] = []
+    copies = 0
+    for item in matches:
+        if item.get("detail"):
+            shown.append(item)
+            continue
+        shown.append(item if copies == 0 else {**item, "title": f"{item['title']} (cont.)"})
+        copies += 1
+    return shown
+
+
+def _board_entries(entry, design: Design, response, current: dict, pictures: dict[int, bytes], overflows: dict[int, list[str]]) -> list[dict]:
+    """One board entry per output slide: its section, title, picture, text and overflowing boxes; detail slides carry their field."""
+    blueprint = entry.blueprint
+    by_slide = {s.slide: s for s in blueprint.sections if not s.key.startswith("extra_")}
+    by_key = {s.key: s for s in blueprint.sections}
+    keys = response.slide_keys or [""] * len(response.slide_map)
+    entries = []
+    for position, (number, slide_key) in enumerate(zip(response.slide_map, keys), 1):
+        detail = slide_key if slide_key and is_detail_key(slide_key) else ""
+        section = by_key.get(slide_key) if slide_key and not detail else None
+        if section is None:
+            section = by_slide.get(number)
+        item = {
+            "section": section.key if section else f"slide-{number}",
+            "title": design.titles.get(section.key, section.title) if section else f"Slide {number}",
+            "png": pictures.get(position),
+            "text": _slide_text(section, current) if section else "",
+            "overflow": overflows.get(position, []),
+        }
+        if detail:
+            spec = entry.manifest.field(stem_of(detail))
+            item.update(title=spec.label if spec else stem_of(detail), text=_value_text(current.get(detail) or current.get(stem_of(detail))), detail=detail)
+        entries.append(item)
+    return entries
+
+
+def _value_text(value) -> str:
+    if isinstance(value, list):
+        return "\n".join(" | ".join(str(v) for v in row.values()) for row in value if isinstance(row, dict))
+    return str(value or "")
 
 
 def _refresh_section_pictures(state_key: str, entry, design: Design, store: DesignStore, key: str) -> None:
     blueprint = entry.blueprint
     missing = st.session_state.get(f"{state_key}:missing", "placeholder")
-    output, response = _render_design(entry, store, design, design.brief.subject, design.name, missing)
-    by_slide = {s.slide: s for s in blueprint.sections if not s.key.startswith("extra_")}
-    by_key = {s.key: s for s in blueprint.sections}
+    output, response, keyed = _render_design(entry, store, design, design.brief.subject, design.name, missing)
     keys = response.slide_keys or [""] * len(response.slide_map)
     section = next(s for s in blueprint.sections if s.key == key)
     is_extra = key.startswith("extra_") or key.endswith(WALKTHROUGH_SUFFIX) or key in {e.key for e in active_extras(design.plan)}
-    targets = [i for i, (number, k) in enumerate(zip(response.slide_map, keys), 1) if (k == key if is_extra else (not k and number == section.slide))]
+
+    def owned(number: int, k: str) -> bool:
+        if is_extra:
+            return k == key
+        return (not k and number == section.slide) or (is_detail_key(k) and stem_of(k) in section.fields)
+
+    targets = [i for i, (number, k) in enumerate(zip(response.slide_map, keys), 1) if owned(number, k)]
     entries, notes = st.session_state[f"{state_key}:board"]
     pictures: dict[int, bytes] = {}
     overflows: dict[int, list[str]] = {}
     try:
-        exported = export_slides(output, output.parent / "png", width=PREVIEW_WIDTH, only=targets, interest=_overflow_interest(entry, response))
+        exported = export_slides(output, output.parent / "png", width=PREVIEW_WIDTH, only=targets, interest=_overflow_interest(entry, response, keyed))
         pictures = {target: f.read_bytes() for target, f in zip(targets, exported.files)}
         for item in exported.overflows:
             overflows.setdefault(item.slide, []).append(item.shape)
@@ -945,18 +983,16 @@ def _refresh_section_pictures(state_key: str, entry, design: Design, store: Desi
     current, _ = _render_fields(design, entry)
     cached = [e for e in entries if e["section"] != key]
     rebuilt: list[dict] = []
-    for position, (number, k) in enumerate(zip(response.slide_map, keys), 1):
-        slide_section = by_key.get(k) if k else by_slide.get(number)
-        slide_key = slide_section.key if slide_section else f"slide-{number}"
-        if slide_key == key:
-            rebuilt.append({"section": key, "title": design.titles.get(key, section.title), "png": pictures.get(position), "text": _slide_text(section, current), "overflow": overflows.get(position, [])})
+    for built in _board_entries(entry, design, response, current, pictures, overflows):
+        if built["section"] == key:
+            rebuilt.append(built)
             continue
-        match = next((e for e in cached if e["section"] == slide_key), None)
+        match = next((e for e in cached if e["section"] == built["section"] and e.get("detail") == built.get("detail")), None)
         if match is not None:
             cached.remove(match)
             rebuilt.append(match)
         else:
-            rebuilt.append({"section": slide_key, "title": slide_section.title if slide_section else f"Slide {number}", "png": None, "text": _slide_text(slide_section, current) if slide_section else ""})
+            rebuilt.append(built)
     rebuilt.extend(cached)
     st.session_state[f"{state_key}:board"] = (rebuilt, _with_overflow_note(rebuilt, notes))
     stale = set(st.session_state.get(f"{state_key}:stale", set()))
@@ -964,7 +1000,7 @@ def _refresh_section_pictures(state_key: str, entry, design: Design, store: Desi
     st.session_state[f"{state_key}:stale"] = stale
 
 
-def _overflow_interest(entry, response) -> dict[int, set[str]]:
+def _overflow_interest(entry, response, keyed: dict[str, str] | None = None) -> dict[int, set[str]]:
     """The filled text boxes on each output slide, so the overflow check ignores untouched template shapes."""
     by_slide: dict[int, set[str]] = {}
     for spec in entry.manifest.fields:
@@ -973,7 +1009,12 @@ def _overflow_interest(entry, response) -> dict[int, set[str]]:
         for binding in spec.bindings:
             if binding.mode == "replace" and binding.shape.name:
                 by_slide.setdefault(binding.slide, set()).add(binding.shape.name)
-    return {position: by_slide.get(number, set()) for position, number in enumerate(response.slide_map, 1)}
+    keys = response.slide_keys or [""] * len(response.slide_map)
+    interest: dict[int, set[str]] = {}
+    for position, (number, key) in enumerate(zip(response.slide_map, keys), 1):
+        name = (keyed or {}).get(key) if key else None
+        interest[position] = {name} if name else by_slide.get(number, set())
+    return interest
 
 
 def _with_overflow_note(entries: list[dict], notes: list[str]) -> list[str]:
@@ -1062,8 +1103,10 @@ def _render_fields(design: Design, entry) -> tuple[dict, dict[str, str]]:
                     fields.pop(key, None)
                 else:
                     fields[key] = original  # the stored deck holds a marker here, so the captured text goes back in
+                fields.pop(detail_key(key), None)
             else:
                 fields.pop(key, None)
+                fields.pop(detail_key(key), None)
                 field_modes[key] = "blank"
     return fields, field_modes
 
@@ -1265,6 +1308,8 @@ def _render_design(entry, store: DesignStore, design: Design, subject: str, name
     extra_keys = {e.key for e in extras}
     slides_extra = extra_slides(SectionPlan(extras=extras), manifest, blueprint, fields, design.hidden)
     base_manifest = manifest.model_copy(update={"fields": [f for f in manifest.fields if f.key not in extra_keys]})
+    plain_blueprint = blueprint.model_copy(update={"sections": [s for s in blueprint.sections if s.key not in extra_keys]})
+    details = detail_prototypes(plain_blueprint, base_manifest)
     fields = {k: v for k, v in fields.items() if k not in extra_keys}
     images = {k: v for k, v in store.content(design, base_manifest).fields.items() if base_manifest.field(k) and base_manifest.field(k).kind == "image"}
     final = Content(globals=_globals(subject), fields={**fields, **images})
@@ -1296,9 +1341,12 @@ def _render_design(entry, store: DesignStore, design: Design, subject: str, name
             flows=flows,
             clear_shapes=[(c.slide, c.shape) for c in (design.plan.clear if design.plan else []) if c.include],
             subject_slides=[s.slide for s in blueprint.sections if s.kind == "cover"],
+            details=details,
         )
     )
-    return output, response
+    keyed = {e.key: (e.spec.bindings[0].shape.name or "") for e in slides_extra if e.spec.bindings}
+    keyed.update({spec.key: (spec.bindings[0].shape.name or "") for spec in details.values() if spec.bindings})
+    return output, response, keyed
 
 
 def _run_draft(state_key: str, entry, design: Design, store: DesignStore, subject: str, version: int, provider: str, settings: dict) -> None:
@@ -1328,7 +1376,8 @@ def _run_draft(state_key: str, entry, design: Design, store: DesignStore, subjec
     if waiting:
         st.session_state[f"{state_key}:draw_after_write"] = True
         extra += f"; {len(waiting)} diagram(s) wait for your format choice"
-    st.session_state[f"{state_key}:draft_done"] = f"Drafted {len(result.content.fields)} of {total} fields with {result.llm}{extra}. Review them in step 5, then generate."
+    drafted = sum(1 for k in result.content.fields if not is_detail_key(k))
+    st.session_state[f"{state_key}:draft_done"] = f"Drafted {drafted} of {total} fields with {result.llm}{extra}. Review them in step 5, then generate."
     st.session_state[f"{state_key}:draft_warnings"] = result.warnings
     st.session_state[f"{state_key}:v"] = version + 1
     st.rerun()

@@ -144,6 +144,52 @@ def _cell_height(frame, tc, text: str, width_emu: int, theme: tuple[str, str]) -
     return int((max(1, lines) * line_height_pt(spec, pct) + before + after) * EMU_PER_PT) + top + bottom
 
 
+def resize_columns(graphic_frame, count: int) -> None:
+    """Gives the table `count` columns of equal width over the same total width; merged cells cannot be resized."""
+    tbl = graphic_frame.table._tbl
+    grid = tbl.tblGrid
+    columns = grid.gridCol_lst
+    if count < 1 or count == len(columns):
+        return
+    for tr in tbl.tr_lst:
+        for tc in tr.tc_lst:
+            if any(tc.get(name) for name in ("gridSpan", "rowSpan", "hMerge", "vMerge")):
+                raise ValueError("merged cells")
+    total = sum(gc.w for gc in columns)
+    if count < len(columns):
+        for gc in columns[count:]:
+            grid.remove(gc)
+        for tr in tbl.tr_lst:
+            for tc in tr.tc_lst[count:]:
+                tr.remove(tc)
+    else:
+        for _ in range(count - len(columns)):
+            gc = copy.deepcopy(grid.gridCol_lst[-1])
+            _strip_ext(gc)
+            _append_before_ext(grid, gc)
+            for tr in tbl.tr_lst:
+                tc = copy.deepcopy(tr.tc_lst[-1])
+                _strip_ext(tc)
+                _append_before_ext(tr, tc)
+                set_rich_text(_Cell(tc, tbl), "")
+    width = total // count
+    for index, gc in enumerate(grid.gridCol_lst):
+        gc.w = width if index < count - 1 else total - width * (count - 1)
+
+
+def _strip_ext(element) -> None:
+    for ext in element.findall(qn("a:extLst")):
+        element.remove(ext)
+
+
+def _append_before_ext(parent, child) -> None:
+    ext = parent.find(qn("a:extLst"))
+    if ext is not None:
+        ext.addprevious(child)
+    else:
+        parent.append(child)
+
+
 def clear_table_body(graphic_frame, header_rows: int = 1) -> None:
     """Empties the body cells but keeps every row, so merged layouts stay intact."""
     tbl = graphic_frame.table._tbl

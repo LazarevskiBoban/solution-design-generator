@@ -90,6 +90,36 @@ def test_draft_warnings_include_ungrounded_terms(sample_deck, tmp_path):
     assert "Sources: the brief, its facts and the reference material" in build_prompt(BRIEF, entry.blueprint, entry.manifest)[0] and "## scope" in skeleton
 
 
+def test_skeleton_offers_details_for_composite_fields(sample_deck, tmp_path):
+    from sdgen.writer import answer_skeleton
+
+    entry = _template(sample_deck, tmp_path)
+    skeleton = answer_skeleton(BRIEF, writable_sections(entry.blueprint, entry.manifest))
+    for key in ("business_need", "scope", "first_point"):
+        assert f"## {key}_details" in skeleton and skeleton.index(f"## {key}_details") > skeleton.index(f"## {key}\n")
+    block = skeleton.split("## scope_details", 1)[1].split("## ", 1)[0]
+    assert "| Function | Countries |" in block and "leave empty when the box text says it all" in block
+
+
+def test_draft_parses_details_and_keeps_them_out_of_duplicate_warnings(sample_deck, tmp_path):
+    entry = _template(sample_deck, tmp_path)
+    sentence = "Banks deliver statements daily and they must be posted automatically."
+    reply = f"---\nsubject: X\n---\n## business_need\n{sentence}\n## business_need_details\n{sentence}\nMore detail for the developers here.\n## scope\n| Function | Countries |\n|---|---|\n| Finance | ZA |\n## first_point\n- one\n"
+    result = draft_content(BRIEF, entry.blueprint, entry.manifest, _ScriptedLLM([reply]))
+    assert result.calls == 1 and result.content.fields["business_need_details"].startswith(sentence)
+    assert not any("repeats a sentence" in w for w in result.warnings)
+    assert result.markdown.index("## business_need_details") < result.markdown.index("## scope")
+
+
+def test_redraft_section_returns_details_too(sample_deck, tmp_path):
+    entry = _template(sample_deck, tmp_path)
+    section = entry.blueprint.sections[0].key
+    reply = "## business_need\nShort.\n## business_need_details\nLong version.\n## scope\n| Function | Countries |\n|---|---|\n| F | ZA |\n## first_point\n- x\n"
+    llm = _ScriptedLLM([reply])
+    fields = redraft_section(BRIEF, entry.blueprint, entry.manifest, section, "shorter", Content(fields={"business_need_details": "old long"}), llm)
+    assert fields["business_need_details"] == "Long version." and "old long" in llm.prompts[0]
+
+
 def test_label_prefixes_are_stripped_in_every_punctuation_form():
     from sdgen.writer import strip_label_prefixes
 
