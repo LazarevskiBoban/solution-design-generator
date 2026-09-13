@@ -345,6 +345,71 @@ def _stub(payload):
     return Stub()
 
 
+def test_parse_systems_orders_by_role_and_slugs_ids():
+    from sdgen.flow import OTHER_LANE, parse_systems
+
+    text = "SAP BTP Integration Suite | middleware | new\nS/4HANA on RISE | target | change\nWindows VM on Azure | source | keep\nS/4HANA on RISE | receiver | keep\n\n- Banks | sender"
+    lanes = parse_systems(text)
+    assert [(lane.id, lane.role, lane.sap) for lane in lanes] == [
+        ("windows_vm_on_azure", "source", False),
+        ("banks", "source", False),
+        ("sap_btp_integration_suite", "middleware", True),
+        ("s_4hana_on_rise", "target", True),
+        ("s_4hana_on_rise_2", "target", True),
+    ]
+    assert lanes[2].title == "SAP BTP Integration Suite" and lanes[2].change == "new" and OTHER_LANE.id == "other"
+    assert parse_systems("") == []
+
+
+def test_plan_flows_builds_the_lane_enum_from_the_systems_fact(tmp_path):
+    from sdgen.flow import lane_is_sap, lane_order, lane_title
+    from sdgen.plan import FlowRequest
+
+    brief = Brief(subject="s", facts={"systems": "Windows VM on Azure | source | keep\nSAP BTP Integration Suite | middleware | new\nS/4HANA on RISE | target | change"})
+    request = FlowRequest(section="x", title="X", purpose="")
+    payload = {
+        "flows": [
+            {
+                "section": "x",
+                "lanes": {"s_4hana_on_rise": "RISE S/4HANA"},
+                "nodes": [
+                    {"id": "vm", "label": "VM sFTP door", "lane": "windows_vm_on_azure"},
+                    {"id": "flow", "label": "Inbound iFlow", "kind": "step", "lane": "sap_btp_integration_suite"},
+                    {"id": "s4out", "label": "S/4 OUT", "kind": "store", "lane": "windows_vm_on_azure"},
+                    {"id": "ops", "label": "Operations team", "kind": "external", "lane": "other"},
+                    {"id": "lost", "label": "Alert mail", "kind": "step", "lane": "nowhere"},
+                ],
+                "edges": [{"source": "vm", "target": "flow", "kind": "error", "label": "login failed"}],
+            }
+        ]
+    }
+    llm = _stub(payload)
+    flows = plan_flows(brief, [request], llm)
+    node_schema = llm.schema["properties"]["flows"]["items"]["properties"]["nodes"]["items"]["properties"]
+    assert node_schema["lane"]["enum"] == ["windows_vm_on_azure", "sap_btp_integration_suite", "s_4hana_on_rise", "other"]
+    assert "# Lanes" in llm.user and "- s_4hana_on_rise | S/4HANA on RISE | target | change" in llm.user
+    spec = flows["x"]
+    assert {n.id: n.lane for n in spec.nodes} == {"vm": "windows_vm_on_azure", "flow": "sap_btp_integration_suite", "s4out": "s_4hana_on_rise", "ops": "other", "lost": "sap_btp_integration_suite"}
+    assert [lane.id for lane in spec.systems] == ["windows_vm_on_azure", "sap_btp_integration_suite", "s_4hana_on_rise", "other"]
+    assert lane_title(spec, "s_4hana_on_rise") == "RISE S/4HANA" and lane_title(spec, "windows_vm_on_azure") == "Windows VM on Azure"
+    assert lane_is_sap(spec, "s_4hana_on_rise") and lane_is_sap(spec, "sap_btp_integration_suite") and not lane_is_sap(spec, "windows_vm_on_azure")
+    assert spec.edges[0].kind == "error" and lane_order(SPEC) == ["source", "middleware", "target"]
+    spec.save(tmp_path / "f.yaml")
+    assert FlowSpec.load(tmp_path / "f.yaml") == spec
+    text = to_mermaid(spec)
+    assert "subgraph windows_vm_on_azure[Windows VM on Azure]" in text and "vm -.->|login failed| flow" in text
+
+
+def test_lane_mismatches_are_reported_when_ambiguous():
+    from sdgen.flow import lane_mismatches, parse_systems
+
+    lanes = parse_systems("SAP BTP Integration Suite | middleware\nS/4HANA on RISE | target\nAzure VM | source")
+    spec = clean_flow(FlowSpec(nodes=[FlowNode(id="a", label="S/4 to VM copy", lane="sap_btp_integration_suite"), FlowNode(id="b", label="Timer", lane="sap_btp_integration_suite")], systems=lanes), lanes)
+    assert [n.lane for n in spec.nodes] == ["sap_btp_integration_suite"] * 2
+    assert lane_mismatches(spec) == ["'S/4 to VM copy' sits in SAP BTP Integration Suite but names Azure VM, S/4HANA on RISE"]
+    assert lane_mismatches(SPEC) == []
+
+
 def test_plan_flows_keeps_subtitles_and_lane_headings(tmp_path):
     from sdgen.plan import FlowRequest
 

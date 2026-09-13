@@ -11,7 +11,7 @@ import streamlit as st
 
 from sdgen.analyze import Analysis, slugify
 from sdgen.blueprint import Blueprint, composite_fields, derive_blueprint
-from sdgen.brief import BRIEF_FIELDS, DEVELOPER_FIELDS, FACT_CELLS, FACT_PREFIX, FACTS_BY_KEY, SEPARATED_FIELDS, Brief, brief_lint, fact_questions, split_joined
+from sdgen.brief import BRIEF_FIELDS, DEVELOPER_FIELDS, FACT_CELLS, FACT_PREFIX, FACTS_BY_KEY, SEPARATED_FIELDS, Brief, FactQuestion, brief_lint, fact_questions, split_joined
 from sdgen.content import Content, detail_key, dump_markdown, is_detail_key, load_markdown, stem_of
 from sdgen.design import Design, DesignStore
 from pptx import Presentation
@@ -24,7 +24,7 @@ from sdgen.mapping.model import MappingEntry, MappingSet, SourceSpec, TargetSpec
 from sdgen.mapping.workbook import write_workbook
 from sdgen import material as materials
 from sdgen.drawio import to_drawio
-from sdgen.flow import plan_flows, to_mermaid, uses_sap, walkthrough_text
+from sdgen.flow import lane_mismatches, plan_flows, system_lanes, to_mermaid, uses_sap, walkthrough_text
 from sdgen.icons import icon_keys, installed_keys
 from sdgen.plan import OPEN_QUESTIONS_KEY, SOURCES, WALKTHROUGH_SUFFIX, FlowRequest, SectionDecision, SectionPlan, active_extras, apply_plan, detail_prototypes, extended_blueprint, extended_manifest, extra_slides, leftover_texts, open_question_rows, open_questions_extras, open_questions_text, plan_sections, walkthrough_extras
 from sdgen.preview import export_slides
@@ -527,7 +527,14 @@ def design_page() -> None:
         with st.expander(f"4. Diagrams: {uploaded} image(s) uploaded, {drawn} drawn from the brief, {len(diagram_fields)} slots", expanded=step == "diagrams", icon=_done("diagrams" in design.completed), key=_expander_key(state_key, "diagrams", step)):
             st.caption("Draw asks the model for the flow (systems, steps, arrows), draws it as editable shapes on the slide and keeps a draw.io and a Mermaid file next to it; a popup lets you pick the format to work with. An uploaded image always wins over a drawing. A drawing on a slide without a text box of its own gets a 'how it works' slide after it with the numbered steps.")
             _show_icon_note(design)
-            if pending and st.button(f"Draw {len(pending)} diagram(s) from the brief", key=f"{state_key}:draw_all"):
+            lanes = system_lanes(design.brief)
+            if lanes:
+                st.caption("Lanes of every diagram, from 'Systems in the flow' in the brief: " + "; ".join(f"{lane.title} ({lane.role})" for lane in lanes) + ".")
+            else:
+                st.warning("Fill 'Systems in the flow' in the brief first, one per line: system | source, middleware or target | keep, change or new. The systems become the lanes of every diagram; without them the lanes only follow the data direction.")
+                if st.button("Extract systems from the brief", key=f"{state_key}:extract_systems", help="The model lists the systems it finds in the brief text; check them in the Brief step afterwards."):
+                    _extract_systems(state_key, design, store, provider, settings, version)
+            if pending and st.button(f"Draw {len(pending)} diagram(s) from the brief" if lanes else f"Draw {len(pending)} diagram(s) anyway", key=f"{state_key}:draw_all"):
                 _diagram_format_dialog(state_key, pending, requests, provider, settings)
             if st.session_state.get(f"{state_key}:flow_note"):
                 st.info(st.session_state.pop(f"{state_key}:flow_note"))
@@ -1540,8 +1547,27 @@ def _draw_flows_for(state_key: str, design: Design, store: DesignStore, sections
     for key, spec in specs.items():
         store.save_flow(design, key, spec)
     missing = [design.titles.get(s.key, s.title) for s in sections if s.key not in specs]
-    st.session_state[f"{state_key}:flow_note"] = f"Drew {len(specs)} diagram(s) from the brief." + (f" The model returned no flow for: {', '.join(missing)}." if missing else "")
+    checks = [f"{design.titles.get(key, key)}: {problem}" for key, spec in specs.items() for problem in lane_mismatches(spec)]
+    note = f"Drew {len(specs)} diagram(s) from the brief." + (f" The model returned no flow for: {', '.join(missing)}." if missing else "")
+    st.session_state[f"{state_key}:flow_note"] = note + (" Check the lanes: " + "; ".join(checks) + "." if checks else "")
     st.rerun()
+
+
+def _extract_systems(state_key: str, design: Design, store: DesignStore, provider: str, settings: dict, version: int) -> None:
+    """Fills the systems fact from the brief text, so the diagrams get their lanes."""
+    try:
+        llm = get_llm(provider, **settings)
+        with st.spinner("Reading the systems from the brief."):
+            found = extract_facts(design.brief, [FactQuestion(spec=FACTS_BY_KEY["systems"])], llm)
+    except (LLMNotConfigured, LLMError) as exc:
+        st.error(str(exc))
+        return
+    if not found.get("systems"):
+        st.session_state[f"{state_key}:flow_note"] = "No systems found in the brief text; type them under 'Systems in the flow' in the Brief step."
+        st.rerun()
+    design.brief.facts["systems"] = found["systems"]
+    st.session_state[f"{state_key}:flow_note"] = "Systems taken from the brief: " + "; ".join(lane.title for lane in system_lanes(design.brief)) + ". Check them under 'Systems in the flow' in the Brief step."
+    _refresh_material(state_key, design, store, version)
 
 
 def _sized_requests(design: Design, sections: list, requests: list) -> list:

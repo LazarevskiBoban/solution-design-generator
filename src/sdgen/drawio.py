@@ -6,7 +6,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from sdgen.flow import LANES, FlowNode, FlowSpec, lane_is_sap, lane_title, node_is_sap
+from sdgen.flow import FlowNode, FlowSpec, lane_is_sap, lane_order, lane_title, node_is_sap
 from sdgen.icons import icon_file
 from sdgen.palette import EDGE, GREY_FILL, SAP_BLUE, SAP_DARK, SAP_FILL, SLATE, SUBTITLE, WHITE, css
 from sdgen.references import lookup
@@ -33,7 +33,7 @@ def to_drawio(spec: FlowSpec, icons: dict[str, Path] | None = None) -> str:
     """A draw.io file in the SAP Architecture Center style: one rounded container per lane, side by side, nodes stacked inside, icons where the catalogue has one."""
     mxfile = etree.Element("mxfile", host="sdgen")
     diagram = etree.SubElement(mxfile, "diagram", id="flow", name=spec.title or "Flow")
-    lanes = [lane for lane in LANES if any(n.lane == lane for n in spec.nodes)]
+    lanes = [lane for lane in lane_order(spec) if any(n.lane == lane for n in spec.nodes)]
     tallest = max((sum(1 for n in spec.nodes if n.lane == lane) for lane in lanes), default=0)
     reference = lookup(spec.reference)
     width = 2 * MARGIN + len(lanes) * LANE_W + max(0, len(lanes) - 1) * LANE_GAP

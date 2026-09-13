@@ -45,7 +45,7 @@ FACT_CATALOGUE: list[FactSpec] = [
     FactSpec(key="author", label="Author", guidance="Name of the document author."),
     FactSpec(key="contributors", label="Contributors", guidance="Names, separated by semicolons."),
     FactSpec(key="design_doc_url", label="Link to the detailed design", guidance="URL of the detailed design document or repository."),
-    FactSpec(key="systems", label="Systems in the flow", guidance="One per line: system | lane (source, middleware or target) | keep, change or new.", multiline=True),
+    FactSpec(key="systems", label="Systems in the flow", guidance="One per line: system | source, middleware or target | keep, change or new. These systems become the lanes of every diagram.", multiline=True),
     FactSpec(key="parties", label="Counterparts", guidance="One per line: name | note. For example the banks or carriers in scope.", multiline=True),
     FactSpec(key="countries", label="Operating countries", guidance="Comma separated."),
     FactSpec(key="company_codes", label="Company codes", guidance="Comma separated SAP company codes."),

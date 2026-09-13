@@ -24,10 +24,14 @@ from sdgen.references import pack as reference_pack
 from sdgen.textmetrics import FontSpec, text_width_pt
 
 Lane = Literal["source", "middleware", "target"]
+LaneRole = Literal["source", "middleware", "target", "other"]
 NodeKind = Literal["system", "step", "store", "external"]
-EdgeKind = Literal["sync", "async", "file"]
+EdgeKind = Literal["sync", "async", "file", "error"]
 LANES: tuple[str, ...] = ("source", "middleware", "target")
 LANE_TITLES = {"source": "Source", "middleware": "Middleware", "target": "Target"}
+ROLE_ORDER = {"source": 0, "middleware": 1, "target": 2, "other": 3}
+ROLE_WORDS = {"source": ("source", "sender", "origin", "from"), "target": ("target", "receiver", "destination"), "middleware": ("middleware", "platform", "integration", "hub")}
+STOP_TOKENS = {"sap", "system", "out", "in", "to", "from", "the", "on", "and", "of", "for", "via"}
 _SAP_PACK = reference_pack("sap")
 # The SAP pack's detect rule decides what counts as SAP; the literal is the fallback without the pack.
 SAP_RE = re.compile(_SAP_PACK.detect if _SAP_PACK is not None and _SAP_PACK.detect else r"\bSAP\b|S/4|S4HANA|\bECC\b|\bBTP\b|Integration Suite|\bCPI\b|PI/PO|Cloud Connector|IDoc|\bRFC\b|OData", re.IGNORECASE)
@@ -93,7 +97,7 @@ FLOW_SCHEMA = {
                                 "source": {"type": "string"},
                                 "target": {"type": "string"},
                                 "label": {"type": "string"},
-                                "kind": {"type": "string", "enum": ["sync", "async", "file"]},
+                                "kind": {"type": "string", "enum": ["sync", "async", "file", "error"]},
                             },
                             "required": ["source", "target"],
                         },
@@ -114,13 +118,19 @@ For each requested diagram return its nodes, edges and lane headings.
 Nodes: four to nine, fewer when the diagram line caps them, each with a short label (at most
 four words), a subtitle (at most four words naming the edition, deployment or role, such as
 "Outbound-only tunnel" or "Backend system"; empty when nothing useful), a kind (system, step,
-store or external) and a lane that follows the direction of the data: source, middleware or
-target. Steps that happen inside a system go in that system's lane, right after it. Small
-drawing areas get at most two lanes and few nodes.
+store or external) and a lane. When a lane list is given, a lane is the system that hosts
+the node: use the id of that system. A step goes in the lane of the system that runs it: an
+integration-flow step belongs to the integration platform even when it moves files on another
+system; people and parties that are not systems go in "other"; never put a node named after
+one system into another system's lane. Without a lane list, the lane follows the direction of
+the data: source, middleware or target. Small drawing areas get at most two lanes and few nodes.
 Lanes: a heading of at most five words for every lane used, naming whose landscape it is: the
 customer's system landscape, the integration platform, the partner or provider side.
 Edges: from node to node in flow order, each with a short label (at most three words) naming
-the protocol, format or trigger, and a kind: sync, async or file.
+the protocol, format or trigger, and a kind: sync, async, file or error. When the brief
+describes an exception path (an alert, a watchdog, a reject folder), draw it: one node for the
+alerting service or the rejected location in the lane that owns it, reached by error edges
+labelled with the failure.
 Steps: three to eight numbered sentences a developer reads next to the diagram, one per edge in
 flow order: what is sent, over what, and what happens when it fails where the brief says so.
 """ + GROUNDING_RULE + """
@@ -131,11 +141,24 @@ Reference: when reference architectures are listed, give each diagram the id of 
 Return only JSON matching the schema."""
 
 
+class FlowLane(BaseModel):
+    """A lane of the drawing: one system of the landscape, or the role lanes when no systems are listed."""
+
+    id: str
+    title: str
+    role: LaneRole = "middleware"
+    sap: bool = False
+    change: str = ""  # keep, change or new, as the systems fact says
+
+
+OTHER_LANE = FlowLane(id="other", title="Other parties", role="other")
+
+
 class FlowNode(BaseModel):
     id: str
     label: str
     kind: NodeKind = "system"
-    lane: Lane = "middleware"
+    lane: str = "middleware"  # a system id from the lane list, else source, middleware or target
     icon: str = ""  # a key of the icon catalogue, empty for a plain shape
     subtitle: str = ""  # a second line: edition, deployment or role
 
@@ -154,6 +177,7 @@ class FlowSpec(BaseModel):
     notes: str = ""
     steps: list[str] = Field(default_factory=list)  # what happens along the edges, in order
     lanes: dict[str, str] = Field(default_factory=dict)  # a heading per lane, else the generic lane title
+    systems: list[FlowLane] = Field(default_factory=list)  # the lanes in drawing order; empty means the three role lanes
     reference: str = ""  # "<system>:<id>" of the closest reference architecture, empty when none
 
     def save(self, path: str | Path) -> None:
@@ -169,9 +193,96 @@ def uses_sap(brief: Brief) -> bool:
     return bool(SAP_RE.search(dump_brief(brief)))
 
 
+def parse_systems(text: str) -> list[FlowLane]:
+    """One lane per line of the systems fact: system | role | keep, change or new; sorted by role, ids unique."""
+    lanes: list[FlowLane] = []
+    seen: set[str] = set()
+    for raw in text.splitlines():
+        line = raw.strip().lstrip("-*• ").strip()
+        if not line:
+            continue
+        cells = [cell.strip() for cell in line.split("|")]
+        name = " ".join(cells[0].split())
+        if not name:
+            continue
+        base = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "system"
+        lane_id, number = base, 2
+        while lane_id in seen:
+            lane_id, number = f"{base}_{number}", number + 1
+        seen.add(lane_id)
+        lanes.append(FlowLane(id=lane_id, title=name, role=_role_of(cells[1] if len(cells) > 1 else ""), sap=bool(SAP_RE.search(name)), change=cells[2] if len(cells) > 2 else ""))
+    return sorted(lanes, key=lambda lane: ROLE_ORDER[lane.role])
+
+
+def system_lanes(brief: Brief) -> list[FlowLane]:
+    return parse_systems(brief.facts.get("systems", ""))
+
+
+def lane_order(spec: FlowSpec) -> list[str]:
+    """The lane ids in drawing order: the systems of the spec, else the three role lanes."""
+    return [lane.id for lane in spec.systems] or list(LANES)
+
+
 def lane_title(spec: FlowSpec, lane: str) -> str:
-    """The lane's heading from the model, else the generic one."""
-    return spec.lanes.get(lane) or LANE_TITLES.get(lane, lane)
+    """The lane's heading from the model, else the system name, else the generic one."""
+    system = next((s for s in spec.systems if s.id == lane), None)
+    return spec.lanes.get(lane) or (system.title if system else "") or LANE_TITLES.get(lane, lane)
+
+
+def lane_mismatches(spec: FlowSpec) -> list[str]:
+    """Nodes that name other systems than the one whose lane they sit in."""
+    found = []
+    for node in spec.nodes:
+        mentioned = _mentioned_lanes(node, spec.systems)
+        if mentioned and node.lane not in mentioned:
+            names = ", ".join(lane_title(spec, lane) for lane in mentioned)
+            found.append(f"'{node.label}' sits in {lane_title(spec, node.lane)} but names {names}")
+    return found
+
+
+def flow_schema(lane_ids: list[str]) -> dict:
+    import copy
+
+    schema = copy.deepcopy(FLOW_SCHEMA)
+    flow = schema["properties"]["flows"]["items"]["properties"]
+    flow["nodes"]["items"]["properties"]["lane"] = {"type": "string", "enum": list(lane_ids)}
+    flow["lanes"] = {"type": "object", "properties": {lane: {"type": "string"} for lane in lane_ids}}
+    return schema
+
+
+def _role_of(text: str) -> LaneRole:
+    lowered = text.lower()
+    for role, words in ROLE_WORDS.items():
+        if any(word in lowered for word in words):
+            return role  # type: ignore[return-value]
+    return "middleware"
+
+
+def _tokens(text: str) -> list[str]:
+    return [t for t in re.findall(r"[a-z0-9]+", text.lower().replace("/", "")) if len(t) >= 2 and t not in STOP_TOKENS]
+
+
+def _mentions(node: FlowNode, lane: FlowLane) -> bool:
+    system = _tokens(lane.title)
+    return any(token == word or (len(token) >= 2 and word.startswith(token)) for token in _tokens(f"{node.label} {node.subtitle}") for word in system)
+
+
+def _mentioned_lanes(node: FlowNode, lanes: list[FlowLane]) -> list[str]:
+    return [lane.id for lane in lanes if lane.role != "other" and _mentions(node, lane)]
+
+
+def _repair_lane(node: FlowNode, lanes: list[FlowLane], known: list[str]) -> str:
+    """The node's lane from the list; a node named after exactly one other system moves there."""
+    mentioned = _mentioned_lanes(node, lanes)
+    if node.lane in known and (node.lane in mentioned or len(mentioned) != 1):
+        return node.lane
+    if len(mentioned) == 1:
+        return mentioned[0]
+    if node.lane in known:
+        return node.lane
+    if node.kind == "external":
+        return OTHER_LANE.id
+    return next((lane.id for lane in lanes if lane.role == "middleware"), lanes[0].id if lanes else OTHER_LANE.id)
 
 
 def node_is_sap(node: FlowNode) -> bool:
@@ -183,9 +294,12 @@ def node_is_sap(node: FlowNode) -> bool:
 
 
 def lane_is_sap(spec: FlowSpec, lane: str) -> bool:
-    """A lane draws in the SAP look when its heading says so or SAP nodes make up at least half of it."""
+    """A lane draws in the SAP look when its system or heading says so; role lanes follow their nodes' majority."""
     if SAP_RE.search(spec.lanes.get(lane, "")):
         return True
+    system = next((s for s in spec.systems if s.id == lane), None)
+    if system is not None:
+        return system.sap
     members = [n for n in spec.nodes if n.lane == lane]
     sap = sum(node_is_sap(n) for n in members)
     return sap > 0 and sap >= len(members) - sap
@@ -202,9 +316,14 @@ def plan_flows(brief: Brief, requests: list, llm: LLMClient, icons: list[str] | 
     lines = ["# Diagrams to design (section key | title | purpose | drawing area)"]
     for request in requests:
         lines.append(f"- {request.section} | {request.title or request.section} | {request.purpose or ''} | {_area_hint(request)}")
-    schema = FLOW_SCHEMA
+    systems = system_lanes(brief)
+    schema = flow_schema([lane.id for lane in systems] + [OTHER_LANE.id]) if systems else FLOW_SCHEMA
+    if systems:
+        lines += ["", "# Lanes: one per system, use the id (id | system | role | keep, change or new)"]
+        lines += [f"- {lane.id} | {lane.title} | {lane.role} | {lane.change}" for lane in systems]
+        lines.append(f"- {OTHER_LANE.id} | people or parties that are not a system | other |")
     if icons:
-        schema = _schema_with_icons(icons)
+        schema = _schema_with_icons(schema, icons)
         known = catalogue()
         lines += ["", "# Icon keys: give every node the closest one; SAP systems take SAP keys, other systems the non-SAP ones", "; ".join(f"{k} = {known[k].label}" if k in known else k for k in icons)]
     packs = matching(brief.facts_text() + "\n" + dump_brief(brief))
@@ -227,7 +346,7 @@ def plan_flows(brief: Brief, requests: list, llm: LLMClient, icons: list[str] | 
             spec = FlowSpec.model_validate(_payload(item))
         except ValidationError:
             continue
-        spec = clean_flow(spec)
+        spec = clean_flow(spec, systems or None)
         if spec.nodes:
             result[key] = spec
     return result
@@ -260,10 +379,10 @@ def _area_hint(request) -> str:
     return hint + (", two lanes at most" if width * height < SMALL_AREA_SQ_IN else "")
 
 
-def _schema_with_icons(icons: list[str]) -> dict:
+def _schema_with_icons(schema: dict, icons: list[str]) -> dict:
     import copy
 
-    schema = copy.deepcopy(FLOW_SCHEMA)
+    schema = copy.deepcopy(schema)
     schema["properties"]["flows"]["items"]["properties"]["nodes"]["items"]["properties"]["icon"] = {"type": "string", "enum": list(icons)}
     return schema
 
@@ -291,25 +410,32 @@ def _reference_lines(packs: list[Pack], text: str) -> list[str]:
     return lines
 
 
-def clean_flow(spec: FlowSpec) -> FlowSpec:
+def clean_flow(spec: FlowSpec, lanes: list[FlowLane] | None = None) -> FlowSpec:
+    """Drops what cannot be drawn and, with a lane list, puts every node in a lane of that list."""
     seen: set[str] = set()
     known = set(icon_keys())
+    lanes = list(lanes or spec.systems)
+    lane_ids = [lane.id for lane in lanes] + [OTHER_LANE.id] if lanes else list(LANES)
     nodes = []
     for node in spec.nodes:
         node_id = _ident(node.id)
         if not node_id or node_id in seen or not node.label.strip():
             continue
         seen.add(node_id)
-        nodes.append(node.model_copy(update={"id": node_id, "label": " ".join(node.label.split()), "subtitle": " ".join(node.subtitle.split()), "icon": node.icon if node.icon in known else ""}))
+        lane = _repair_lane(node, lanes, lane_ids) if lanes else (node.lane if node.lane in lane_ids else "middleware")
+        nodes.append(node.model_copy(update={"id": node_id, "label": " ".join(node.label.split()), "subtitle": " ".join(node.subtitle.split()), "icon": node.icon if node.icon in known else "", "lane": lane}))
     edges = []
     for edge in spec.edges:
         source, target = _ident(edge.source), _ident(edge.target)
         if source in seen and target in seen and source != target:
             edges.append(edge.model_copy(update={"source": source, "target": target, "label": " ".join(edge.label.split())}))
     steps = [" ".join(str(s).split()) for s in spec.steps if str(s).strip()]
-    lanes = {lane: " ".join(str(title).split()) for lane, title in spec.lanes.items() if lane in LANES and str(title).strip()}
+    headings = {lane: " ".join(str(title).split()) for lane, title in spec.lanes.items() if lane in lane_ids and str(title).strip()}
+    used = list(lanes)  # every listed system, so checks still know the lanes a node does not sit in
+    if lanes and any(n.lane == OTHER_LANE.id for n in nodes):
+        used.append(OTHER_LANE)
     reference = spec.reference.strip() if lookup(spec.reference.strip()) else ""
-    return spec.model_copy(update={"nodes": nodes, "edges": edges, "steps": steps, "lanes": lanes, "reference": reference})
+    return spec.model_copy(update={"nodes": nodes, "edges": edges, "steps": steps, "lanes": headings, "systems": used, "reference": reference})
 
 
 def flow_steps(spec: FlowSpec) -> list[str]:
@@ -332,7 +458,7 @@ def walkthrough_text(spec: FlowSpec) -> str:
 
 def to_mermaid(spec: FlowSpec) -> str:
     lines = ["flowchart LR"]
-    for lane in LANES:
+    for lane in lane_order(spec):
         members = [n for n in spec.nodes if n.lane == lane]
         if not members:
             continue
@@ -348,7 +474,7 @@ def to_mermaid(spec: FlowSpec) -> str:
             else:
                 lines.append(f'    {node.id}["{label}"]')
         lines.append("  end")
-    arrows = {"sync": "-->", "async": "-.->", "file": "==>"}
+    arrows = {"sync": "-->", "async": "-.->", "file": "==>", "error": "-.->"}
     for edge in spec.edges:
         arrow = arrows.get(edge.kind, "-->")
         label = f"|{edge.label}|" if edge.label else ""
@@ -359,7 +485,7 @@ def to_mermaid(spec: FlowSpec) -> str:
 def draw_flow(slide, box: tuple[int, int, int, int], spec: FlowSpec, prefix: str = "Flow") -> list:
     """Draws the flow as editable shapes inside the box (EMU left, top, width, height)."""
     left, top, width, height = box
-    lanes = [lane for lane in LANES if any(n.lane == lane for n in spec.nodes)] or ["middleware"]
+    lanes = [lane for lane in lane_order(spec) if any(n.lane == lane for n in spec.nodes)] or ["middleware"]
     index_of = {lane: i for i, lane in enumerate(lanes)}
     lane_of = {n.id: index_of.get(n.lane, 0) for n in spec.nodes}
     far = any(abs(lane_of[e.source] - lane_of[e.target]) >= 2 for e in spec.edges if e.source in lane_of and e.target in lane_of)

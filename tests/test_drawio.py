@@ -20,6 +20,22 @@ def _cells(spec, icons):
     return root, {c.get("id"): c for c in root.findall(".//mxCell")}
 
 
+def test_drawio_uses_system_lanes_in_role_order():
+    from sdgen.flow import clean_flow, parse_systems
+
+    lanes = parse_systems("S/4HANA on RISE | target | change\nWindows VM | source | keep\nSAP BTP Integration Suite | middleware | new")
+    spec = clean_flow(FlowSpec(nodes=[FlowNode(id="vm", label="VM door", lane="windows_vm"), FlowNode(id="cpi", label="Inbound iFlow", lane="sap_btp_integration_suite"), FlowNode(id="s4", label="S/4 IN", lane="s_4hana_on_rise")], edges=[FlowEdge(source="vm", target="cpi"), FlowEdge(source="cpi", target="s4", kind="error")]), lanes)
+    root, cells = _cells(spec, {})
+    ids = ["lane_windows_vm", "lane_sap_btp_integration_suite", "lane_s_4hana_on_rise"]
+    x = [float(cells[i].find("mxGeometry").get("x")) for i in ids]
+    assert x[0] < x[1] < x[2]
+    assert [cells[f"{i}_title"].get("value") for i in ids] == ["Windows VM", "SAP BTP Integration Suite", "S/4HANA on RISE"]
+    assert "lane_windows_vm_logo" not in cells and cells["lane_s_4hana_on_rise_logo"].get("parent") == "lane_s_4hana_on_rise"
+    assert cells["n_s4"].get("parent") == "lane_s_4hana_on_rise"
+    edges = [c for c in root.findall(".//mxCell") if c.get("edge") == "1"]
+    assert "dashed=1" not in edges[0].get("style") and "dashed=1" in edges[1].get("style")
+
+
 def test_drawio_draws_containers_in_the_sap_style():
     root, cells = _cells(SPEC, {})
     assert root.tag == "mxfile" and root.find("diagram").get("name") == "Lockbox"
