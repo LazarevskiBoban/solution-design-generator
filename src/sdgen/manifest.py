@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 FieldKind = Literal["text", "bullets", "table", "image"]
 BindingMode = Literal["replace", "token"]
@@ -28,6 +28,13 @@ class Binding(BaseModel):
     header_rows: int = 1
     keep_last_row_if: str | None = None
     fit: ImageFit = "contain"
+
+    @field_validator("keep_prefix")
+    @classmethod
+    def _prefix_ends_with_a_space(cls, value: str | None) -> str | None:
+        # The kept label run ends with a space, so written text never glues to it.
+        value = (value or "").rstrip()
+        return f"{value} " if value else None
 
 
 class FieldSpec(BaseModel):

@@ -68,6 +68,22 @@ def parse_spans(text: str) -> list[Span]:
     return spans
 
 
+LABEL_PUNCT = r"[:.\-–—]"
+
+
+def strip_leading_label(text: str, labels) -> str:
+    """Drops a repeated label at the start, as in "Business Need. ..." or "**Scope:** ..."; the punctuation is required."""
+    for label in labels:
+        label = (label or "").strip().rstrip(":.-–—").strip()
+        if not label:
+            continue
+        pattern = re.compile(r"^\s*(?:\*\*)?\s*" + re.escape(label) + r"\s*(?:\*\*)?\s*" + LABEL_PUNCT + r"\s*(?:\*\*)?\s*", re.IGNORECASE)
+        match = pattern.match(text)
+        if match:
+            return text[match.end() :]
+    return text
+
+
 def set_rich_text(target, value: str | list[Block], keep_prefix: str | None = None) -> None:
     blocks = parse_blocks(value) if isinstance(value, str) else [b.model_copy(deep=True) for b in value]
     tx_body = target.text_frame._txBody
@@ -86,8 +102,11 @@ def set_rich_text(target, value: str | list[Block], keep_prefix: str | None = No
     prefix_rpr = None
     if keep_prefix:
         prefix_p, prefix_rpr = _split_prefix(paragraphs[0], keep_prefix)
+        kept = "".join(_text_of(r) for r in prefix_p.findall(qn("a:r"))) if prefix_p is not None else ""
         if prefix_p is None and blocks:
-            blocks[0].spans.insert(0, Span(text=keep_prefix))
+            blocks[0].spans.insert(0, Span(text=keep_prefix.rstrip() + " "))
+        elif blocks and blocks[0].spans and kept and not kept[-1].isspace() and not blocks[0].spans[0].text[:1].isspace():
+            blocks[0].spans.insert(0, Span(text=" "))
 
     new_paragraphs: list[etree._Element] = []
     for index, block in enumerate(blocks):

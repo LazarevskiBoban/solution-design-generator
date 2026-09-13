@@ -110,6 +110,27 @@ def test_missing_prefix_is_prepended():
     assert box.text_frame.text == "Label: value"
 
 
+def test_keep_prefix_without_trailing_space_gets_one():
+    _, slide = _slide()
+    box = _textbox(slide, "Note:old text")
+    set_rich_text(box, "Retries stop after limits.", keep_prefix="Note:")
+    assert box.text_frame.text == "Note: Retries stop after limits."
+    box = _textbox(slide, "no label")
+    set_rich_text(box, "value", keep_prefix="Label:")
+    assert box.text_frame.text == "Label: value"
+
+
+def test_strip_leading_label_needs_the_punctuation():
+    from sdgen.fill.text import strip_leading_label
+
+    labels = ["Business Need", "Scope: "]
+    assert strip_leading_label("Business Need. OneERP must move files.", labels) == "OneERP must move files."
+    assert strip_leading_label("business need: lower case too", labels) == "lower case too"
+    assert strip_leading_label("**Scope:** Lockbox only.\nScope is limited.", labels) == "Lockbox only.\nScope is limited."
+    assert strip_leading_label("Scope is limited to lockbox.", labels) == "Scope is limited to lockbox."
+    assert strip_leading_label("Scope – lockbox", labels) == "lockbox"
+
+
 def test_bullets_in_plain_text_box_get_explicit_bullets():
     _, slide = _slide()
     box = _textbox(slide)

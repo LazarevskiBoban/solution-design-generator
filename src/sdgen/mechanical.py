@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from sdgen.blueprint import Blueprint
-from sdgen.brief import Brief
+from sdgen.brief import Brief, looks_joined, split_joined
 from sdgen.content import Content
 from sdgen.manifest import FieldSpec, Manifest
 
@@ -45,6 +45,8 @@ def is_reference_columns(columns: list[str]) -> bool:
 
 
 def reference_rows(text: str, columns: list[str]) -> list[dict[str, str]]:
+    if looks_joined(text, len(columns)):
+        text = split_joined(text, len(columns))
     rows = []
     for line in text.splitlines():
         parts = [p.strip() for p in line.split("|")]

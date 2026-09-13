@@ -40,6 +40,12 @@ def test_yaml_roundtrip(tmp_path):
     assert Manifest.load(path) == original
 
 
+def test_keep_prefix_is_normalised_to_end_with_a_space():
+    assert Binding(slide=1, shape=ShapeRef(id=1), keep_prefix="Business Need:").keep_prefix == "Business Need: "
+    assert Binding(slide=1, shape=ShapeRef(id=1), keep_prefix="Note: ").keep_prefix == "Note: "
+    assert Binding(slide=1, shape=ShapeRef(id=1), keep_prefix="  ").keep_prefix is None
+
+
 def test_lookup_helpers():
     manifest = _manifest()
     assert manifest.keys == ["subject", "business_need", "scope", "effort"]

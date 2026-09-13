@@ -40,6 +40,20 @@ def test_templates_page_without_upload_shows_guidance(tmp_path, monkeypatch):
     assert any("Upload a deck" in i.value for i in app.info)
 
 
+def test_brief_lint_offers_to_split_a_pasted_line(registry_with_demo, tmp_path):
+    app = AppTest.from_file(str(APP), default_timeout=60).run()
+    app.text_input(key="design_name:demo").input("Lint").run()
+    state_key = "design:demo:lint"
+    app.text_area(key=f"{state_key}:0:b:open_questions").input("Which bank? | Treasury Is PGP needed? | Security").run()
+    assert any("one entry per line" in w.value for w in app.warning)
+    app.button(key=f"{state_key}:split:open_questions").click().run()
+    assert not app.exception
+    assert app.session_state[state_key].brief.open_questions.count("\n") == 1
+    assert app.text_area(key=f"{state_key}:1:b:open_questions").value.count("\n") == 1
+    assert not any("one entry per line" in w.value for w in app.warning)
+    assert any("split into 2 lines" in i.value for i in app.info)
+
+
 def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     app = AppTest.from_file(str(APP), default_timeout=60).run()
     assert not app.exception

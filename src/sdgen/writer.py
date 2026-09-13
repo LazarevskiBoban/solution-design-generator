@@ -6,8 +6,9 @@ import re
 from pydantic import BaseModel, Field
 
 from sdgen.blueprint import Blueprint
-from sdgen.brief import Brief, FactQuestion, dump_brief
+from sdgen.brief import Brief, FactQuestion, dump_brief, split_joined
 from sdgen.content import Content, dump_markdown, load_markdown, validate_content
+from sdgen.fill.text import strip_leading_label
 from sdgen.llm import LLMClient, get_llm
 from sdgen.manifest import Manifest
 from sdgen.material import material_corpus, material_text
@@ -405,15 +406,30 @@ def _repair_duplicates(brief: Brief, blueprint: Blueprint, manifest: Manifest, l
 
 
 def strip_label_prefixes(content: Content, manifest: Manifest) -> None:
-    # Models tend to start a value with "Label:"; the template already shows the label.
+    # Models tend to start a value with the label; the template already shows it.
     for key, value in content.fields.items():
         spec = manifest.field(key)
         if spec is None or not isinstance(value, str):
             continue
-        prefixes = {spec.label.strip().lower()} | {(b.keep_prefix or "").strip().rstrip(":").lower() for b in spec.bindings}
-        first, sep, rest = value.partition(":")
-        if sep and first.strip().lower() in prefixes - {""}:
-            content.fields[key] = rest.lstrip(" ")
+        content.fields[key] = strip_leading_label(value, [spec.label] + [b.keep_prefix or "" for b in spec.bindings])
+
+
+RESPLIT_PROMPT = """You reformat pasted notes. The text holds several entries pasted onto one line.
+Return the same text with one entry per line, each entry keeping its cells separated by " | ",
+laid out as: {guidance}
+Copy every word exactly as given; add, drop or reorder nothing; return only the lines."""
+
+
+def resplit_lines(llm: LLMClient, label: str, text: str, cells: int, guidance: str = "") -> str:
+    """One entry per line for a field pasted as one line; the reply counts only when every word survives."""
+    reply = _unfence(llm.complete(RESPLIT_PROMPT.format(guidance=guidance or label), text)).strip()
+    if reply and _squash(reply) == _squash(text):
+        return reply
+    return split_joined(text, cells)
+
+
+def _squash(text: str) -> str:
+    return "".join(text.split())
 
 
 def _group_of(section: dict) -> str:

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from sdgen.analyze import slugify
 from sdgen.blueprint import Blueprint, Section
-from sdgen.brief import Brief, dump_brief
+from sdgen.brief import Brief, dump_brief, looks_joined, split_joined
 from sdgen.flow import FlowSpec
 from sdgen.llm import LLMClient
 from sdgen.manifest import FieldSpec, Manifest
@@ -415,6 +415,8 @@ def open_questions_extras(design, blueprint: Blueprint, manifest: Manifest) -> l
 
 def open_question_lines(text: str) -> list[tuple[str, str]]:
     """(question, who to ask) per non-empty line of the brief field."""
+    if looks_joined(text, 2):
+        text = split_joined(text, 2)
     found = []
     for raw in text.splitlines():
         line = raw.strip().lstrip("-*• ").strip()

@@ -26,6 +26,9 @@ BRIEF_FIELDS: list[tuple[str, str, str]] = [
 ]
 DEVELOPER_FIELDS = {"acceptance_criteria", "operations", "non_functional", "decisions_log", "open_questions"}
 FACT_PREFIX = "fact:"
+# Cells per entry of the "one per line" fields and facts, to spot several entries pasted on one line.
+SEPARATED_FIELDS: dict[str, int] = {"apis_references": 3, "decisions_log": 3, "open_questions": 2}
+FACT_CELLS: dict[str, int] = {"systems": 3, "parties": 2, "targets": 2, "effort": 5, "investment": 3, "sap_objects": 3}
 
 
 class FactSpec(BaseModel):
@@ -221,3 +224,47 @@ def brief_skeleton() -> str:
         lines.append(f"<!-- {spec.label}. {spec.guidance} -->")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def looks_joined(text: str, cells: int) -> bool:
+    """Several entries pasted on one line, where the field expects one entry per line."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    return len(lines) == 1 and cells > 1 and lines[0].count("|") >= 2 * (cells - 1)
+
+
+def split_joined(text: str, cells: int) -> str:
+    """Regroups the cells of one pasted line into lines of `cells` cells each."""
+    parts = [part.strip() for part in text.split("|")]
+    rows = [parts[i : i + cells] for i in range(0, len(parts), cells)]
+    return "\n".join(" | ".join(row) for row in rows if any(row))
+
+
+def table_cut_short(text: str) -> bool:
+    """A pasted table (tab or pipe separated rows) whose last row has fewer cells than its header."""
+    rows = [_cells(line) for line in text.splitlines() if line.strip()]
+    tabular = [row for row in rows if len(row) > 1]
+    if len(tabular) < 2 or len(rows[-1]) < 2:
+        return False
+    return len(tabular[-1]) < len(tabular[0])
+
+
+def brief_lint(brief: Brief) -> list[tuple[str, str]]:
+    """(key, message) for fields whose pasted text lost its line breaks or ends in a cut table row."""
+    found: list[tuple[str, str]] = []
+    for key, label, _ in BRIEF_FIELDS:
+        value = getattr(brief, key)
+        cells = SEPARATED_FIELDS.get(key)
+        if cells and looks_joined(value, cells):
+            found.append((key, f"{label}: expects one entry per line but holds one line with {value.count('|')} separators."))
+        elif table_cut_short(value):
+            found.append((key, f"{label}: looks like a pasted table whose last row is incomplete."))
+    for key, cells in FACT_CELLS.items():
+        value = brief.facts.get(key, "")
+        if looks_joined(value, cells):
+            found.append((f"{FACT_PREFIX}{key}", f"{FACTS_BY_KEY[key].label}: expects one entry per line but holds one line with {value.count('|')} separators."))
+    return found
+
+
+def _cells(line: str) -> list[str]:
+    separator = "\t" if "\t" in line else "|"
+    return [cell.strip() for cell in line.split(separator)]

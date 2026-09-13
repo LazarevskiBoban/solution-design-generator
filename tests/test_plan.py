@@ -175,6 +175,8 @@ def test_open_questions_extra_is_built_from_the_brief(sample_deck, tmp_path):
     text = "Which bank sends BAI2? | Treasury\n- Is PGP needed for lockbox?\n\n"
     assert open_question_rows(text, ["Ref", "Question", "Ask"]) == [{"Ref": "1", "Question": "Which bank sends BAI2?", "Ask": "Treasury"}, {"Ref": "2", "Question": "Is PGP needed for lockbox?", "Ask": ""}]
     assert open_questions_text(text) == "1. Which bank sends BAI2? (ask: Treasury)\n2. Is PGP needed for lockbox?"
+    joined = "Which bank sends BAI2? | Treasury Is PGP needed? | Security"
+    assert [r["Ref"] for r in open_question_rows(joined, ["Ref", "Question", "Ask"])] == ["1", "2"]
 
     entry = _template(sample_deck, tmp_path)
     design = Design(name="d", template="demo", brief=Brief(subject="L", open_questions=text))

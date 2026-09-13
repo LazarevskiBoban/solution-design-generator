@@ -15,7 +15,7 @@ from sdgen.fill.image import replace_picture
 from sdgen.flow import FlowSpec, draw_flow
 from sdgen.fill.slides import clone_slide, move_slide, remove_slide
 from sdgen.fill.table import append_rows, clear_table_body, fill_table, has_footer, row_heights
-from sdgen.fill.text import Block, Span, capacity_chars_of, capacity_lines_of, fit_text_shape, line_chars_of, overflow_ratio, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text, theme_fonts
+from sdgen.fill.text import Block, Span, capacity_chars_of, capacity_lines_of, fit_text_shape, line_chars_of, overflow_ratio, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text, strip_leading_label, theme_fonts
 from sdgen.inventory import find_shape, walk_shapes
 from sdgen.layout import BLOCK_GAP, CONTAIN_TOL, Box, SlideLayout, analyse_slide, pin_geometry, shift_shapes
 from sdgen.manifest import Binding, FieldSpec, Manifest
@@ -361,6 +361,8 @@ def _apply(prs, slide, shape, spec: FieldSpec, binding: Binding, value: Any, iss
             issues.append(RenderIssue(field=spec.key, slide=binding.slide, message=f"placeholder {binding.token} not found"))
         return
 
+    if binding.keep_prefix:
+        text = strip_leading_label(text, [binding.keep_prefix, spec.label])
     blocks = parse_blocks(text)
     set_rich_text(shape, blocks, keep_prefix=binding.keep_prefix)
     capacity = _budget(binding.max_chars, capacity_chars_of(shape, theme, len(binding.keep_prefix or "")))

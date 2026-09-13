@@ -54,6 +54,51 @@ def test_brief_roundtrip_and_skeleton():
     assert load_brief("---\nsubject: X\n---\n## decisions_log\nold notes\n").decisions_log == "old notes"
 
 
+def test_joined_lines_are_detected_and_split():
+    from sdgen.brief import brief_lint, looks_joined, split_joined, table_cut_short
+
+    joined = "Which bank? | Treasury Is PGP needed? | Security"
+    assert looks_joined(joined, 2) and not looks_joined("Which bank? | Treasury", 2)
+    assert not looks_joined("File based | Programme | decided", 3) and looks_joined("A | P | decided B | P | open", 3)
+    assert split_joined("q1 | who1 | q2 | who2", 2) == "q1 | who1\nq2 | who2"
+    assert split_joined("A | P | decided B | P | open", 3) == "A | P | decided B\nP | open"
+    assert table_cut_short("Flow\tSource\tTarget\nLockbox in\tVM\tS/4\nStatements in\tVM")
+    assert not table_cut_short("Flow\tSource\nLockbox\tVM") and not table_cut_short("plain prose | with one bar")
+    brief = BRIEF.model_copy(update={"open_questions": joined, "decisions_log": "A | P | decided", "facts": {"systems": "S/4 | target | keep BTP | middleware | new"}})
+    found = dict(brief_lint(brief))
+    assert set(found) == {"open_questions", "fact:systems"} and "one entry per line" in found["open_questions"]
+    assert brief_lint(BRIEF) == []
+
+
+def test_resplit_lines_trusts_only_a_verbatim_reply():
+    from sdgen.writer import resplit_lines
+
+    text = "Which bank? | Treasury Is PGP needed? | Security"
+    good = _ScriptedLLM(["Which bank? | Treasury\nIs PGP needed? | Security"])
+    assert resplit_lines(good, "Open questions", text, 2) == "Which bank? | Treasury\nIs PGP needed? | Security"
+    assert good.prompts == [text]
+    reworded = _ScriptedLLM(["Which bank? | Treasury\nIs PGP required? | Security"])
+    assert resplit_lines(reworded, "Open questions", text, 2) == "Which bank? | Treasury Is PGP needed?\nSecurity"
+
+
+def test_label_prefixes_are_stripped_in_every_punctuation_form():
+    from sdgen.writer import strip_label_prefixes
+
+    manifest = Manifest(
+        name="m",
+        fields=[
+            FieldSpec(key="business_need", label="Business Need", bindings=[Binding(slide=5, shape=ShapeRef(id=5), keep_prefix="Business Need:")]),
+            FieldSpec(key="scope", label="Scope"),
+        ],
+    )
+    content = Content(fields={"business_need": "Business Need. OneERP must move files.", "scope": "**Scope:** Lockbox only.\nScope is limited."})
+    strip_label_prefixes(content, manifest)
+    assert content.fields == {"business_need": "OneERP must move files.", "scope": "Lockbox only.\nScope is limited."}
+    content = Content(fields={"scope": "Scope is limited to lockbox."})
+    strip_label_prefixes(content, manifest)
+    assert content.fields["scope"] == "Scope is limited to lockbox."
+
+
 def test_fact_questions_follow_the_template(sample_deck, tmp_path):
     from sdgen.brief import fact_questions
 

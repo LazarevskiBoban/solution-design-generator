@@ -11,7 +11,7 @@ import streamlit as st
 
 from sdgen.analyze import Analysis, slugify
 from sdgen.blueprint import Blueprint, derive_blueprint
-from sdgen.brief import BRIEF_FIELDS, DEVELOPER_FIELDS, FACTS_BY_KEY, Brief, fact_questions
+from sdgen.brief import BRIEF_FIELDS, DEVELOPER_FIELDS, FACT_CELLS, FACT_PREFIX, FACTS_BY_KEY, SEPARATED_FIELDS, Brief, brief_lint, fact_questions, split_joined
 from sdgen.content import Content, dump_markdown, load_markdown
 from sdgen.design import Design, DesignStore
 from pptx import Presentation
@@ -31,7 +31,7 @@ from sdgen.preview import export_slides
 from sdgen.references import lookup as lookup_reference
 from sdgen.registry import Registry, safe_name
 from sdgen.tools import AnalyzeRequest, RenderRequest, analyze_template, continuation_slides, render_document
-from sdgen.writer import draft_content, extract_facts, redraft_section, writable_sections
+from sdgen.writer import draft_content, extract_facts, redraft_section, resplit_lines, writable_sections
 
 ROOT = Path(__file__).resolve().parent.parent
 KINDS = ["text", "bullets", "table", "image"]
@@ -433,6 +433,13 @@ def design_page() -> None:
             facts={k: v.strip() for k, v in facts.items() if v.strip()},
             **texts,
         )
+        for key, message in brief_lint(design.brief):
+            text_col, button_col = st.columns([5, 1])
+            text_col.warning(message)
+            if (key in SEPARATED_FIELDS or key.startswith(FACT_PREFIX)) and button_col.button("Split into lines", key=f"{state_key}:split:{key}", help="The model breaks the pasted line into one entry per line without changing a word."):
+                _split_field(state_key, design, store, key, provider, settings, version)
+        if st.session_state.get(f"{state_key}:brief_note"):
+            st.info(st.session_state.pop(f"{state_key}:brief_note"))
         if questions:
             if st.button("Pre-fill facts from the notes", key=f"{state_key}:prefill", help="The model copies facts it finds word for word in the text boxes above into the empty fact fields."):
                 try:
@@ -1430,6 +1437,29 @@ def _transcribe(item: materials.Material, data: bytes, provider: str, settings: 
         item.status = f"transcribed with {getattr(llm, 'label', llm.name)} on {materials.now()[:10]}"
     except (LLMNotConfigured, LLMError, ValueError) as exc:
         item.status = f"transcription failed: {exc}"
+
+
+def _split_field(state_key: str, design: Design, store: DesignStore, key: str, provider: str, settings: dict, version: int) -> None:
+    """Breaks a field pasted as one line into one entry per line and reloads the brief widgets."""
+    fact = key[len(FACT_PREFIX) :] if key.startswith(FACT_PREFIX) else ""
+    if fact:
+        spec = FACTS_BY_KEY[fact]
+        text, cells, label, guidance = design.brief.facts.get(fact, ""), FACT_CELLS[fact], spec.label, spec.guidance
+    else:
+        label, guidance = next((field_label, field_guidance) for field_key, field_label, field_guidance in BRIEF_FIELDS if field_key == key)
+        text, cells = getattr(design.brief, key), SEPARATED_FIELDS[key]
+    try:
+        llm = get_llm(provider, **settings)
+        with st.spinner(f"Splitting {label}."):
+            result = resplit_lines(llm, label, text, cells, guidance)
+    except (LLMNotConfigured, LLMError):
+        result = split_joined(text, cells)
+    if fact:
+        design.brief.facts[fact] = result
+    else:
+        setattr(design.brief, key, result)
+    st.session_state[f"{state_key}:brief_note"] = f"{label}: split into {len(result.splitlines())} lines."
+    _refresh_material(state_key, design, store, version)
 
 
 def _refresh_material(state_key: str, design: Design, store: DesignStore, version: int) -> None:
