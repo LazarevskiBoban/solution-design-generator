@@ -68,3 +68,11 @@ def test_every_system_prompt_carries_the_grounding_rule():
 
     assert GROUNDING_RULE in writer.SYSTEM_PROMPT and GROUNDING_RULE in plan.SYSTEM_PROMPT and GROUNDING_RULE in flow.SYSTEM_PROMPT
     assert "[TBC: what to ask]" in GROUNDING_RULE and "one row per entry of that list, never fewer" in writer.SYSTEM_PROMPT
+
+
+def test_joined_words_and_placeholder_patterns_are_judged_by_their_parts():
+    known = corpus(BRIEF)
+    assert ungrounded_terms("Lockbox/Duplicate paths, reception/Inbound/<bank>/<name> and <bank>_<seq>.lockbox", known) == []
+    assert ungrounded_terms("RFEBLB00/OB10 and PGP/SSH", known) == ["RFEBLB00/OB10", "PGP/SSH"]
+    manifest = Manifest(name="m", fields=[FieldSpec(key="need", label="Business Need")])
+    assert grounding_warnings(Content(fields={"need": "Post via FF_5."}), BRIEF, manifest, skip={"need"}) == []

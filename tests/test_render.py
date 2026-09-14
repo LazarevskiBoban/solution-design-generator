@@ -764,3 +764,16 @@ def test_table_pushes_the_kept_block_below_on_the_copy(tmp_path):
     table = next(s for s in slides[1].shapes if s.has_table)
     assert len(table.table.rows) == 5 and "Below Box" in copy
     assert copy["Below Box"].top >= table.top + table.height and copy["Below Box"].top + copy["Below Box"].height <= Inches(7.15) + 1
+
+
+def test_check_ignores_findings_the_template_already_had(sample_deck, tmp_path):
+    from pptx.util import Inches
+
+    prs = Presentation(str(sample_deck))
+    off = prs.slides[0].shapes.add_textbox(Inches(-2), Inches(2), Inches(1.5), Inches(0.5))
+    off.name, off.text_frame.text = "Off Slide", "legacy"
+    deck = tmp_path / "flawed.pptx"
+    prs.save(deck)
+    manifest = _fixture_manifest(deck)
+    result = render(deck, manifest, Content(fields={"first_point": "- one"}), tmp_path / "out.pptx", continue_on=[])
+    assert not result.errors and not any("check outside" in i.message for i in result.issues)

@@ -20,6 +20,7 @@ SKIP_KINDS = {"static", "divider"}
 EXAMPLE_CHARS = 400
 FENCE_RE = re.compile(r"^```(?:markdown|md)?\s*\n(.*?)\n```\s*$", re.DOTALL)
 NUMBER_RE = re.compile(r"\d[\d,.]*\s?%?")
+NUMBERING_COLUMN_RE = re.compile(r"^(#|no\.?|ref(erence)?|id|seq(uence)?|depends on)$", re.IGNORECASE)
 INTEGRATION_RE = re.compile(r"integration|architecture|mapping|flow|interface|api|duplicate|file|format", re.IGNORECASE)
 QUALITY_RE = re.compile(r"deviation|success|criteria|report|analytic|effort|decision|question|acceptance|operation|test|risk|build", re.IGNORECASE)
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
@@ -148,8 +149,9 @@ def draft_content(
     if brief.subject.strip():
         content.globals["subject"] = brief.subject.strip()
     warnings = [w for w in validate_content(content, manifest) if "image" not in w]
-    warnings += number_warnings(content, brief, manifest)
-    warnings += grounding_warnings(content, brief, manifest)
+    untouched = {k for k, v in content.fields.items() if getattr(manifest.field(k), "static", False) or (original is not None and original.fields.get(k) == v)}
+    warnings += number_warnings(content, brief, manifest, skip=untouched)
+    warnings += grounding_warnings(content, brief, manifest, skip=untouched)
     warnings += coverage_warnings(content, brief, manifest)
     warnings += duplicate_warnings(content)
     return DraftResult(
@@ -366,15 +368,15 @@ def group_sections(sections: list[dict]) -> list[tuple[str, list[dict]]]:
     return [(name, members) for name, members in groups.items() if members]
 
 
-def number_warnings(content: Content, brief: Brief, manifest: Manifest) -> list[str]:
+def number_warnings(content: Content, brief: Brief, manifest: Manifest, skip: set[str] | None = None) -> list[str]:
     known = " ".join([dump_brief(brief), brief.facts_text(), material_corpus(brief.material)])
     warnings = []
     for key, value in content.fields.items():
         spec = manifest.field(key)
-        if spec is None:
+        if spec is None or key in (skip or set()):
             continue
         if isinstance(value, list) and value and isinstance(value[0], dict):
-            text = " ".join(str(cell) for row in value for cell in row.values())
+            text = " ".join(str(cell) for row in value for name, cell in row.items() if not NUMBERING_COLUMN_RE.match(name.strip()))
         elif isinstance(value, str):
             text = value
         else:

@@ -86,6 +86,9 @@ def test_draft_warnings_include_ungrounded_terms(sample_deck, tmp_path):
     reply = "---\nsubject: X\n---\n## business_need\nBanks deliver statements daily; RFEBLB00 posts them.\n## scope\n| Function | Countries |\n|---|---|\n| Finance | ZA |\n## first_point\n- one\n"
     result = draft_content(BRIEF, entry.blueprint, entry.manifest, _ScriptedLLM([reply]))
     assert any("names things not in the brief: RFEBLB00" in w for w in result.warnings)
+    untouched = Content(fields={"business_need": "Banks deliver statements daily; RFEBLB00 posts them."})
+    quiet = draft_content(BRIEF, entry.blueprint, entry.manifest, _ScriptedLLM([reply]), original=untouched)
+    assert not any("RFEBLB00" in w for w in quiet.warnings)
     skeleton = build_prompt(BRIEF, entry.blueprint, entry.manifest)[1]
     assert "Sources: the brief, its facts and the reference material" in build_prompt(BRIEF, entry.blueprint, entry.manifest)[0] and "## scope" in skeleton
 
@@ -672,3 +675,20 @@ def test_kept_sections_still_write_their_tokens(sample_deck):
     kept = writable_sections(blueprint, manifest, token_only={section.key})
     assert [f["key"] for s in kept if s["section"] == section.key for f in s["fields"]] == ["business_need"]
     assert not any(s["section"] == section.key for s in writable_sections(blueprint, manifest, skip_sections={section.key}))
+
+
+def test_number_warnings_skip_numbering_columns():
+    from sdgen.writer import number_warnings
+
+    spec = FieldSpec(key="extra_build_checklist", label="Build checklist", kind="table", columns=["#", "Step", "Depends on", "Owner"], bindings=[Binding(slide=1, shape=ShapeRef(id=1))])
+    rows = [{"#": "12", "Step": "Build the iFlow", "Depends on": "7,8,9", "Owner": "Dev"}, {"#": "13", "Step": "Test with 37 files", "Depends on": "12", "Owner": "QA"}]
+    warnings = number_warnings(Content(fields={"extra_build_checklist": rows}), BRIEF, Manifest(name="m", fields=[spec]))
+    assert warnings == ["field 'extra_build_checklist' (Build checklist) uses numbers not found in the brief: 37"]
+
+
+def test_reference_tables_need_a_url_or_a_source_beside_a_description():
+    from sdgen.mechanical import is_reference_columns
+
+    assert is_reference_columns(["Content Description", "URL or Source", "Purpose"]) and is_reference_columns(["Item", "Link"])
+    assert not is_reference_columns(["#", "Party", "Flow", "Direction", "Source", "Target", "Encryption", "Cut-off"])
+    assert not is_reference_columns(["Endpoint", "Folder or resource", "Account", "Read", "Write", "Move or delete"])

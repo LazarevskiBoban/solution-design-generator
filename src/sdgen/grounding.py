@@ -20,6 +20,9 @@ TOKEN_RE = re.compile(r"[A-Za-z0-9</][A-Za-z0-9_./:<>\-]*")
 IDENTIFIER_RE = re.compile(r"[_/:.]|\d|^[A-Z]{3,}$|^[A-Z][a-z]+[A-Z]")
 REFERENCE_ID_RE = re.compile(r"^[A-Z]+(?:-[A-Z]+)*-\d+$")  # GAP-APP-01, INT-IN-01: numbering the writer makes up
 MARKER_RE = re.compile(r"(?:^|\s)\d{1,3}\.\s")
+PLACEHOLDER_RE = re.compile(r"<[^<>]*>")  # <bank>, <yyyymmdd>: a pattern, not a name
+JOINER_RE = re.compile(r"[/+,]")  # decrypt/encrypt, DEV/QA/PRD, encrypt+sign: words the writer joined
+PART_MIN = 3
 IGNORED_TERMS = {"n/a", "tbc", "id", "etc."}
 PLACEHOLDER_PREFIX = "[To be completed"
 # Brief lists and the pattern that finds the field they feed, by label or key.
@@ -48,17 +51,26 @@ def ungrounded_terms(text: str, corpus_text: str, ignore: set[str] | None = None
         lowered = token.lower()
         if lowered in skip or lowered in corpus_text:
             continue
+        parts = _parts(token)
+        if not parts or all(part.lower() in skip or part.lower() in corpus_text for part in parts):
+            continue
         if token not in found:
             found.append(token)
     return found
 
 
-def grounding_warnings(content: Content, brief: Brief, manifest: Manifest) -> list[str]:
+def _parts(token: str) -> list[str]:
+    """The words a joined token is made of, placeholders removed; a path keeps its segments."""
+    bare = PLACEHOLDER_RE.sub("", token)
+    return [part for part in (p.strip("_.-:") for p in JOINER_RE.split(bare)) if len(part) >= PART_MIN]
+
+
+def grounding_warnings(content: Content, brief: Brief, manifest: Manifest, skip: set[str] | None = None) -> list[str]:
     known = corpus(brief)
     warnings = []
     for key, value in content.fields.items():
         spec = manifest.field(key)
-        if spec is None:
+        if spec is None or key in (skip or set()):
             continue
         text = _text_of(value)
         if not text:

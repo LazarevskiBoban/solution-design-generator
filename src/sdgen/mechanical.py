@@ -42,8 +42,16 @@ def mechanical_fills(brief: Brief, blueprint: Blueprint, manifest: Manifest, ori
     return result
 
 
+URL_COLUMN_RE = re.compile(r"\b(url|link|hyperlink)\b", re.IGNORECASE)
+SOURCE_COLUMN_RE = re.compile(r"\bsource\b", re.IGNORECASE)
+CONTENT_COLUMN_RE = re.compile(r"content|description|purpose|reference", re.IGNORECASE)
+
+
 def is_reference_columns(columns: list[str]) -> bool:
-    return any("url" in c.lower() or "source" in c.lower() for c in columns)
+    """A references table names a URL column, or a Source column beside a content or purpose column; an interface's Source system is neither."""
+    if any(URL_COLUMN_RE.search(c) for c in columns):
+        return True
+    return any(SOURCE_COLUMN_RE.search(c) for c in columns) and any(CONTENT_COLUMN_RE.search(c) for c in columns)
 
 
 def reference_rows(text: str, columns: list[str]) -> list[dict[str, str]]:

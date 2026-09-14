@@ -315,7 +315,9 @@ def _first_sentence(text: str) -> str:
 
 
 def _is_reference(columns: list[str]) -> bool:
-    return any("url" in c.lower() or "source" in c.lower() for c in columns)
+    from sdgen.mechanical import is_reference_columns
+
+    return is_reference_columns(columns)
 
 
 def _reference_rows(text: str, width: int) -> list[list[str]]:

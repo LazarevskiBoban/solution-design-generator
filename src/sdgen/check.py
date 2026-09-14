@@ -38,16 +38,32 @@ def check_deck(path: str | Path, flows: dict[int, FlowSpec] | None = None, title
     return check_presentation(Presentation(str(path)), flows=flows, title_max=title_max)
 
 
-def check_presentation(prs, flows: dict[int, FlowSpec] | None = None, title_max: int = TITLE_MAX) -> list[Finding]:
-    """Findings per output slide; `flows` maps a slide position to the flow drawn on it."""
+Baseline = dict[int, set[tuple[str, str]]]
+
+
+def check_presentation(prs, flows: dict[int, FlowSpec] | None = None, title_max: int = TITLE_MAX, baseline: Baseline | None = None, origins: list[int] | None = None) -> list[Finding]:
+    """Findings per output slide; `flows` maps a slide position to the flow drawn on it.
+
+    `baseline` holds what the template showed per template slide and `origins` the template slide each output
+    slide came from: a finding the template already had is left out.
+    """
     slides = list(prs.slides)
     theme = theme_fonts(slides[0].part) if slides else None
     findings: list[Finding] = []
     for number, slide in enumerate(slides, 1):
-        findings.extend(_check_slide(slide, number, prs.slide_width, prs.slide_height, theme, title_max))
+        origin = origins[number - 1] if origins and number <= len(origins) else number
+        known = (baseline or {}).get(origin, set())
+        findings.extend(f for f in _check_slide(slide, number, prs.slide_width, prs.slide_height, theme, title_max) if (f.code, f.shape) not in known)
         for problem in lane_mismatches((flows or {}).get(number)) if flows and number in flows else []:
             findings.append(Finding(slide=number, code="lane", message=problem))
     return findings
+
+
+def baseline_findings(prs, title_max: int = TITLE_MAX) -> Baseline:
+    """What each slide of the untouched template shows, keyed by slide number, code and shape name."""
+    slides = list(prs.slides)
+    theme = theme_fonts(slides[0].part) if slides else None
+    return {number: {(f.code, f.shape) for f in _check_slide(slide, number, prs.slide_width, prs.slide_height, theme, title_max)} for number, slide in enumerate(slides, 1)}
 
 
 def _check_slide(slide, number: int, width: int, height: int, theme, title_max: int) -> list[Finding]:

@@ -11,7 +11,7 @@ from pptx.util import Inches
 from pydantic import BaseModel, Field
 
 from sdgen.blueprint import cap_title, clean_title
-from sdgen.check import FOOTER_TYPES, check_presentation
+from sdgen.check import FOOTER_TYPES, baseline_findings, check_presentation
 from sdgen.content import Content, ImageValue, detail_key, images_of, parse_pipe_table
 from sdgen.diagrams import remove_shapes
 from sdgen.fill.image import replace_picture
@@ -96,6 +96,7 @@ def render(
 ) -> RenderResult:
     prs = Presentation(str(template))
     slides = list(prs.slides)
+    baseline = baseline_findings(prs) if check else {}
     issues: list[RenderIssue] = []
     hidden_slides = {n for n in (hidden or []) if 1 <= n <= len(slides)}
     numbers = {slide.slide_id: n for n, slide in enumerate(slides, 1)}
@@ -206,7 +207,8 @@ def render(
     for number, fields_pending in pending.items():
         _continue_slide(prs, slides[number - 1], layouts.get(number), manifest, number, fields_pending, theme, issues, kept)
 
-    extra_ids = _add_extras(prs, slides, _detail_slides(slides, layouts, wanted) + list(extras or []), issues, theme, numbers)
+    all_extras = _detail_slides(slides, layouts, wanted) + list(extras or [])
+    extra_ids = _add_extras(prs, slides, all_extras, issues, theme, numbers)
 
     for index in sorted(set(manifest.slides.exclude) | hidden_slides, reverse=True):
         if 1 <= index <= len(slides):
@@ -224,7 +226,9 @@ def render(
             for position, (number, slide_key) in enumerate(zip(slide_map, slide_keys), 1):
                 if number == template_number and not slide_key:
                     drawn_on[position] = (flows or {})[key]
-        for finding in check_presentation(prs, flows=drawn_on):
+        prototype_of = {e.key: e.spec.bindings[0].slide for e in all_extras if e.spec.bindings}
+        origins = [prototype_of.get(slide_key, number) if slide_key else number for number, slide_key in zip(slide_map, slide_keys)]
+        for finding in check_presentation(prs, flows=drawn_on, baseline=baseline, origins=origins):
             issues.append(RenderIssue(level=finding.level, slide=finding.slide, shape=finding.shape, message=f"check {finding.code}: {finding.message}"))
     prs.save(str(output))
     return RenderResult(output=str(output), slides=len(prs.slides), issues=issues, slide_map=slide_map, slide_keys=slide_keys)

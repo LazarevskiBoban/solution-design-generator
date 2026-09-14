@@ -118,3 +118,18 @@ def test_lane_mismatches_become_findings():
     findings = check_presentation(prs, flows={1: spec})
     assert [f.code for f in findings] == ["lane"] and "S/4 to VM copy" in findings[0].message
     assert check_presentation(prs, flows={2: spec}) == []
+
+
+def test_baseline_hides_what_the_template_already_shows():
+    from sdgen.check import baseline_findings
+
+    prs = _deck()
+    slide = _titled(prs, "Template")
+    _box(slide, "Off", -1.0, 2.0, 2.0, 1.0)
+    _box(slide, "Body", 1.0, 2.0, 2.0, 1.0)
+    baseline = baseline_findings(prs)
+    assert baseline == {1: {("outside", "Off")}}
+    assert check_presentation(prs, baseline=baseline) == []
+    _box(slide, "New", 13.0, 2.0, 2.0, 1.0)
+    assert [f.shape for f in check_presentation(prs, baseline=baseline, origins=[1])] == ["New"]
+    assert [f.shape for f in check_presentation(prs, baseline=baseline, origins=[2])] == ["Off", "New"]

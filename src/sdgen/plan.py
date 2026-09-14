@@ -111,7 +111,9 @@ gist of the text an earlier project wrote there) and the brief of the new integr
 For every section decide:
 - use: false when the section only makes sense for the earlier project (its flows, systems or
   API calls have no counterpart in the brief); true otherwise. The cover, document version
-  control, contents and guiding principles always apply.
+  control, contents and guiding principles always apply. A diagram section is a reusable slot:
+  when the brief describes a flow, pattern, exception path or handshake it can show, keep it
+  and give it that flow's title; mark it not used only when no flow of the brief is left for it.
 - title: a new title only when the template title names the earlier project's systems or
   flows and the slide's purpose still fits the new integration (for example a flow slide that
   becomes the new integration's equivalent flow); otherwise an empty string keeps the title.

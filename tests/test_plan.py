@@ -373,3 +373,9 @@ def test_walkthrough_extras_follow_diagram_only_slides():
     assert [(e.key, e.before) for e in walkthrough_extras(design, blueprint, manifest, flows, ["arch", "flow", "notes"])] == [("flow_walkthrough", "notes"), ("arch_walkthrough", "flow")]
     design.hidden = ["flow"]
     assert [e.key for e in walkthrough_extras(design, blueprint, manifest, flows)] == ["arch_walkthrough"]
+
+
+def test_planner_keeps_diagram_slots_for_the_briefs_flows():
+    from sdgen.plan import SYSTEM_PROMPT
+
+    assert "A diagram section is a reusable slot" in SYSTEM_PROMPT and "give it that flow's title" in SYSTEM_PROMPT
