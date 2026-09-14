@@ -28,6 +28,7 @@ TITLE = "text;html=1;align=left;verticalAlign=middle;fontStyle=1;fontSize=12;fon
 LOGO = "image;image=img/lib/sap/SAP_Logo.svg;imageAspect=0;"  # ships with draw.io
 FOOTNOTE = f"text;html=1;align=left;verticalAlign=middle;fontSize=10;fontFamily=Helvetica;whiteSpace=wrap;fontColor={css(SLATE)};"
 FOOTNOTE_H = 30
+LIFELINE = f"shape=rect;fillColor={css(SLATE)};strokeColor=none;opacity=60;"
 EDGE_STYLE = f"edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor={css(EDGE)};strokeWidth=1.5;endArrow=block;endFill=1;fontSize=10;fontFamily=Helvetica;labelBackgroundColor={css(WHITE)};"
 
 
@@ -37,7 +38,7 @@ def to_drawio(spec: FlowSpec, icons: dict[str, Path] | None = None) -> str:
     diagram = etree.SubElement(mxfile, "diagram", id="flow", name=spec.title or "Flow")
     layout = layout_for(spec, DRAWING_BOX)
     reference = lookup(spec.reference)
-    bottom = max((band.rect.bottom for band in layout.lanes), default=0)
+    bottom = max([band.rect.bottom for band in layout.lanes] + [line[3] for line in layout.lifelines], default=0)
     width = _px(layout.canvas.width) + 2 * MARGIN
     height = 2 * MARGIN + _px(bottom) + (FOOTNOTE_H + PAD if reference else 0)
     model = etree.SubElement(diagram, "mxGraphModel", dx="1200", dy="800", grid="1", gridSize="10", guides="1", tooltips="1", connect="1", arrows="1", fold="1", page="1", pageScale="1", pageWidth=str(max(width, PAGE_W)), pageHeight=str(max(height, PAGE_H)))
@@ -60,17 +61,27 @@ def to_drawio(spec: FlowSpec, icons: dict[str, Path] | None = None) -> str:
         placed = layout.nodes.get(node.id)
         if placed is None:
             continue
-        lane_id, band_rect = bands[(placed.lane, placed.row)]
+        lane_id, band_rect = bands.get((placed.lane, placed.row), ("1", Rect(-MARGIN, -MARGIN, 0, 0)))
         style = NODE + _colours(node_is_sap(node), container=False)
         image = _image(node.icon, icons)
         if image:
             style += NODE_ICON + f"image={image};"
         _vertex(root, f"n_{node.id}", _value(node), style, _px(placed.rect.left - band_rect.left), _px(placed.rect.top - band_rect.top), _px(placed.rect.width), _px(placed.rect.height), lane_id)
+    for node_id, x, top, bottom in layout.lifelines:
+        _vertex(root, f"life_{node_id}", "", LIFELINE, MARGIN + _px(x) - 1, MARGIN + _px(top), 2, _px(bottom - top), "1")
 
     for path in layout.edges:
         edge = spec.edges[path.number - 1]
+        dashed = "dashed=1;" if path.kind != "sync" else ""
+        if layout.mode == "sequence":
+            text = path.label.text if path.label is not None else edge.label
+            cell = etree.SubElement(root, "mxCell", id=f"e_{path.number}", value=html.escape(text), style=EDGE_STYLE + "edgeStyle=none;" + dashed, edge="1", parent="1")
+            geometry = etree.SubElement(cell, "mxGeometry", relative="1", **{"as": "geometry"})
+            etree.SubElement(geometry, "mxPoint", x=str(MARGIN + _px(path.points[0][0])), y=str(MARGIN + _px(path.points[0][1])), **{"as": "sourcePoint"})
+            etree.SubElement(geometry, "mxPoint", x=str(MARGIN + _px(path.points[-1][0])), y=str(MARGIN + _px(path.points[-1][1])), **{"as": "targetPoint"})
+            continue
         a, b = layout.nodes[path.source].rect, layout.nodes[path.target].rect
-        style = EDGE_STYLE + _ports(a, path.points[0], b, path.points[-1]) + ("dashed=1;" if path.kind != "sync" else "")
+        style = EDGE_STYLE + _ports(a, path.points[0], b, path.points[-1]) + dashed
         cell = etree.SubElement(root, "mxCell", id=f"e_{path.number}", value=html.escape(edge.label), style=style, edge="1", parent="1", source=f"n_{path.source}", target=f"n_{path.target}")
         geometry = etree.SubElement(cell, "mxGeometry", relative="1", **{"as": "geometry"})
         if len(path.points) > 2:

@@ -45,7 +45,9 @@ NODES_PER_SQ_IN = 3.5
 SMALL_AREA_SQ_IN = 20.0
 SUBTITLE_MIN_HEIGHT = Inches(0.55)
 MARK_WIDTH = Inches(0.4)
-LAYOUTS = ("bands", "columns")
+LAYOUTS = ("bands", "columns", "sequence")
+SEQUENCE_MAX_NODES = 4
+SEQUENCE_MIN_BUNDLE = 3  # this many edges between one pair of nodes read better as a sequence
 
 FLOW_SCHEMA = {
     "type": "object",
@@ -161,7 +163,7 @@ class FlowSpec(BaseModel):
     lanes: dict[str, str] = Field(default_factory=dict)  # a heading per lane, else the generic lane title
     systems: list[FlowLane] = Field(default_factory=list)  # the lanes in drawing order; empty means the three role lanes
     reference: str = ""  # "<system>:<id>" of the closest reference architecture, empty when none
-    layout: Literal["bands", "columns"] = "bands"  # horizontal system bands read left to right, or vertical lane columns
+    layout: Literal["bands", "columns", "sequence"] = "bands"  # system bands left to right, vertical lane columns, or participants with numbered arrows
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(yaml.safe_dump(self.model_dump(mode="json"), sort_keys=False, allow_unicode=True, width=100), encoding="utf-8")
@@ -298,7 +300,8 @@ def plan_flows(brief: Brief, requests: list, llm: LLMClient, icons: list[str] | 
         return {}
     lines = ["# Diagrams to design (section key | title | purpose | drawing area)"]
     for request in requests:
-        lines.append(f"- {request.section} | {request.title or request.section} | {request.purpose or ''} | {_area_hint(request)}")
+        hint = _area_hint(request) + (" | a sequence: two to four participants and every exchange between them as an edge, in order" if getattr(request, "kind", "flow") == "sequence" else "")
+        lines.append(f"- {request.section} | {request.title or request.section} | {request.purpose or ''} | {hint}")
     systems = system_lanes(brief)
     schema = flow_schema([lane.id for lane in systems] + [OTHER_LANE.id]) if systems else FLOW_SCHEMA
     if systems:
@@ -319,7 +322,7 @@ def plan_flows(brief: Brief, requests: list, llm: LLMClient, icons: list[str] | 
         lines += ["", "# Reference material (the author's own diagrams and notes; keep their block names and arrows)", block]
     lines += ["", "# Brief", dump_brief(brief)]
     data = llm.complete_json(SYSTEM_PROMPT, "\n".join(lines), schema, name="flows", **({"images": images} if images else {}))
-    wanted = {request.section for request in requests}
+    wanted = {request.section: getattr(request, "kind", "flow") for request in requests}
     result: dict[str, FlowSpec] = {}
     for item in data.get("flows") or []:
         key = str(item.get("section") or "")
@@ -330,9 +333,22 @@ def plan_flows(brief: Brief, requests: list, llm: LLMClient, icons: list[str] | 
         except ValidationError:
             continue
         spec = clean_flow(spec, systems or None)
+        if wanted[key] == "sequence" or looks_like_sequence(spec):
+            spec = spec.model_copy(update={"layout": "sequence"})
         if spec.nodes:
             result[key] = spec
     return result
+
+
+def looks_like_sequence(spec: FlowSpec) -> bool:
+    """A few participants exchanging several messages: a handshake, not a flow."""
+    if not spec.nodes or len(spec.nodes) > SEQUENCE_MAX_NODES:
+        return False
+    pairs: dict[frozenset, int] = {}
+    for edge in spec.edges:
+        if edge.source != edge.target:
+            pairs[frozenset((edge.source, edge.target))] = pairs.get(frozenset((edge.source, edge.target)), 0) + 1
+    return max(pairs.values(), default=0) >= SEQUENCE_MIN_BUNDLE
 
 
 def node_cap(width_in: float, height_in: float) -> int:
@@ -488,6 +504,8 @@ def draw_flow(slide, box: tuple[int, int, int, int], spec: FlowSpec, prefix: str
         shape = _node(slide, node, placed.rect.left, placed.rect.top, placed.rect.width, placed.rect.height, prefix, created)
         shapes[node.id] = shape
         created.append(shape)
+    for node_id, x, top, bottom in layout.lifelines:
+        created.append(_lifeline(slide, x, top, bottom, f"{prefix} lifeline {node_id}"))
     for path in layout.edges:
         edge = spec.edges[path.number - 1]
         name = f"{prefix} edge {path.number}"
@@ -613,6 +631,16 @@ def _connector(slide, shape_a, shape_b, sites: tuple[int, int], points: list[tup
     connector.end_connect(shape_b, site_b)
     _style_line(connector, edge)
     return connector
+
+
+def _lifeline(slide, x: int, top: int, bottom: int, name: str):
+    """The thin dashed line under a participant of a sequence."""
+    line = slide.shapes.add_connector(MSO_CONNECTOR.STRAIGHT, x, top, x, bottom)
+    line.name = name
+    line.line.color.rgb = rgb(SLATE)
+    line.line.width = Pt(0.75)
+    line.line.dash_style = MSO_LINE.DASH
+    return line
 
 
 def _polyline(slide, points: list[tuple[int, int]], edge: FlowEdge, name: str):

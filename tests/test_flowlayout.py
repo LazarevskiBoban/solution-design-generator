@@ -42,6 +42,20 @@ def test_far_lanes_use_the_right_channel_and_rows_link_through_the_corridor():
     assert min(xs) < min(b.rect.left for b in nine.lanes) and max(xs) > max(b.rect.right for b in nine.lanes)
 
 
+def test_sequence_layout_places_participants_on_top_and_numbers_the_arrows():
+    nodes = [NodeIn("adapter", "middleware", "BTP sFTP adapter"), NodeIn("door", "source", "sFTP door")]
+    edges = [EdgeIn(i, "adapter" if i % 2 else "door", "door" if i % 2 else "adapter", f"step {i}") for i in range(1, 6)]
+    layout = layout_flow(nodes, edges, LANES, (0, 0, Inches(12), Inches(6)), mode="sequence")
+    adapter, door = layout.nodes["adapter"].rect, layout.nodes["door"].rect
+    assert layout.mode == "sequence" and layout.lanes == [] and adapter.top == door.top and adapter.left < door.left
+    assert [(line[0], line[1]) for line in layout.lifelines] == [("adapter", adapter.cx), ("door", door.cx)] and all(line[2] == adapter.bottom for line in layout.lifelines)
+    ys = [p.points[0][1] for p in layout.edges]
+    assert ys == sorted(ys) and len(set(ys)) == 5 and all(p.points[0][1] == p.points[-1][1] for p in layout.edges)
+    assert [p.points[0][0] for p in layout.edges] == [adapter.cx, door.cx, adapter.cx, door.cx, adapter.cx]
+    assert [p.label.text for p in layout.edges] == [f"{i}. step {i}" for i in range(1, 6)] and all(p.label.rect.bottom <= p.points[0][1] for p in layout.edges)
+    assert all(p.points[0][1] < Inches(6) and p.label.rect.top >= adapter.bottom for p in layout.edges)
+
+
 def test_flat_box_falls_back_to_columns_and_the_layout_is_deterministic():
     nodes, edges = _chain(4)
     assert layout_flow(nodes, edges, LANES, (0, 0, Inches(6), Inches(1.0))).mode == "columns"

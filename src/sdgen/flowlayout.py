@@ -134,6 +134,7 @@ class FlowLayout:
     edges: list[EdgePath] = field(default_factory=list)
     rows: int = 0
     per_row: int = 0
+    lifelines: list[tuple[str, int, int, int]] = field(default_factory=list)  # sequence mode: node id, x, top, bottom
 
 
 def layout_flow(nodes: list[NodeIn], edges: list[EdgeIn], lanes: list[LaneInfo], box: tuple[int, int, int, int], mode: str = "bands") -> FlowLayout:
@@ -144,11 +145,39 @@ def layout_flow(nodes: list[NodeIn], edges: list[EdgeIn], lanes: list[LaneInfo],
     used = [lane for lane in lanes if any(n.lane == lane.id for n in nodes)]
     if not nodes or not used:
         return FlowLayout(mode=mode, canvas=canvas)
+    if mode == "sequence":
+        return _sequence(nodes, edges, canvas)
     if mode == "bands":
         result = _bands(nodes, edges, used, canvas)
         if result is not None:
             return result
     return _columns(nodes, edges, used, canvas)
+
+
+def _sequence(nodes: list[NodeIn], edges: list[EdgeIn], canvas: Rect) -> FlowLayout:
+    """Participants across the top with a lifeline each; every edge a numbered horizontal arrow, top to bottom in edge order."""
+    inner = Rect(canvas.left + PAD, canvas.top + PAD, canvas.width - 2 * PAD, canvas.height - 2 * PAD)
+    columns = rank_columns(nodes, edges)
+    order = sorted(nodes, key=lambda n: (columns[n.id], [m.id for m in nodes].index(n.id)))
+    count = len(order)
+    node_w = min(NODE_WIDTH, (inner.width - (count - 1) * GAP) // count)
+    step = (inner.width - node_w) // (count - 1) if count > 1 else 0
+    placed: dict[str, NodeBox] = {}
+    lifelines: list[tuple[str, int, int, int]] = []
+    for index, node in enumerate(order):
+        x = inner.left + index * step if count > 1 else inner.left + (inner.width - node_w) // 2
+        rect = Rect(x, inner.top, node_w, NODE_HEIGHT)
+        placed[node.id] = NodeBox(id=node.id, lane=node.lane, row=0, column=index, rect=rect)
+        lifelines.append((node.id, rect.cx, rect.bottom, inner.bottom))
+    arrows = [e for e in edges if e.source in placed and e.target in placed and e.source != e.target]
+    gap_y = (inner.height - NODE_HEIGHT - GAP) // (len(arrows) + 1)
+    paths: list[EdgePath] = []
+    for index, edge in enumerate(arrows, 1):
+        y = inner.top + NODE_HEIGHT + GAP + index * gap_y
+        points = [(placed[edge.source].rect.cx, y), (placed[edge.target].rect.cx, y)]
+        text = f"{index}. {edge.label}" if edge.label else str(index)
+        paths.append(EdgePath(number=edge.number, source=edge.source, target=edge.target, kind=edge.kind, points=points, sites=None, label=label_for(points, text, "above")))
+    return FlowLayout(mode="sequence", canvas=canvas, nodes=placed, edges=paths, rows=1, per_row=count, lifelines=lifelines)
 
 
 def rank_columns(nodes: list[NodeIn], edges: list[EdgeIn]) -> dict[str, int]:

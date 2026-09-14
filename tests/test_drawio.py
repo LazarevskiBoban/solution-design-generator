@@ -46,6 +46,18 @@ def test_drawio_bands_stack_the_lanes_and_carry_waypoints():
     assert points is not None and len(points.findall("mxPoint")) >= 2 and "exitX=" in edges[0].get("style") and "entryY=" in edges[0].get("style")
 
 
+def test_drawio_sequence_has_lifelines_and_free_arrows():
+    edges = [FlowEdge(source="btp" if i % 2 else "bank", target="bank" if i % 2 else "btp", label=f"m{i}") for i in range(1, 4)]
+    spec = FlowSpec(nodes=[FlowNode(id="btp", label="BTP", lane="middleware"), FlowNode(id="bank", label="Bank", lane="source")], edges=edges, layout="sequence")
+    root, cells = _cells(spec, {})
+    assert "life_btp" in cells and "life_bank" in cells and not any(c.startswith("lane_") for c in cells)
+    assert cells["n_btp"].get("parent") == "1" and float(cells["n_btp"].find("mxGeometry").get("y")) == float(cells["n_bank"].find("mxGeometry").get("y"))
+    arrows = [c for c in root.findall(".//mxCell") if c.get("edge") == "1"]
+    assert [c.get("value") for c in arrows] == ["1. m1", "2. m2", "3. m3"] and all(c.get("source") is None for c in arrows)
+    ys = [float(c.find("mxGeometry").find("mxPoint[@as='sourcePoint']").get("y")) for c in arrows]
+    assert ys == sorted(ys) and len(set(ys)) == 3 and all("edgeStyle=none" in c.get("style") for c in arrows)
+
+
 def test_drawio_draws_containers_in_the_sap_style():
     root, cells = _cells(SPEC.model_copy(update={"layout": "columns"}), {})
     assert root.tag == "mxfile" and root.find("diagram").get("name") == "Lockbox"

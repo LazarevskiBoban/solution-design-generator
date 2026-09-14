@@ -40,6 +40,10 @@ the measured source; the style table lives in `assets/refs/README.md` and the co
   node of the next row. A slot too flat for one band per lane falls back to columns.
 - **Columns** (`FlowSpec.layout = "columns"`, the Diagrams step can switch a drawing) keeps the
   vertical lane containers with stacked nodes.
+- **Sequence** (`FlowSpec.layout = "sequence"`): the participants across the top, a dashed lifeline
+  under each, every edge a numbered horizontal arrow top to bottom in edge order. The planner asks
+  for it when the section reads like a handshake or login, and a drawing with at most four nodes and
+  three or more edges between one pair is switched to it automatically.
 - Routes: neighbours in one band get a glued straight connector; a skip runs under the band in
   the seam; adjacent bands link through the seam between them; far bands use the right
   channel. Parallel edges between two nodes are drawn as offset lines with their labels stacked

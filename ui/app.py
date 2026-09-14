@@ -58,7 +58,7 @@ SHORTCUTS = {"previous": "Left", "next": "Right", "up": "Up", "down": "Down", "h
 PREVIEW_WIDTH = 1600  # pixels per exported slide picture, enough for the full view on a wide screen
 STEPS = ["brief", "plan", "write", "diagrams", "review", "generate"]
 DONE_ICON = "✅"
-LAYOUT_NAMES = {"bands": "System bands, left to right", "columns": "Lane columns, top to bottom"}
+LAYOUT_NAMES = {"bands": "System bands, left to right", "columns": "Lane columns, top to bottom", "sequence": "Sequence, numbered arrows top to bottom"}
 DIAGRAM_FORMATS = {
     "shapes": "Shapes on the slide only",
     "drawio": "Shapes on the slide plus a draw.io file to open, adjust and export",
@@ -561,9 +561,10 @@ def design_page() -> None:
                 flow = flows.get(section.key)
                 col_draw, col_layout, col_drawio, col_mermaid, col_remove = st.columns(5)
                 if flow is not None:
-                    other = "columns" if flow.layout == "bands" else "bands"
+                    layouts = list(LAYOUT_NAMES)
+                    other = layouts[(layouts.index(flow.layout) + 1) % len(layouts)] if flow.layout in layouts else layouts[0]
                     with col_layout:
-                        if st.button(f"Switch to {LAYOUT_NAMES[other].split(',')[0].lower()}", key=f"{state_key}:layout:{section.key}", help="Redraws the same flow in the other arrangement; no model call."):
+                        if st.button(f"Switch to {LAYOUT_NAMES[other].split(',')[0].lower()}", key=f"{state_key}:layout:{section.key}", help="Redraws the same flow in the next arrangement (bands, columns, sequence); no model call."):
                             store.save_flow(design, section.key, flow.model_copy(update={"layout": other}))
                             st.rerun()
                     chosen = design.diagram_formats.get(section.key, design.diagram_format)
@@ -1598,7 +1599,8 @@ def _draw_flows_for(state_key: str, design: Design, store: DesignStore, sections
         return
     layout = st.session_state.get(f"{state_key}:fmt:layout", "bands")
     for key, spec in specs.items():
-        store.save_flow(design, key, spec.model_copy(update={"layout": layout}) if layout in LAYOUT_NAMES else spec)
+        chosen = spec.layout if spec.layout == "sequence" or layout not in LAYOUT_NAMES else layout  # a detected handshake keeps its sequence
+        store.save_flow(design, key, spec.model_copy(update={"layout": chosen}))
     missing = [design.titles.get(s.key, s.title) for s in sections if s.key not in specs]
     checks = [f"{design.titles.get(key, key)}: {problem}" for key, spec in specs.items() for problem in lane_mismatches(spec)]
     note = f"Drew {len(specs)} diagram(s) from the brief." + (f" The model returned no flow for: {', '.join(missing)}." if missing else "")

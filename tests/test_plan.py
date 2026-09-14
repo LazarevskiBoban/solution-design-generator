@@ -114,6 +114,20 @@ def test_developer_extras_are_always_proposed_and_deduplicated(sample_deck, tmp_
     assert plan.extras[-3].columns == ["#", "Step", "Depends on", "Owner"]
 
 
+def test_handshake_sections_get_the_sequence_hint():
+    from sdgen.blueprint import Blueprint, Section
+    from sdgen.manifest import Binding, FieldSpec, Manifest, ShapeRef
+    from sdgen.plan import merge_plan
+
+    manifest = Manifest(name="m", fields=[FieldSpec(key=k, label=k, kind="image", bindings=[Binding(slide=n, shape=ShapeRef(id=n))]) for n, k in ((4, "ssh_img"), (5, "l2_img"))])
+    blueprint = Blueprint(name="m", sections=[Section(key="ssh", title="Successful creation request", kind="diagram", slide=4, fields=["ssh_img"]), Section(key="l2", title="Level 2 flows", kind="diagram", slide=5, fields=["l2_img"])])
+    base = default_plan(blueprint, manifest=manifest)
+    assert [(f.section, f.kind) for f in base.flows] == [("ssh", "flow"), ("l2", "flow")]
+    data = {"decisions": [], "flows": [{"section": "ssh", "title": "sFTP SSH handshake", "purpose": "the seven steps between BTP and the door"}, {"section": "l2", "title": "End-to-end flows", "purpose": "landscape"}]}
+    plan = merge_plan(base, data, blueprint, set(), manifest=manifest)
+    assert [(f.section, f.kind) for f in plan.flows] == [("ssh", "sequence"), ("l2", "flow")]
+
+
 def test_plan_flows_carry_a_reference_picture_id():
     from sdgen.blueprint import Blueprint, Section
     from sdgen.manifest import Binding, FieldSpec, Manifest, ShapeRef

@@ -84,6 +84,38 @@ def test_narrow_box_keeps_the_bands_and_shrinks_the_nodes():
     assert all(s.left + s.width <= Inches(6.5) + 1 for s in created)
 
 
+def test_sequence_layout_draws_lifelines_and_numbered_arrows():
+    from sdgen.flow import looks_like_sequence
+
+    prs, slide = _blank_slide()
+    edges = [FlowEdge(source="a" if i % 2 else "b", target="b" if i % 2 else "a", label=f"step {i}") for i in range(1, 6)]
+    spec = FlowSpec(nodes=[FlowNode(id="a", label="BTP sFTP adapter", lane="middleware"), FlowNode(id="b", label="sFTP door", lane="source")], edges=edges, layout="sequence")
+    assert looks_like_sequence(spec) and not looks_like_sequence(SPEC)
+    created = draw_flow(slide, (Inches(0.5), Inches(1.0), Inches(12.0), Inches(5.5)), spec, prefix="Flow s")
+    by_name = {s.name: s for s in created}
+    assert "Flow s lifeline a" in by_name and "Flow s lifeline b" in by_name and not any(" lane " in n for n in by_name)
+    a, b = by_name["Flow s node a"], by_name["Flow s node b"]
+    assert a.top == b.top and a.left < b.left and by_name["Flow s lifeline a"].top >= a.top + a.height - 1
+    arrows = [by_name[f"Flow s edge {i}"] for i in range(1, 6)]
+    assert [s.top for s in arrows] == sorted(s.top for s in arrows) and all(s._element.find(".//" + qn("a:stCxn")) is None for s in arrows)
+    labels = [by_name[f"Flow s edge {i} label"] for i in range(1, 6)]
+    assert [label.text_frame.text for label in labels] == [f"{i}. step {i}" for i in range(1, 6)]
+    assert _labels_clear_of_nodes(created)
+
+
+def test_plan_flows_marks_a_handshake_as_a_sequence():
+    from sdgen.plan import FlowRequest
+
+    handshake = {"flows": [{"section": "ssh", "nodes": [{"id": "a", "label": "BTP adapter", "lane": "middleware"}, {"id": "b", "label": "sFTP server", "lane": "source"}], "edges": [{"source": "a", "target": "b", "label": "connect"}, {"source": "b", "target": "a", "label": "host key"}, {"source": "a", "target": "b", "label": "sign"}]}]}
+    llm = _stub(handshake)
+    flows = plan_flows(Brief(subject="s"), [FlowRequest(section="ssh", title="SSH handshake", purpose="", kind="sequence")], llm)
+    assert flows["ssh"].layout == "sequence" and "a sequence: two to four participants" in llm.user
+    detected = plan_flows(Brief(subject="s"), [FlowRequest(section="ssh", title="SSH", purpose="")], _stub(handshake))
+    assert detected["ssh"].layout == "sequence"
+    plain = _stub({"flows": [{"section": "x", "nodes": [{"id": "a", "label": "A", "lane": "source"}, {"id": "b", "label": "B", "lane": "target"}], "edges": [{"source": "a", "target": "b"}]}]})
+    assert plan_flows(Brief(subject="s"), [FlowRequest(section="x", title="X", purpose="")], plain)["x"].layout == "bands"
+
+
 def test_parallel_edges_between_two_nodes_do_not_stack_labels():
     prs, slide = _blank_slide()
     edges = [FlowEdge(source="a" if i % 2 else "b", target="b" if i % 2 else "a", label=f"step {i}") for i in range(1, 8)]

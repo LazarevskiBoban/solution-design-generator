@@ -50,6 +50,7 @@ DEVELOPER_EXTRAS: list[tuple[str, str, list[str], str]] = [
 ]
 DEVELOPER_KEYS = {key for key, _, _, _ in DEVELOPER_EXTRAS}
 OPERATIONS_RE = re.compile(r"operation|error handling|runbook", re.IGNORECASE)
+SEQUENCE_RE = re.compile(r"handshake|sequence|negotiat|\blog-?in\b|authenticat|steps between", re.IGNORECASE)
 
 PLAN_SCHEMA = {
     "type": "object",
@@ -170,6 +171,11 @@ class FlowRequest(BaseModel):
     title: str = ""
     purpose: str = ""
     material_id: str = ""  # a reference picture that takes the slot instead of a drawing
+    kind: Literal["flow", "sequence"] = "flow"  # a sequence draws participants with numbered arrows
+
+
+def flow_kind(*texts: str) -> Literal["flow", "sequence"]:
+    return "sequence" if SEQUENCE_RE.search(" ".join(texts)) else "flow"
 
 
 class Leftover(BaseModel):
@@ -225,7 +231,7 @@ def default_plan(blueprint: Blueprint, images: set[str] | None = None, manifest:
             has_image = any(k in images for k in section.fields)
             source = "draft" if has_image else "diagram"
             if not has_image:
-                flows.append(FlowRequest(section=section.key, title=section.title, purpose=section.ask))
+                flows.append(FlowRequest(section=section.key, title=section.title, purpose=section.ask, kind=flow_kind(section.title, section.ask)))
         decisions.append(SectionDecision(key=section.key, use=True, source=source))
     return SectionPlan(decisions=decisions, flows=flows, extras=developer_extras(blueprint, manifest) if manifest is not None else [])
 
@@ -348,7 +354,8 @@ def merge_plan(
         if any(k in images for k in section.fields):
             continue
         material = str(item.get("material_id") or "").strip()
-        flows.append(FlowRequest(section=key, title=str(item.get("title") or section.title).strip(), purpose=str(item.get("purpose") or "").strip(), material_id=material if brief is not None and material in picture_ids(brief) else ""))
+        title, purpose = str(item.get("title") or section.title).strip(), str(item.get("purpose") or "").strip()
+        flows.append(FlowRequest(section=key, title=title, purpose=purpose, material_id=material if brief is not None and material in picture_ids(brief) else "", kind=flow_kind(section.title, section.ask, title, purpose)))
     if flows:
         plan.flows = flows
     else:
