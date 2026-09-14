@@ -32,38 +32,68 @@ def _blank_slide():
     return prs, prs.slides.add_slide(prs.slide_layouts[6])
 
 
-def test_draw_flow_in_columns_glues_connectors_and_stays_in_the_box():
+def test_draw_flow_in_bands_stacks_lanes_and_reads_left_to_right():
     prs, slide = _blank_slide()
     box = (Inches(0.5), Inches(1.0), Inches(12.0), Inches(5.5))
     created = draw_flow(slide, box, SPEC, prefix="Flow x")
     names = [s.name for s in created]
     assert names[0] == "Flow x canvas" and created[0].width == box[2]
     assert [n for n in names if n.startswith("Flow x lane") and not n.endswith(" mark")] == ["Flow x lane source", "Flow x lane middleware", "Flow x lane target"]
-    assert sum(n.startswith("Flow x node") for n in names) == 5
+    by_name = {s.name: s for s in created}
+    source, middleware, target = (by_name[f"Flow x lane {lane}"] for lane in ("source", "middleware", "target"))
+    assert source.top < middleware.top < target.top and source.left == middleware.left == target.left and source.text_frame.text == "Source"
+    bank, autoclient, sftp, btp, s4 = (by_name[f"Flow x node {n}"] for n in ("bank", "autoclient", "sftp", "btp", "s4"))
+    assert bank.left < autoclient.left < sftp.left < btp.left < s4.left and bank.top == autoclient.top < sftp.top == btp.top < s4.top
+    assert all(s.rotation == 0.0 for s in created) and bank.text_frame.text == "Bank (SWIFT FileAct)"
     connectors = [s for s in created if s.name.startswith("Flow x edge") and not s.name.endswith("label")]
     labels = [s for s in created if s.name.endswith("label")]
     assert len(connectors) == 4 and len(labels) == 4 and labels[0].text_frame.text == "lockbox file"
-    for connector in connectors:
-        element = connector._element
-        assert element.find(".//" + qn("a:stCxn")) is not None and element.find(".//" + qn("a:endCxn")) is not None
-        assert element.find(".//" + qn("a:tailEnd")).get("type") == "triangle"
+    glued = by_name["Flow x edge 1"]._element  # bank to autoclient: neighbours in one band
+    assert glued.find(".//" + qn("a:stCxn")) is not None and glued.find(".//" + qn("a:tailEnd")).get("type") == "triangle"
+    assert by_name["Flow x edge 2"]._element.find(".//" + qn("a:stCxn")) is None  # autoclient to sftp crosses the seam
+    left, top, width, height = box
+    for shape in created:
+        assert shape.left >= left - 1 and shape.top >= top - 1 and shape.left + shape.width <= left + width + 1 and shape.top + shape.height <= top + height + 1
+    assert _labels_clear_of_nodes(created)
+
+
+def test_draw_flow_columns_option_keeps_the_side_by_side_look():
+    prs, slide = _blank_slide()
+    box = (Inches(0.5), Inches(1.0), Inches(12.0), Inches(5.5))
+    created = draw_flow(slide, box, SPEC.model_copy(update={"layout": "columns"}), prefix="Flow x")
+    names = [s.name for s in created]
+    assert [n for n in names if n.startswith("Flow x lane") and not n.endswith(" mark")] == ["Flow x lane source", "Flow x lane middleware", "Flow x lane target"]
+    connectors = [s for s in created if s.name.startswith("Flow x edge") and not s.name.endswith("label")]
+    assert len(connectors) == 4 and all(c._element.find(".//" + qn("a:stCxn")) is not None and c._element.find(".//" + qn("a:tailEnd")).get("type") == "triangle" for c in connectors)
+    by_name = {s.name: s for s in created}
+    bank, autoclient, s4 = by_name["Flow x node bank"], by_name["Flow x node autoclient"], by_name["Flow x node s4"]
+    assert bank.left == autoclient.left and bank.top < autoclient.top and bank.left < s4.left
+    assert by_name["Flow x lane source"].left < by_name["Flow x lane target"].left and by_name["Flow x lane source"].top == by_name["Flow x lane target"].top
     left, top, width, height = box
     for shape in created:
         assert shape.left >= left - 1 and shape.top >= top - Inches(0.35)
         assert shape.left + shape.width <= left + width + Inches(0.75) and shape.top + shape.height <= top + height + 1
-    bank = next(s for s in created if s.name == "Flow x node bank")
-    s4 = next(s for s in created if s.name == "Flow x node s4")
-    assert bank.left < s4.left and bank.text_frame.text == "Bank (SWIFT FileAct)"
 
 
-def test_draw_flow_uses_rows_when_the_box_is_narrow():
+def test_narrow_box_keeps_the_bands_and_shrinks_the_nodes():
     prs, slide = _blank_slide()
     created = draw_flow(slide, (Inches(0.5), Inches(1.0), Inches(6.0), Inches(5.5)), SPEC)
-    bank = next(s for s in created if s.name.endswith("node bank"))
-    sftp = next(s for s in created if s.name.endswith("node sftp"))
-    s4 = next(s for s in created if s.name.endswith("node s4"))
-    assert bank.top < sftp.top < s4.top
-    assert bank.left + bank.width <= Inches(6.5) + 1
+    by_name = {s.name: s for s in created}
+    bank, sftp, s4 = by_name["Flow node bank"], by_name["Flow node sftp"], by_name["Flow node s4"]
+    assert bank.top < sftp.top < s4.top and bank.left < sftp.left < s4.left and bank.width < Inches(3.0)
+    assert all(s.left + s.width <= Inches(6.5) + 1 for s in created)
+
+
+def test_parallel_edges_between_two_nodes_do_not_stack_labels():
+    prs, slide = _blank_slide()
+    edges = [FlowEdge(source="a" if i % 2 else "b", target="b" if i % 2 else "a", label=f"step {i}") for i in range(1, 8)]
+    spec = FlowSpec(nodes=[FlowNode(id="a", label="BTP adapter", lane="middleware"), FlowNode(id="b", label="sFTP door", lane="middleware")], edges=edges)
+    created = draw_flow(slide, (Inches(0.5), Inches(1.0), Inches(12.0), Inches(5.5)), spec, prefix="Flow p")
+    labels = [s for s in created if s.name.endswith(" label")]
+    lines = [s for s in created if s.name.startswith("Flow p edge") and not s.name.endswith("label")]
+    assert len(labels) == 7 and len({s.top for s in labels}) == 7 and len({s.top for s in lines}) == 7
+    assert not any(_overlaps(_box(x), _box(y)) for i, x in enumerate(labels) for y in labels[i + 1 :])
+    assert _labels_clear_of_nodes(created)
 
 
 def test_mermaid_and_yaml_roundtrip(tmp_path):
@@ -195,14 +225,15 @@ def test_edges_that_skip_a_node_go_around_it():
     )
     created = draw_flow(slide, (Inches(0.5), Inches(1.0), Inches(12.0), Inches(5.5)), spec, prefix="Flow x")
     by_name = {s.name: s for s in created}
-    a, b = by_name["Flow x node a"], by_name["Flow x node b"]
+    a, b, c = by_name["Flow x node a"], by_name["Flow x node b"], by_name["Flow x node c"]
+    assert a.left < b.left < c.left and a.top == b.top == c.top
     skip = by_name["Flow x edge 3"]
     assert skip._element.find(".//" + qn("a:stCxn")) is None and skip._element.find(".//" + qn("a:tailEnd")).get("type") == "triangle"
-    assert skip.left >= b.left + b.width - 1
+    assert skip.top + skip.height > b.top + b.height and not _overlaps(_box(skip), _box(b))  # under the band, not through b
     far = by_name["Flow x edge 4"]
-    lowest = max(s.top + s.height for s in created if " node " in s.name)
-    assert far.top + far.height > lowest and far.left < a.left and far.left + far.width > a.left + a.width
-    assert by_name["Flow x edge 5"]._element.find(".//" + qn("a:stCxn")) is not None
+    rightmost = max(s.left + s.width for s in created if " node " in s.name)
+    assert far.left + far.width > rightmost and far._element.find(".//" + qn("a:stCxn")) is None  # source to target through the right channel
+    assert by_name["Flow x edge 1"]._element.find(".//" + qn("a:stCxn")) is not None
     assert _labels_clear_of_nodes(created)
     canvas = _box(by_name["Flow x canvas"])
     for shape in created:
@@ -211,23 +242,27 @@ def test_edges_that_skip_a_node_go_around_it():
             assert box[0] >= canvas[0] - 1 and box[1] >= canvas[1] - 1 and box[2] <= canvas[2] + 1 and box[3] <= canvas[3] + 1
 
 
-def test_rows_layout_labels_lanes_on_the_side_and_routes_far_edges():
-    from sdgen.flow import LANE_LABEL
-
+def test_wrapped_flow_draws_the_bands_twice_and_links_the_rows():
     prs, slide = _blank_slide()
-    spec = FlowSpec(
-        nodes=[FlowNode(id="s", label="S", lane="source"), FlowNode(id="m1", label="M1", lane="middleware"), FlowNode(id="m2", label="M2", lane="middleware"), FlowNode(id="t", label="T", lane="target")],
-        edges=[FlowEdge(source="s", target="m1", label="a"), FlowEdge(source="m1", target="m2", label="b"), FlowEdge(source="m2", target="t", label="c"), FlowEdge(source="s", target="t", label="far")],
-    )
-    created = draw_flow(slide, (Inches(0.5), Inches(1.0), Inches(6.0), Inches(5.5)), spec, prefix="Flow r")
+    nodes = [FlowNode(id=f"n{i}", label=f"Step {i}", lane="middleware") for i in range(1, 10)]
+    edges = [FlowEdge(source=f"n{i}", target=f"n{i + 1}", label=f"e{i}") for i in range(1, 9)]
+    created = draw_flow(slide, (Inches(0.5), Inches(1.0), Inches(6.0), Inches(5.5)), FlowSpec(nodes=nodes, edges=edges), prefix="Flow w")
     by_name = {s.name: s for s in created}
-    assert by_name["Flow r lane source title"].rotation == 270.0 and by_name["Flow r lane source"].rotation == 0.0
-    assert by_name["Flow r lane source"].fill.fore_color.rgb == palette.rgb(palette.GREY_FILL) and "Flow r lane source mark" not in by_name
-    s, t = by_name["Flow r node s"], by_name["Flow r node t"]
-    assert s.top < t.top and s.left >= Inches(0.5) + LANE_LABEL
-    far = by_name["Flow r edge 4"]
-    rightmost = max(n.left + n.width for n in created if " node " in n.name)
-    assert far.left + far.width > rightmost and far._element.find(".//" + qn("a:stCxn")) is None
+    assert "Flow w lane middleware" in by_name and "Flow w lane middleware row 2" in by_name
+    rows = [s for s in created if s.name.startswith("Flow w lane middleware")]
+    assert rows[0].top < rows[1].top and rows[0].left == rows[1].left and rows[1].text_frame.text == "Middleware"
+    first_row = [by_name[f"Flow w node n{i}"] for i in range(1, 10) if by_name[f"Flow w node n{i}"].top == by_name["Flow w node n1"].top]
+    assert 2 <= len(first_row) < 9 and all(n.width >= Inches(1.1) - 1 for n in first_row)
+    last, first_next = first_row[-1], by_name[f"Flow w node n{len(first_row) + 1}"]
+    assert first_next.top > last.top and first_next.left < last.left
+    link = by_name[f"Flow w edge {len(first_row)}"]
+    assert link._element.find(".//" + qn("a:stCxn")) is None
+    assert link.left + link.width > last.left + last.width and link.left < first_next.left
+    assert link.top < last.top + last.height and link.top + link.height > first_next.top
+    canvas = _box(by_name["Flow w canvas"])
+    for shape in created:
+        box = _box(shape)
+        assert box[0] >= canvas[0] - 1 and box[1] >= canvas[1] - 1 and box[2] <= canvas[2] + 1 and box[3] <= canvas[3] + 1
     assert _labels_clear_of_nodes(created)
 
 

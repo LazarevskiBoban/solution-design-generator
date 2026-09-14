@@ -20,19 +20,35 @@ the measured source; the style table lives in `assets/refs/README.md` and the co
   SAP logo (`img/lib/sap/SAP_Logo.svg`).
 - **Nodes are uniform rounded boxes** (no cylinders, no per-kind colours): bold label, small grey
   subtitle, service icon inside at the left. Kind only informs the model's icon choice.
-- **Edges**: orthogonal, slate 1.5 pt, block arrow head, dashed for async or file, small labels
-  on white. Far edges travel on the seam between lanes, never across a tinted box.
+- **Edges**: orthogonal, slate 1.5 pt, block arrow head, dashed for async, file or error, small
+  labels on white. Routed edges travel on the seams and channels, never across a tinted box.
 - **Headings and subtitles come from the model** (`FlowSpec.lanes`, `FlowNode.subtitle`) with
   Source / Middleware / Target as the fallback; `FlowSpec.reference` names the closest
   reference architecture as `<system>:<id>`.
 
 ## Layout rules that tests pin
 
-- Columns when the slot is at least 8 in wide or has one lane, rows otherwise; flat slots fall
-  back to columns. Constants at the top of `flow.py`.
-- Shape names are the contract with `render.py` and the tests (see the `test` skill).
-- Everything stays inside the canvas the image slot gives; a far-edge channel is reserved at the
-  bottom (columns) or the right (rows).
+- The geometry lives in `src/sdgen/flowlayout.py` as a pure function (`layout_flow`, EMU in,
+  rectangles and point lists out); `flow.draw_flow` and `drawio.to_drawio` only paint what it
+  returns, so both outputs place every box and line the same way.
+- Default layout is **bands**: one horizontal band per lane, stacked in lane order, heading
+  top-left inside the band. Each node gets a column from its rank along the edges (after its
+  predecessors, unique inside its lane, edges that would close a cycle ignored), so a flow
+  reads left to right across the bands. Nodes shrink to 1.1 in before the diagram wraps like a
+  music score: every band is drawn again below and a routed line links the last node of a row,
+  through the right channel, the corridor between the rows and the left channel, to the first
+  node of the next row. A slot too flat for one band per lane falls back to columns.
+- **Columns** (`FlowSpec.layout = "columns"`, the Diagrams step can switch a drawing) keeps the
+  vertical lane containers with stacked nodes.
+- Routes: neighbours in one band get a glued straight connector; a skip runs under the band in
+  the seam; adjacent bands link through the seam between them; far bands use the right
+  channel. Parallel edges between two nodes are drawn as offset lines with their labels stacked
+  above (forward) and below (backward) the nodes, so no two labels overlap.
+- Shape names are the contract with `render.py` and the tests: `<prefix> canvas`, `<prefix>
+  lane <id>` (a second row adds ` row 2`), `... mark`, `<prefix> node <id>`, `<prefix> icon
+  <id>`, `<prefix> edge <n>` and `... label`.
+- Everything stays inside the canvas the image slot gives; channels are reserved only when a
+  far edge or a second row needs them.
 
 ## Check a change visually
 
@@ -47,5 +63,6 @@ the measured source; the style table lives in `assets/refs/README.md` and the co
 
 ## Known limits
 
-Rows mode draws lane-to-lane elbow connectors bending horizontally first. Nested layer groups
-inside a container (as in SAP's Palantir diagram) are not generated.
+Cross-band edges are freeforms, not glued connectors, so they do not follow a node a reader
+moves by hand. Many parallel edges between two nodes stack their labels into the band header.
+Nested layer groups inside a container (as in SAP's Palantir diagram) are not generated.

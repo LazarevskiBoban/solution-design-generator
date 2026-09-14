@@ -58,6 +58,7 @@ SHORTCUTS = {"previous": "Left", "next": "Right", "up": "Up", "down": "Down", "h
 PREVIEW_WIDTH = 1600  # pixels per exported slide picture, enough for the full view on a wide screen
 STEPS = ["brief", "plan", "write", "diagrams", "review", "generate"]
 DONE_ICON = "✅"
+LAYOUT_NAMES = {"bands": "System bands, left to right", "columns": "Lane columns, top to bottom"}
 DIAGRAM_FORMATS = {
     "shapes": "Shapes on the slide only",
     "drawio": "Shapes on the slide plus a draw.io file to open, adjust and export",
@@ -551,8 +552,13 @@ def design_page() -> None:
                         store.save(design)
                         st.rerun()
                 flow = flows.get(section.key)
-                col_draw, col_drawio, col_mermaid, col_remove = st.columns(4)
+                col_draw, col_layout, col_drawio, col_mermaid, col_remove = st.columns(5)
                 if flow is not None:
+                    other = "columns" if flow.layout == "bands" else "bands"
+                    with col_layout:
+                        if st.button(f"Switch to {LAYOUT_NAMES[other].split(',')[0].lower()}", key=f"{state_key}:layout:{section.key}", help="Redraws the same flow in the other arrangement; no model call."):
+                            store.save_flow(design, section.key, flow.model_copy(update={"layout": other}))
+                            st.rerun()
                     chosen = design.diagram_formats.get(section.key, design.diagram_format)
                     reference = lookup_reference(flow.reference)
                     st.caption("Drawn from the brief: " + " → ".join(n.label for n in flow.nodes[:6]) + (" …" if len(flow.nodes) > 6 else "") + f". Format: {DIAGRAM_FORMATS.get(chosen, chosen)}." + (" Open the file, adjust it, export a PNG and upload it above to replace the drawing." if chosen != "shapes" else "") + (" A how-it-works slide follows it." if section.key in walked else " The slide's own text explains it.") + (f" Reference: [{reference[1].title}]({reference[0].url(reference[1])})." if reference else ""))
@@ -1544,8 +1550,9 @@ def _draw_flows_for(state_key: str, design: Design, store: DesignStore, sections
     except (LLMNotConfigured, LLMError) as exc:
         st.error(str(exc))
         return
+    layout = st.session_state.get(f"{state_key}:fmt:layout", "bands")
     for key, spec in specs.items():
-        store.save_flow(design, key, spec)
+        store.save_flow(design, key, spec.model_copy(update={"layout": layout}) if layout in LAYOUT_NAMES else spec)
     missing = [design.titles.get(s.key, s.title) for s in sections if s.key not in specs]
     checks = [f"{design.titles.get(key, key)}: {problem}" for key, spec in specs.items() for problem in lane_mismatches(spec)]
     note = f"Drew {len(specs)} diagram(s) from the brief." + (f" The model returned no flow for: {', '.join(missing)}." if missing else "")
@@ -1633,6 +1640,7 @@ def _diagram_format_dialog(state_key: str, sections: list, requests: dict, provi
     _show_icon_note(design)
     current = design.diagram_format if design.diagram_format in DIAGRAM_FORMATS else "shapes"
     choice = st.radio("Format", list(DIAGRAM_FORMATS), format_func=DIAGRAM_FORMATS.get, index=list(DIAGRAM_FORMATS).index(current), key=f"{state_key}:fmt:choice")
+    st.radio("Layout", list(LAYOUT_NAMES), format_func=LAYOUT_NAMES.get, horizontal=True, key=_init(f"{state_key}:fmt:layout", "bands"), help="System bands read left to right and wrap when the steps do not fit; lane columns stack the steps of each system.")
     everywhere = st.checkbox("Use this format for all diagrams of this design", value=True, key=f"{state_key}:fmt:all")
     col_go, col_later = st.columns([1, 1])
     with col_go:

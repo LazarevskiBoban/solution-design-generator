@@ -27,8 +27,8 @@ def test_drawio_uses_system_lanes_in_role_order():
     spec = clean_flow(FlowSpec(nodes=[FlowNode(id="vm", label="VM door", lane="windows_vm"), FlowNode(id="cpi", label="Inbound iFlow", lane="sap_btp_integration_suite"), FlowNode(id="s4", label="S/4 IN", lane="s_4hana_on_rise")], edges=[FlowEdge(source="vm", target="cpi"), FlowEdge(source="cpi", target="s4", kind="error")]), lanes)
     root, cells = _cells(spec, {})
     ids = ["lane_windows_vm", "lane_sap_btp_integration_suite", "lane_s_4hana_on_rise"]
-    x = [float(cells[i].find("mxGeometry").get("x")) for i in ids]
-    assert x[0] < x[1] < x[2]
+    y = [float(cells[i].find("mxGeometry").get("y")) for i in ids]
+    assert y[0] < y[1] < y[2]
     assert [cells[f"{i}_title"].get("value") for i in ids] == ["Windows VM", "SAP BTP Integration Suite", "S/4HANA on RISE"]
     assert "lane_windows_vm_logo" not in cells and cells["lane_s_4hana_on_rise_logo"].get("parent") == "lane_s_4hana_on_rise"
     assert cells["n_s4"].get("parent") == "lane_s_4hana_on_rise"
@@ -36,8 +36,18 @@ def test_drawio_uses_system_lanes_in_role_order():
     assert "dashed=1" not in edges[0].get("style") and "dashed=1" in edges[1].get("style")
 
 
-def test_drawio_draws_containers_in_the_sap_style():
+def test_drawio_bands_stack_the_lanes_and_carry_waypoints():
     root, cells = _cells(SPEC, {})
+    y = [float(cells[f"lane_{lane}"].find("mxGeometry").get("y")) for lane in LANES]
+    x = [float(cells[f"lane_{lane}"].find("mxGeometry").get("x")) for lane in LANES]
+    assert y[0] < y[1] < y[2] and x[0] == x[1] == x[2]
+    edges = [c for c in root.findall(".//mxCell") if c.get("edge") == "1"]
+    points = edges[0].find("mxGeometry").find("Array")
+    assert points is not None and len(points.findall("mxPoint")) >= 2 and "exitX=" in edges[0].get("style") and "entryY=" in edges[0].get("style")
+
+
+def test_drawio_draws_containers_in_the_sap_style():
+    root, cells = _cells(SPEC.model_copy(update={"layout": "columns"}), {})
     assert root.tag == "mxfile" and root.find("diagram").get("name") == "Lockbox"
     lanes = [cells[f"lane_{lane}"] for lane in LANES]
     assert all("rounded=1" in c.get("style") and "arcSize=24" in c.get("style") and "container=1" in c.get("style") for c in lanes)
