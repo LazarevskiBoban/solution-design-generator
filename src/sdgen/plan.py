@@ -87,7 +87,7 @@ PLAN_SCHEMA = {
             "type": "array",
             "items": {
                 "type": "object",
-                "properties": {"section": {"type": "string"}, "title": {"type": "string"}, "purpose": {"type": "string"}},
+                "properties": {"section": {"type": "string"}, "title": {"type": "string"}, "purpose": {"type": "string"}, "material_id": {"type": "string"}},
                 "required": ["section", "title", "purpose"],
             },
         },
@@ -132,7 +132,9 @@ The developer slides (interface inventory, configuration, file naming, connectiv
 access, cutover, RACI, build checklist, assumptions, non-functional requirements) are added
 automatically: do not propose them.
 For every diagram section in use without an uploaded image, add a flow entry with the title
-and purpose of the diagram to draw from the brief.
+and purpose of the diagram to draw from the brief. When a reference picture listed below is the
+author's own drawing of what that section asks for, give the entry its material_id: the picture
+is then placed on the slide instead of a drawing.
 The outline may end with template texts that belong to no field. List in "clear" the ones
 that describe the earlier project (its systems, plans, dates, names, examples) so they are
 emptied; leave generic wording alone (labels, legends, headings, instructions, "see ...").
@@ -167,6 +169,7 @@ class FlowRequest(BaseModel):
     section: str
     title: str = ""
     purpose: str = ""
+    material_id: str = ""  # a reference picture that takes the slot instead of a drawing
 
 
 class Leftover(BaseModel):
@@ -236,10 +239,24 @@ def plan_sections(
     leftovers: list[Leftover] | None = None,
 ) -> SectionPlan:
     base = default_plan(blueprint, images, manifest)
-    data = llm.complete_json(SYSTEM_PROMPT, _prompt(brief, blueprint, manifest, images or set(), leftovers or []), PLAN_SCHEMA, name="section_plan")
+    pictures = picture_ids(brief)
+    data = llm.complete_json(SYSTEM_PROMPT, _prompt(brief, blueprint, manifest, images or set(), leftovers or []), _schema_with_pictures(pictures) if pictures else PLAN_SCHEMA, name="section_plan")
     plan = merge_plan(base, data, blueprint, images or set(), leftovers or [], manifest, brief)
     plan.model = str(getattr(llm, "label", llm.name))
     return plan
+
+
+def picture_ids(brief: Brief) -> list[str]:
+    """The ids of the reference pictures a planner may place on a diagram slide."""
+    return [m.id for m in brief.material if m.kind == "image" and m.file]
+
+
+def _schema_with_pictures(ids: list[str]) -> dict:
+    import copy
+
+    schema = copy.deepcopy(PLAN_SCHEMA)
+    schema["properties"]["flows"]["items"]["properties"]["material_id"] = {"type": "string", "enum": list(ids) + [""]}
+    return schema
 
 
 def leftover_texts(template_path: str | Path, manifest: Manifest, blueprint: Blueprint, max_chars: int = LEFTOVER_MAX_CHARS) -> list[Leftover]:
@@ -330,7 +347,8 @@ def merge_plan(
             continue
         if any(k in images for k in section.fields):
             continue
-        flows.append(FlowRequest(section=key, title=str(item.get("title") or section.title).strip(), purpose=str(item.get("purpose") or "").strip()))
+        material = str(item.get("material_id") or "").strip()
+        flows.append(FlowRequest(section=key, title=str(item.get("title") or section.title).strip(), purpose=str(item.get("purpose") or "").strip(), material_id=material if brief is not None and material in picture_ids(brief) else ""))
     if flows:
         plan.flows = flows
     else:
@@ -522,6 +540,10 @@ def _prompt(brief: Brief, blueprint: Blueprint, manifest: Manifest, images: set[
     block = material_text(brief.material, total=8000)
     if block:
         lines += ["", "# Reference material", block]
+    pictures = [m for m in brief.material if m.kind == "image" and m.file]
+    if pictures:
+        lines += ["", "# Reference pictures (material_id | title | what it shows)"]
+        lines += [f"- {m.id} | {m.label} | {' '.join(m.text.split())[:160]}" for m in pictures]
     lines += ["", "# Brief", dump_brief(brief)]
     return "\n".join(lines)
 

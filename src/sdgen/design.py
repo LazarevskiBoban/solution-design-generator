@@ -28,6 +28,7 @@ DRAFT_FILE = "draft.md"
 FLOWS_DIR = "flows"
 IMAGES_DIR = "images"
 MAPPING_DIR = "mapping"
+REFERENCE_PREFIX = "ref-"  # image files copied from the reference material by the plan
 
 
 class Design(BaseModel):
@@ -192,6 +193,41 @@ class DesignStore:
         if target.name not in names:
             names.append(target.name)
         return str(target)
+
+    def apply_reference_pictures(self, design: Design, image_field_of: dict[str, str]) -> list[str]:
+        """Puts the plan's reference picture into each diagram section's image slot, unless the user uploaded one; returns the sections changed."""
+        by_id = {m.id: m for m in design.brief.material}
+        changed: list[str] = []
+        for request in design.plan.flows if design.plan else []:
+            field = image_field_of.get(request.section)
+            if not field:
+                continue
+            names = list(design.images.get(field, []))
+            manual = [n for n in names if not n.startswith(REFERENCE_PREFIX)]
+            item = by_id.get(request.material_id) if request.material_id else None
+            path = self.material_path(design, item) if item is not None else None
+            fresh = manual
+            if path is not None and path.is_file() and not manual:
+                name = f"{REFERENCE_PREFIX}{item.id}{path.suffix.lower()}"
+                target = self.image_dir(design.name) / name
+                if not target.is_file():
+                    target.write_bytes(path.read_bytes())
+                fresh = [name]
+            if fresh != names:
+                changed.append(request.section)
+            if fresh:
+                design.images[field] = fresh
+            else:
+                design.images.pop(field, None)
+        return changed
+
+    def reference_picture(self, design: Design, field_key: str) -> Material | None:
+        """The material item whose picture sits in the field's slot, when the plan put one there."""
+        for name in design.images.get(field_key, []):
+            if name.startswith(REFERENCE_PREFIX):
+                item_id = Path(name[len(REFERENCE_PREFIX) :]).stem
+                return next((m for m in design.brief.material if m.id == item_id), None)
+        return None
 
     def material_dir(self, name: str) -> Path:
         folder = self.root / safe_name(name) / MATERIAL_DIR

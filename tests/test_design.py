@@ -151,6 +151,30 @@ def test_material_is_persisted_and_files_removed(tmp_path):
     assert not (folder / "material.yaml").exists() and store.load("lockbox").brief.material == []
 
 
+def test_reference_picture_is_copied_into_the_image_slot_and_cleared_again(tmp_path):
+    from sdgen.material import new_material
+    from sdgen.plan import FlowRequest, SectionPlan
+
+    store = DesignStore(tmp_path / "designs")
+    design = Design(name="d", template="demo")
+    picture = store.add_material(design, new_material("image", title="Big picture"), _png(), file_name="big.png")
+    design.plan = SectionPlan(flows=[FlowRequest(section="flow", title="Flow", material_id=picture.id)])
+    assert store.apply_reference_pictures(design, {"flow": "flow_diagram"}) == ["flow"]
+    name = f"ref-{picture.id}.png"
+    assert design.images == {"flow_diagram": [name]} and (tmp_path / "designs" / "d" / "images" / name).read_bytes() == _png()
+    assert store.reference_picture(design, "flow_diagram") == picture and store.reference_picture(design, "other") is None
+    assert store.apply_reference_pictures(design, {"flow": "flow_diagram"}) == []  # idempotent
+    assert store.content(design, _manifest()).fields["flow_diagram"] == ImageValue(path=str(tmp_path / "designs" / "d" / "images" / name))
+
+    store.add_image(design, "flow_diagram", "mine.png", _png())
+    design.images["flow_diagram"] = ["mine.png"]
+    assert store.apply_reference_pictures(design, {"flow": "flow_diagram"}) == [] and design.images["flow_diagram"] == ["mine.png"]  # an upload wins
+    design.images["flow_diagram"] = [name]
+    design.plan.flows[0].material_id = ""
+    assert store.apply_reference_pictures(design, {"flow": "flow_diagram"}) == ["flow"] and "flow_diagram" not in design.images
+    assert store.apply_reference_pictures(design, {"elsewhere": "x"}) == []
+
+
 def test_material_images_prefer_tagged_then_newest(tmp_path):
     from sdgen.material import new_material
 

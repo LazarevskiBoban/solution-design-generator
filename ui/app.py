@@ -26,7 +26,7 @@ from sdgen import material as materials
 from sdgen.drawio import to_drawio
 from sdgen.flow import lane_mismatches, plan_flows, system_lanes, to_mermaid, uses_sap, walkthrough_text
 from sdgen.icons import icon_keys, installed_keys
-from sdgen.plan import OPEN_QUESTIONS_KEY, SOURCES, WALKTHROUGH_SUFFIX, FlowRequest, SectionDecision, SectionPlan, active_extras, apply_plan, detail_prototypes, extended_blueprint, extended_manifest, extra_slides, leftover_texts, open_question_rows, open_questions_extras, open_questions_text, plan_sections, walkthrough_extras
+from sdgen.plan import OPEN_QUESTIONS_KEY, SOURCES, WALKTHROUGH_SUFFIX, FlowRequest, SectionDecision, SectionPlan, active_extras, apply_plan, default_plan, detail_prototypes, extended_blueprint, extended_manifest, extra_slides, leftover_texts, open_question_rows, open_questions_extras, open_questions_text, plan_sections, walkthrough_extras
 from sdgen.preview import export_slides
 from sdgen.references import lookup as lookup_reference
 from sdgen.registry import Registry, safe_name
@@ -461,7 +461,7 @@ def design_page() -> None:
                 st.info(st.session_state[f"{state_key}:facts_note"])
         st.markdown("**Reference material**")
         st.caption("Pictures of diagrams, notes and links the model reads next to the brief. A picture is transcribed once into text you can correct; the picture itself also goes to the model when it draws a diagram. Tag an item with the slides it is about, or leave it for all of them.")
-        _material_editor(state_key, prefix, version, design, store, blueprint, provider, settings)
+        _material_editor(state_key, prefix, version, design, store, blueprint, provider, settings, {s.key: spec.key for s, spec in diagram_fields})
         _complete_section(state_key, design, store, "brief", present)
 
     with st.expander(_plan_title(design), expanded=step == "plan", icon=_done("plan" in design.completed), key=_expander_key(state_key, "plan", step)):
@@ -484,11 +484,12 @@ def design_page() -> None:
         if plan is not None:
             if proposed is not None:
                 st.info(f"Proposal from {proposed.model or provider}. Adjust the grid, then confirm.")
-            edited_plan = _plan_editor(plan, blueprint, f"{prefix}plan")
+            edited_plan = _plan_editor(plan, blueprint, f"{prefix}plan", pictures={m.id: m.label for m in design.brief.material if m.kind == "image" and m.file})
             col_confirm, col_discard = st.columns([1, 4])
             with col_confirm:
                 if st.button("Confirm plan", type="primary", key=f"{state_key}:plan_confirm"):
                     apply_plan(edited_plan, design, blueprint)
+                    store.apply_reference_pictures(design, {s.key: spec.key for s, spec in diagram_fields})
                     store.save(design)
                     st.session_state.pop(f"{state_key}:proposed_plan", None)
                     st.session_state[f"{state_key}:v"] = version + 1
@@ -545,7 +546,13 @@ def design_page() -> None:
                 for file in files or []:
                     store.add_image(design, spec.key, file.name, file.getvalue())
                 current = design.images.get(spec.key, [])
-                if current:
+                reference = store.reference_picture(design, spec.key)
+                if reference is not None:
+                    st.caption(f"Picture from the reference material: {reference.label}. It takes the slot instead of a drawing, and no how-it-works slide follows it.")
+                    if st.button("Use the drawing instead", key=f"{state_key}:unpic:{section.key}"):
+                        _set_reference_picture(design, store, blueprint, section.key, "", {s.key: sp.key for s, sp in diagram_fields})
+                        st.rerun()
+                elif current:
                     st.caption("Images: " + ", ".join(current))
                     if st.button("Remove images", key=f"{state_key}:clear:{spec.key}"):
                         design.images[spec.key] = []
@@ -1335,6 +1342,7 @@ def _render_design(entry, store: DesignStore, design: Design, subject: str, name
     base_manifest = manifest.model_copy(update={"fields": [f for f in manifest.fields if f.key not in extra_keys]})
     plain_blueprint = blueprint.model_copy(update={"sections": [s for s in blueprint.sections if s.key not in extra_keys]})
     details = detail_prototypes(plain_blueprint, base_manifest)
+    store.apply_reference_pictures(design, {s.key: k for s in plain_blueprint.sections for k in s.fields if base_manifest.field(k) is not None and base_manifest.field(k).kind == "image"})
     fields = {k: v for k, v in fields.items() if k not in extra_keys}
     images = {k: v for k, v in store.content(design, base_manifest).fields.items() if base_manifest.field(k) and base_manifest.field(k).kind == "image"}
     final = Content(globals=_globals(subject), fields={**fields, **images})
@@ -1444,10 +1452,11 @@ def _merge_draft(current: dict, last: dict, fresh: dict) -> dict:
     return merged
 
 
-def _material_editor(state_key: str, prefix: str, version: int, design: Design, store: DesignStore, blueprint, provider: str, settings: dict) -> None:
+def _material_editor(state_key: str, prefix: str, version: int, design: Design, store: DesignStore, blueprint, provider: str, settings: dict, image_fields: dict[str, str] | None = None) -> None:
     """The reference material of the brief: existing items with their editable text, then the form that adds pictures, text or a link."""
     options = [s.key for s in blueprint.sections if s.kind not in ("cover", "static", "divider") and not s.generated and not s.key.startswith("extra_")]
     names = {s.key: design.titles.get(s.key, s.title) for s in blueprint.sections}
+    image_fields = image_fields or {}
     for item in design.brief.material:
         with st.container(border=True):
             col_text, col_meta = st.columns([3, 2])
@@ -1459,6 +1468,13 @@ def _material_editor(state_key: str, prefix: str, version: int, design: Design, 
                 if item.note:
                     st.caption(f"Note: {item.note}")
                 item.tags = st.multiselect("For these slides (empty: all)", options, key=_init(f"{prefix}mat:tags:{item.id}", [t for t in item.tags if t in options]), format_func=lambda key: names.get(key, key))
+                if item.kind == "image" and item.file and image_fields:
+                    slots = [""] + list(image_fields)
+                    current = next((f.section for f in (design.plan.flows if design.plan else []) if f.material_id == item.id), "")
+                    chosen = st.selectbox("Use as the picture for", slots, index=slots.index(current) if current in slots else 0, format_func=lambda key: names.get(key, key) if key else "no slide, the model only reads it", key=f"{prefix}mat:use:{item.id}")
+                    if chosen != current:
+                        _set_reference_picture(design, store, blueprint, chosen or current, item.id if chosen else "", image_fields)
+                        _refresh_material(state_key, design, store, version)
                 col_redo, col_remove = st.columns(2)
                 with col_redo:
                     if item.kind == "image" and st.button("Transcribe again", key=f"{state_key}:mat:redo:{item.id}"):
@@ -1543,6 +1559,24 @@ def _split_field(state_key: str, design: Design, store: DesignStore, key: str, p
         setattr(design.brief, key, result)
     st.session_state[f"{state_key}:brief_note"] = f"{label}: split into {len(result.splitlines())} lines."
     _refresh_material(state_key, design, store, version)
+
+
+def _set_reference_picture(design: Design, store: DesignStore, blueprint: Blueprint, section_key: str, material_id: str, image_fields: dict[str, str]) -> None:
+    """Points the plan's flow request of a diagram section at a reference picture (or clears it) and updates the image slot."""
+    if design.plan is None:
+        design.plan = default_plan(blueprint, {k for k, names in design.images.items() if names})
+    if material_id:
+        for request in design.plan.flows:
+            if request.material_id == material_id and request.section != section_key:
+                request.material_id = ""  # one slide per picture
+    request = next((f for f in design.plan.flows if f.section == section_key), None)
+    if request is None:
+        section = blueprint.section(section_key)
+        request = FlowRequest(section=section_key, title=design.titles.get(section_key, section.title if section else section_key), purpose=section.ask if section else "")
+        design.plan.flows.append(request)
+    request.material_id = material_id
+    store.apply_reference_pictures(design, image_fields)
+    store.save(design)
 
 
 def _refresh_material(state_key: str, design: Design, store: DesignStore, version: int) -> None:
@@ -1733,7 +1767,7 @@ def _plan_title(design: Design) -> str:
     return f"2. Section plan: {hidden} hidden, {retitled} retitled, {extras} extra slide(s), {len(design.plan.flows)} diagram(s) to draw"
 
 
-def _plan_editor(plan: SectionPlan, blueprint: Blueprint, key: str) -> SectionPlan:
+def _plan_editor(plan: SectionPlan, blueprint: Blueprint, key: str, pictures: dict[str, str] | None = None) -> SectionPlan:
     sections = {s.key: s for s in blueprint.sections}
     rows = []
     for decision in plan.decisions:
@@ -1785,10 +1819,17 @@ def _plan_editor(plan: SectionPlan, blueprint: Blueprint, key: str) -> SectionPl
             label = f"{extra.title} ({extra.kind}" + (": " + ", ".join(extra.columns) if extra.columns else "") + ")" + (f". {extra.reason}" if extra.reason else "")
             include = st.checkbox(label, value=extra.include, key=f"{key}:extra:{extra.key}")
             extras.append(extra.model_copy(update={"include": include}))
+    flows = []
     if plan.flows:
         st.markdown("**Diagrams to draw from the brief**")
         for flow in plan.flows:
             st.caption(f"{flow.title or flow.section}: {flow.purpose}" if flow.purpose else flow.title or flow.section)
+            if pictures:
+                options = [""] + list(pictures)
+                choice = st.selectbox("Picture from the reference material instead of a drawing", options, index=options.index(flow.material_id) if flow.material_id in options else 0, format_func=lambda item_id: pictures.get(item_id, "none, draw it") if item_id else "none, draw it", key=f"{key}:flow_pic:{flow.section}")
+                flows.append(flow.model_copy(update={"material_id": choice}))
+            else:
+                flows.append(flow)
     clear = []
     if plan.clear:
         st.markdown("**Template text to clear** (wording from the earlier project that no field replaces)")
@@ -1796,7 +1837,7 @@ def _plan_editor(plan: SectionPlan, blueprint: Blueprint, key: str) -> SectionPl
             label = f"Slide {item.slide}: {item.text[:90]}" + (f" ({item.reason})" if item.reason else "")
             include = st.checkbox(label, value=item.include, key=f"{key}:clear:{item.slide}:{item.shape}")
             clear.append(item.model_copy(update={"include": include}))
-    return plan.model_copy(update={"decisions": decisions, "extras": extras, "clear": clear})
+    return plan.model_copy(update={"decisions": decisions, "extras": extras, "flows": flows, "clear": clear})
 
 
 def _confirm_delete(key: str, label: str, question: str, on_confirm) -> None:

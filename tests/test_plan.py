@@ -114,6 +114,24 @@ def test_developer_extras_are_always_proposed_and_deduplicated(sample_deck, tmp_
     assert plan.extras[-3].columns == ["#", "Step", "Depends on", "Owner"]
 
 
+def test_plan_flows_carry_a_reference_picture_id():
+    from sdgen.blueprint import Blueprint, Section
+    from sdgen.manifest import Binding, FieldSpec, Manifest, ShapeRef
+    from sdgen.material import new_material
+
+    manifest = Manifest(name="m", fields=[FieldSpec(key="img", label="Diagram", kind="image", bindings=[Binding(slide=4, shape=ShapeRef(id=9))])])
+    blueprint = Blueprint(name="m", sections=[Section(key="flow", title="Level 2 flows", kind="diagram", slide=4, fields=["img"])])
+    brief = Brief(subject="L", material=[new_material("image", title="Big picture", file="a.png", text="VM to BTP to S/4", id="abc"), new_material("text", title="Note", text="t", id="def")])
+    llm = _JsonLLM({"decisions": [], "flows": [{"section": "flow", "title": "Flows", "purpose": "p", "material_id": "abc"}]})
+    plan = plan_sections(brief, blueprint, manifest, llm)
+    system, user, name = llm.prompts[0]
+    assert "# Reference pictures" in user and "- abc | Big picture | VM to BTP to S/4" in user and "def |" not in user.split("# Reference pictures", 1)[1].split("# Brief", 1)[0]
+    assert plan.flows[0].material_id == "abc" and "material_id" in system
+    unknown = _JsonLLM({"decisions": [], "flows": [{"section": "flow", "title": "Flows", "purpose": "p", "material_id": "zzz"}]})
+    assert plan_sections(brief, blueprint, manifest, unknown).flows[0].material_id == ""
+    assert plan_sections(Brief(subject="L"), blueprint, manifest, _JsonLLM({"decisions": []})).flows[0].material_id == ""
+
+
 def test_operations_table_in_the_brief_becomes_a_table_extra():
     from sdgen.plan import merge_plan
 
