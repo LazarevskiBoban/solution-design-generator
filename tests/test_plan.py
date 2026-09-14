@@ -76,6 +76,57 @@ def test_detail_prototypes_pick_plain_slides_of_the_same_kind(sample_deck, tmp_p
     assert found["t"].kind == "table" and found["t"].columns == ["Function", "Bank"] and found["t"].bindings[0].slide == 3 and found["t"].bindings[0].keep_last_row_if is None
 
 
+def _developer_template():
+    from sdgen.blueprint import Blueprint, Section
+    from sdgen.manifest import Binding, FieldSpec, Manifest, ShapeRef
+
+    manifest = Manifest(
+        name="m",
+        fields=[
+            FieldSpec(key="a", label="Need", bindings=[Binding(slide=1, shape=ShapeRef(id=1))]),
+            FieldSpec(key="g", label="Grid", kind="table", columns=["Ref", "Item", "Owner", "Status"], bindings=[Binding(slide=2, shape=ShapeRef(id=4))]),
+            FieldSpec(key="e", label="Effort", kind="table", columns=["Role", "Month-1"], bindings=[Binding(slide=3, shape=ShapeRef(id=5))]),
+        ],
+    )
+    blueprint = Blueprint(
+        name="m",
+        sections=[
+            Section(key="over", title="Overview", kind="text", slide=1, fields=["a"]),
+            Section(key="grid", title="Grid", kind="table", slide=2, fields=["g"]),
+            Section(key="effort", title="Effort Estimation", kind="table", slide=3, fields=["e"]),
+        ],
+    )
+    return blueprint, manifest
+
+
+def test_developer_extras_are_always_proposed_and_deduplicated(sample_deck, tmp_path):
+    from sdgen.plan import DEVELOPER_EXTRAS, developer_extras, merge_plan
+
+    entry = _template(sample_deck, tmp_path)
+    assert developer_extras(entry.blueprint, entry.manifest) == []  # the sample deck has no plain table slide to clone
+    blueprint, manifest = _developer_template()
+    base = default_plan(blueprint, manifest=manifest)
+    assert [e.key for e in base.extras] == [key for key, _, _, _ in DEVELOPER_EXTRAS]
+    assert all(e.include and e.kind == "table" and e.prototype == "grid" and e.before == "effort" for e in base.extras)
+    data = {"extras": [{"key": "acceptance", "title": "Acceptance Criteria", "kind": "table"}, {"key": "build_checklist", "title": "Build checklist", "kind": "table"}, {"key": "x", "title": "RACI", "kind": "table"}]}
+    plan = merge_plan(base, data, blueprint, set(), manifest=manifest)
+    assert [e.key for e in plan.extras][:2] == ["extra_acceptance", "extra_interface_inventory"] and len(plan.extras) == 1 + len(DEVELOPER_EXTRAS)
+    assert plan.extras[-3].columns == ["#", "Step", "Depends on", "Owner"]
+
+
+def test_operations_table_in_the_brief_becomes_a_table_extra():
+    from sdgen.plan import merge_plan
+
+    blueprint, manifest = _developer_template()
+    brief = Brief(subject="L", operations="Failure\tWhat happens\tAlert to\nLogin fails\tretry 3 times\tSupport\n\nMonitoring\nOne message per file.")
+    data = {"extras": [{"key": "operations", "title": "Error handling and operations", "kind": "text"}]}
+    plan = merge_plan(default_plan(blueprint, manifest=manifest), data, blueprint, set(), manifest=manifest, brief=brief)
+    extra = plan.extras[0]
+    assert extra.key == "extra_operations" and extra.kind == "table" and extra.columns == ["Failure", "What happens", "Alert to"] and extra.prototype == "grid"
+    prose = merge_plan(default_plan(blueprint, manifest=manifest), data, blueprint, set(), manifest=manifest, brief=Brief(subject="L", operations="Retry three times, then alert."))
+    assert prose.extras[0].kind == "text"
+
+
 def test_plan_titles_are_capped_at_a_word_boundary(sample_deck, tmp_path):
     from sdgen.plan import merge_plan
 

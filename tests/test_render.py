@@ -309,6 +309,22 @@ def test_extra_slides_are_cloned_from_a_prototype(sample_deck, tmp_path):
     assert tail.slide_keys == ["", "", "extra_acc"] and any("placeholder shown" in str(i) for i in tail.issues)
 
 
+def test_extra_table_gets_the_columns_of_its_field(sample_deck, tmp_path):
+    from sdgen.render import ExtraSlide
+
+    manifest = _fixture_manifest(sample_deck)
+    manifest.slides.exclude = []
+    columns = ["#", "Party", "Flow", "Direction", "Source", "Target", "Encryption", "Cut-off"]
+    spec = manifest.field("scope").model_copy(update={"key": "extra_inv", "label": "Interface inventory", "columns": columns})
+    rows = [{"#": "1", "Party": "BoA", "Flow": "Lockbox", "Direction": "in", "Source": "a", "Target": "b", "Encryption": "PGP", "Cut-off": "09:00"}]
+    result = render(sample_deck, manifest, Content(), tmp_path / "wide.pptx", extras=[ExtraSlide(key="extra_inv", title="Interface inventory", spec=spec, value=rows, before=2)])
+    assert not result.errors
+    table = next(s for s in Presentation(str(tmp_path / "wide.pptx")).slides[1].shapes if s.has_table).table
+    assert [c.text for c in table.rows[0].cells] == columns and [c.text for c in table.rows[1].cells] == list(rows[0].values())
+    original = next(s for s in Presentation(str(sample_deck)).slides[0].shapes if s.has_table)
+    assert sum(c.width for c in table.columns) == sum(c.width for c in original.table.columns)
+
+
 def test_flows_are_drawn_into_the_image_slot(sample_deck, tmp_path):
     from pptx.shapes.picture import Picture
 

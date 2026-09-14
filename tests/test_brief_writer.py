@@ -120,6 +120,53 @@ def test_redraft_section_returns_details_too(sample_deck, tmp_path):
     assert fields["business_need_details"] == "Long version." and "old long" in llm.prompts[0]
 
 
+def test_table_rows_parses_tab_and_pipe_tables():
+    from sdgen.brief import table_rows
+
+    assert table_rows("Failure\tWhat happens\tAlert to\nLogin fails\tretry\tSupport\nHost key\tdrop\n\nprose after the table") == (["Failure", "What happens", "Alert to"], [["Login fails", "retry", "Support"], ["Host key", "drop", ""]])
+    assert table_rows("| Flow | Pattern |\n|---|---|\n| Lockbox | BOA_*.txt |") == (["Flow", "Pattern"], [["Lockbox", "BOA_*.txt"]])
+    assert table_rows("decision one | owner | decided\ndecision two | owner | open") is None and table_rows("just prose") is None
+
+
+def test_pasted_tables_and_structured_facts_fill_developer_tables_mechanically():
+    from sdgen.blueprint import Blueprint, Section
+    from sdgen.mechanical import mechanical_fills
+
+    manifest = Manifest(
+        name="m",
+        fields=[
+            FieldSpec(key="extra_operations", label="Operations", kind="table", columns=["Failure", "What happens", "Alert to"], bindings=[Binding(slide=2, shape=ShapeRef(id=4))]),
+            FieldSpec(key="extra_interface_inventory", label="Interface inventory", kind="table", columns=["#", "Party", "Flow", "Direction", "Source", "Target", "Encryption", "Cut-off"], bindings=[Binding(slide=2, shape=ShapeRef(id=4))]),
+            FieldSpec(key="extra_connectivity", label="Connectivity", kind="table", columns=["Environment", "Endpoint", "Host", "Port", "Account", "Key or cert", "Network path"], bindings=[Binding(slide=2, shape=ShapeRef(id=4))]),
+        ],
+    )
+    blueprint = Blueprint(name="m", sections=[Section(key=k, title=k, kind="table", slide=2, fields=[k]) for k in ("extra_operations", "extra_interface_inventory", "extra_connectivity")])
+    brief = BRIEF.model_copy(update={"operations": "Failure\tWhat happens\tAlert to\nLogin fails\tretry\tSupport", "facts": {"interfaces": "BoA | Lockbox | inbound | reception/Inbound/BOA | BOA/IN | PGP | 09:00\n- JPMC | ACH | outbound | JPMC_1000/OUT | emission/Outbound/JPMC | none"}})
+    result = mechanical_fills(brief, blueprint, manifest)
+    assert result.fields["extra_operations"] == [{"Failure": "Login fails", "What happens": "retry", "Alert to": "Support"}]
+    rows = result.fields["extra_interface_inventory"]
+    assert rows[0] == {"#": "1", "Party": "BoA", "Flow": "Lockbox", "Direction": "inbound", "Source": "reception/Inbound/BOA", "Target": "BOA/IN", "Encryption": "PGP", "Cut-off": "09:00"}
+    assert rows[1]["#"] == "2" and rows[1]["Party"] == "JPMC" and rows[1]["Cut-off"] == ""
+    assert "extra_connectivity" not in result.fields and any("from the table in the brief" in n for n in result.notes)
+
+
+def test_developer_slides_get_their_own_writer_call(sample_deck, tmp_path):
+    from sdgen.plan import ExtraSection
+    from sdgen.writer import group_sections
+
+    entry = _template(sample_deck, tmp_path)
+    extras = [ExtraSection(key="extra_build_checklist", title="Build checklist", kind="table", columns=["#", "Step", "Depends on", "Owner"], prototype=entry.blueprint.sections[0].key)]
+    result = draft_content(BRIEF, entry.blueprint, entry.manifest, MockLLM(), extras=extras)
+    assert set(result.content.fields["extra_build_checklist"][0]) == {"#", "Step", "Depends on", "Owner"}
+    from sdgen.plan import extended_blueprint, extended_manifest
+
+    sections = writable_sections(extended_blueprint(entry.blueprint, extras), extended_manifest(entry.manifest, entry.blueprint, extras))
+    groups = dict(group_sections(sections))
+    assert [s["section"] for s in groups["developer"]] == ["extra_build_checklist"]
+    system, user = build_prompt(BRIEF, entry.blueprint, entry.manifest, sections=groups["developer"], group="developer")
+    assert "[TBC] keeps the row" in user and "dependency order" in user
+
+
 def test_label_prefixes_are_stripped_in_every_punctuation_form():
     from sdgen.writer import strip_label_prefixes
 

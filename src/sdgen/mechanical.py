@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from sdgen.blueprint import Blueprint
-from sdgen.brief import Brief, looks_joined, split_joined
+from sdgen.brief import Brief, looks_joined, split_joined, table_rows
 from sdgen.content import Content
 from sdgen.manifest import FieldSpec, Manifest
 
@@ -18,6 +18,8 @@ LINK_RE = re.compile(r"link|url", re.IGNORECASE)
 INSIGHT_RE = re.compile(r"insight|summary|headline", re.IGNORECASE)
 NUMBER_RE = re.compile(r"\d[\d,.]*")
 TBC = "[TBC]"
+PASTED_TABLE_FIELDS = ("operations", "acceptance_criteria")  # brief fields that may hold a pasted table with a header
+FACT_TABLES = {"extra_interface_inventory": "interfaces", "extra_connectivity": "endpoints", "extra_file_naming": "naming"}
 
 
 class MechanicalResult(BaseModel):
@@ -63,6 +65,12 @@ def _fill(spec: FieldSpec, kind: str, brief: Brief, original: Content | None) ->
             return value, "kept from the template"
     if spec.kind == "table":
         columns = " ".join(spec.columns)
+        pasted = _pasted_rows(spec.columns, brief)
+        if pasted is not None:
+            return pasted, "from the table in the brief"
+        fact_key = FACT_TABLES.get(spec.key, "")
+        if fact_key and facts.get(fact_key, "").strip():
+            return _rows_from_fact(facts[fact_key], spec.columns), "from facts"
         if is_reference_columns(spec.columns) and brief.apis_references.strip():
             return reference_rows(brief.apis_references, spec.columns), "from APIs and references"
         if VERSION_RE.search(columns):
@@ -81,6 +89,34 @@ def _fill(spec: FieldSpec, kind: str, brief: Brief, original: Content | None) ->
     if kind == "cover" and brief.subject.strip():
         return _cover_lines(brief), "from the subject and facts"
     return None, ""
+
+
+def _pasted_rows(columns: list[str], brief: Brief) -> list[dict[str, str]] | None:
+    """Rows of a table pasted into the brief whose header matches the field's columns."""
+    wanted = [_norm(c) for c in columns]
+    for field_key in PASTED_TABLE_FIELDS:
+        parsed = table_rows(getattr(brief, field_key, ""))
+        if parsed is not None and [_norm(c) for c in parsed[0]] == wanted:
+            return [dict(zip(columns, row)) for row in parsed[1]]
+    return None
+
+
+def _rows_from_fact(text: str, columns: list[str]) -> list[dict[str, str]]:
+    """One row per fact line, cells by position; a '#' column counts the rows."""
+    rows = []
+    positional = [c for c in columns if c.strip() != "#"]
+    for index, line in enumerate(_lines(text), 1):
+        parts = [p.strip() for p in line.lstrip("-*• ").split("|")]
+        row = {c: (parts[i] if i < len(parts) else "") for i, c in enumerate(positional)}
+        for column in columns:
+            if column.strip() == "#":
+                row[column] = str(index)
+        rows.append({c: row.get(c, "") for c in columns})
+    return rows
+
+
+def _norm(text: str) -> str:
+    return " ".join(str(text).split()).lower()
 
 
 def _version_row(columns: list[str], facts: dict[str, str]) -> dict[str, str]:

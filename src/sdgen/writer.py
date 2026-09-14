@@ -14,6 +14,7 @@ from sdgen.llm import LLMClient, get_llm
 from sdgen.manifest import Manifest
 from sdgen.material import material_corpus, material_text
 from sdgen.mechanical import mechanical_fills
+from sdgen.plan import DEVELOPER_KEYS
 
 SKIP_KINDS = {"static", "divider"}
 EXAMPLE_CHARS = 400
@@ -74,6 +75,16 @@ ROUTING = {
         "Decisions come from the decisions log, numbered. Open questions have their own slide built from the brief's open questions field; write them only into a slide titled for them.",
         "Operations and error handling come from the operations text.",
         "Build notes hold what a developer needs that fits nowhere else: file naming, cut-off times, reprocessing steps, configuration keys, as short labelled paragraphs (Label: text).",
+    ],
+    "developer": [
+        "These tables are what the developer builds from: one row per item, taken from the approach, the operations text, the facts and the reference material.",
+        "Interface inventory: one row per party and flow from the scope and the counterparts; direction inbound or outbound; encryption as the brief states it.",
+        "Configuration: one row per parameter a developer sets (adapter, folders, polling, data store, partner directory, keystore, alerts) with the value the brief gives.",
+        "Connectivity: one row per endpoint per environment from the environments fact; host, port, account and key are [TBC] unless the brief states them.",
+        "Security and access: one row per folder or resource and account; Read, Write and Move or delete as yes, no or [TBC].",
+        "Cutover steps in order; RACI per activity the brief names (keys, endpoints, folders, runs); build checklist in dependency order: endpoints and access first, keys second, build last.",
+        "Assumptions and constraints from the investigation details, each with a type and an owner; non-functional rows from the non-functional facts.",
+        "Never invent hosts, ports, accounts, folders, names or numbers: [TBC] keeps the row.",
     ],
 }
 
@@ -349,7 +360,7 @@ def writable_sections(
 
 
 def group_sections(sections: list[dict]) -> list[tuple[str, list[dict]]]:
-    groups: dict[str, list[dict]] = {"overview": [], "integration": [], "quality": []}
+    groups: dict[str, list[dict]] = {"overview": [], "integration": [], "quality": [], "developer": []}
     for section in sections:
         groups[_group_of(section)].append(section)
     return [(name, members) for name, members in groups.items() if members]
@@ -457,6 +468,8 @@ def _squash(text: str) -> str:
 
 def _group_of(section: dict) -> str:
     text = f"{section['title']} {section['kind']}"
+    if section["section"] in DEVELOPER_KEYS:
+        return "developer"
     if section["kind"] in ("cover",):
         return "overview"
     if QUALITY_RE.search(text) or section["kind"] == "references":

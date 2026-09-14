@@ -28,7 +28,7 @@ DEVELOPER_FIELDS = {"acceptance_criteria", "operations", "non_functional", "deci
 FACT_PREFIX = "fact:"
 # Cells per entry of the "one per line" fields and facts, to spot several entries pasted on one line.
 SEPARATED_FIELDS: dict[str, int] = {"apis_references": 3, "decisions_log": 3, "open_questions": 2}
-FACT_CELLS: dict[str, int] = {"systems": 3, "parties": 2, "targets": 2, "effort": 5, "investment": 3, "sap_objects": 3}
+FACT_CELLS: dict[str, int] = {"systems": 3, "parties": 2, "targets": 2, "effort": 5, "investment": 3, "sap_objects": 3, "interfaces": 7, "endpoints": 7, "naming": 4}
 
 
 class FactSpec(BaseModel):
@@ -56,6 +56,9 @@ FACT_CATALOGUE: list[FactSpec] = [
     FactSpec(key="effort", label="Effort by role", guidance="One per line: role | deliverable | month-1 hours | month-2 hours | month-n hours.", multiline=True),
     FactSpec(key="investment", label="Investment", guidance="One per line: type | internal | external.", multiline=True),
     FactSpec(key="sap_objects", label="SAP objects", guidance="One per line: name | type | purpose. Fiori apps, reports, programs, configuration objects.", multiline=True),
+    FactSpec(key="interfaces", label="Interfaces", guidance="One per line: party | flow | direction | source | target | encryption | cut-off. Fills the interface inventory slide without the model.", multiline=True),
+    FactSpec(key="endpoints", label="Endpoints per environment", guidance="One per line: environment | endpoint | host | port | account | key or cert | network path. Fills the connectivity slide without the model.", multiline=True),
+    FactSpec(key="naming", label="File naming", guidance="One per line: flow | pattern | temp name | example. Fills the file naming slide without the model.", multiline=True),
     FactSpec(key="environments", label="Environments", guidance="For example DEV, QAS, PRD and the tenants involved."),
     FactSpec(key="security", label="Security", guidance="Authentication, encryption, certificates, data classification."),
     FactSpec(key="retention", label="Retention", guidance="How long files and logs are kept and where."),
@@ -132,7 +135,8 @@ def fact_questions(blueprint: Blueprint | None, manifest: Manifest) -> list[Fact
             for key in ("design_start", "design_end", "version"):
                 need(key, title)
         if section.kind == "diagram":
-            need("systems", title)
+            for key in ("systems", "interfaces", "endpoints", "naming"):
+                need(key, title)
         for field_key in section.fields:
             spec = manifest.field(field_key)
             if spec is None:
@@ -263,6 +267,21 @@ def brief_lint(brief: Brief) -> list[tuple[str, str]]:
         if looks_joined(value, cells):
             found.append((f"{FACT_PREFIX}{key}", f"{FACTS_BY_KEY[key].label}: expects one entry per line but holds one line with {value.count('|')} separators."))
     return found
+
+
+def table_rows(text: str) -> tuple[list[str], list[list[str]]] | None:
+    """A pasted table with a header line: tab-separated as copied from Excel or a slide, or a Markdown pipe table."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    if any("\t" in line for line in lines):
+        rows = [[cell.strip() for cell in line.split("\t")] for line in lines if "\t" in line]
+    elif lines and all(line.strip().startswith("|") for line in lines):
+        rows = [[cell.strip() for cell in line.strip().strip("|").split("|")] for line in lines if not re.fullmatch(r"[|\s:\-]+", line)]
+    else:
+        return None
+    if len(rows) < 2 or len(rows[0]) < 2:
+        return None
+    width = len(rows[0])
+    return rows[0], [(row + [""] * width)[:width] for row in rows[1:]]
 
 
 def _cells(line: str) -> list[str]:

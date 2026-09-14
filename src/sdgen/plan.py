@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from sdgen.analyze import slugify
 from sdgen.blueprint import TITLE_MAX, Blueprint, Section, cap_title, composite_fields
-from sdgen.brief import Brief, dump_brief, looks_joined, split_joined
+from sdgen.brief import Brief, dump_brief, looks_joined, split_joined, table_rows
 from sdgen.content import detail_key
 from sdgen.flow import FlowSpec
 from sdgen.grounding import GROUNDING_RULE
@@ -35,6 +35,21 @@ EXTRA_DEFAULTS = {
     "decisions_log": ("Decisions", "table", ["Ref", "Decision", "Owner", "Status"]),
     "build_notes": ("Build Notes", "text", []),
 }
+# The slides a developer builds from, offered for every design as ticked extras: key, title, columns, what the rows hold.
+DEVELOPER_EXTRAS: list[tuple[str, str, list[str], str]] = [
+    ("extra_interface_inventory", "Interface inventory", ["#", "Party", "Flow", "Direction", "Source", "Target", "Encryption", "Cut-off"], "One row per party and flow: what moves where, encrypted or not, by when."),
+    ("extra_configuration", "Configuration", ["Component", "Parameter", "Value", "Note"], "Adapter, folder, polling, data store, partner directory, keystore and alert parameters a developer sets."),
+    ("extra_file_naming", "File naming", ["Flow", "Pattern", "Temp name", "Example"], "Names on both sides, including the temporary name while a file is written."),
+    ("extra_connectivity", "Connectivity and environments", ["Environment", "Endpoint", "Host", "Port", "Account", "Key or cert", "Network path"], "Every endpoint per environment; [TBC] where the brief is silent."),
+    ("extra_security_access", "Security and access", ["Endpoint", "Folder or resource", "Account", "Read", "Write", "Move or delete"], "Least privilege per folder or resource and account."),
+    ("extra_cutover", "Cutover and dual run", ["Step", "When", "Owner", "Check"], "The steps to go live, in order, with who checks what."),
+    ("extra_raci", "RACI", ["Activity", "R", "A", "C", "I"], "Responsible, accountable, consulted and informed for keys, endpoints, folders and runs."),
+    ("extra_build_checklist", "Build checklist", ["#", "Step", "Depends on", "Owner"], "Build steps in dependency order: endpoints and access first, keys second, build last."),
+    ("extra_assumptions", "Assumptions and constraints", ["#", "Statement", "Type", "Owner", "Status"], "Assumptions and constraints from the investigation, each with an owner."),
+    ("extra_nfr", "Non-functional requirements", ["Aspect", "Requirement", "Source"], "Volumes, frequency, sizes, security, retention, environments, availability."),
+]
+DEVELOPER_KEYS = {key for key, _, _, _ in DEVELOPER_EXTRAS}
+OPERATIONS_RE = re.compile(r"operation|error handling|runbook", re.IGNORECASE)
 
 PLAN_SCHEMA = {
     "type": "object",
@@ -113,6 +128,9 @@ Propose extra slides only when the brief has content for them: an acceptance cri
 developer detail such as file naming, cut-off times, reprocessing steps and configuration keys,
 when the brief carries operations, investigation or non-functional detail. Place extras before
 the effort estimation. Open questions get their own slide from the brief; never propose one.
+The developer slides (interface inventory, configuration, file naming, connectivity, security and
+access, cutover, RACI, build checklist, assumptions, non-functional requirements) are added
+automatically: do not propose them.
 For every diagram section in use without an uploaded image, add a flow entry with the title
 and purpose of the diagram to draw from the brief.
 The outline may end with template texts that belong to no field. List in "clear" the ones
@@ -179,8 +197,18 @@ class SectionPlan(BaseModel):
         return cls.model_validate(yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {})
 
 
-def default_plan(blueprint: Blueprint, images: set[str] | None = None) -> SectionPlan:
-    """Every section applies; sources follow the section kind."""
+def developer_extras(blueprint: Blueprint, manifest: Manifest | None) -> list[ExtraSection]:
+    """The catalogue of developer slides, as ticked extras, for a template that has a plain table slide to clone."""
+    extras = []
+    for key, title, columns, reason in DEVELOPER_EXTRAS:
+        prototype = _prototype(blueprint, "table", list(columns), manifest, allow_composite=False)
+        if prototype:
+            extras.append(ExtraSection(key=key, title=title, kind="table", columns=list(columns), prototype=prototype, before=_before(blueprint), reason=reason))
+    return extras
+
+
+def default_plan(blueprint: Blueprint, images: set[str] | None = None, manifest: Manifest | None = None) -> SectionPlan:
+    """Every section applies; sources follow the section kind; with a manifest the developer slides come along."""
     images = images or set()
     decisions = []
     flows = []
@@ -196,7 +224,7 @@ def default_plan(blueprint: Blueprint, images: set[str] | None = None) -> Sectio
             if not has_image:
                 flows.append(FlowRequest(section=section.key, title=section.title, purpose=section.ask))
         decisions.append(SectionDecision(key=section.key, use=True, source=source))
-    return SectionPlan(decisions=decisions, flows=flows)
+    return SectionPlan(decisions=decisions, flows=flows, extras=developer_extras(blueprint, manifest) if manifest is not None else [])
 
 
 def plan_sections(
@@ -207,9 +235,9 @@ def plan_sections(
     images: set[str] | None = None,
     leftovers: list[Leftover] | None = None,
 ) -> SectionPlan:
-    base = default_plan(blueprint, images)
+    base = default_plan(blueprint, images, manifest)
     data = llm.complete_json(SYSTEM_PROMPT, _prompt(brief, blueprint, manifest, images or set(), leftovers or []), PLAN_SCHEMA, name="section_plan")
-    plan = merge_plan(base, data, blueprint, images or set(), leftovers or [], manifest)
+    plan = merge_plan(base, data, blueprint, images or set(), leftovers or [], manifest, brief)
     plan.model = str(getattr(llm, "label", llm.name))
     return plan
 
@@ -245,6 +273,7 @@ def merge_plan(
     images: set[str],
     leftovers: list[Leftover] | None = None,
     manifest: Manifest | None = None,
+    brief: Brief | None = None,
 ) -> SectionPlan:
     sections = {s.key: s for s in blueprint.sections}
     plan = base.model_copy(deep=True)
@@ -274,6 +303,11 @@ def merge_plan(
         columns = [str(c).strip() for c in (item.get("columns") or []) if str(c).strip()] if kind == "table" else []
         if kind == "table" and not columns:
             columns = next((c for k, (t, kd, c) in EXTRA_DEFAULTS.items() if k.split("_")[0] in key or k.split("_")[0] in title.lower()), ["Ref", "Item", "Notes"])
+        pasted = table_rows(brief.operations) if brief is not None and OPERATIONS_RE.search(f"{key} {title}") else None
+        if pasted is not None:
+            kind, columns = "table", pasted[0]  # the brief holds the operations as a table: the slide keeps its columns
+        if key in DEVELOPER_KEYS or slugify(title) in {slugify(t) for _, t, _, _ in DEVELOPER_EXTRAS}:
+            continue  # the catalogue version of this slide comes along anyway
         before = str(item.get("before") or "").strip()
         extras.append(
             ExtraSection(
@@ -286,7 +320,7 @@ def merge_plan(
                 reason=str(item.get("reason") or "").strip(),
             )
         )
-    plan.extras = extras
+    plan.extras = extras + [e for e in base.extras if e.key in DEVELOPER_KEYS]
     flows = []
     for item in data.get("flows") or []:
         key = str(item.get("section") or "")
