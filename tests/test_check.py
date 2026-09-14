@@ -53,11 +53,21 @@ def test_flags_flow_shapes_over_the_title_and_overlapping_nodes():
     _box(slide, "Flow x node a", 1.0, 3.0, 2.0, 0.7, "A")
     _box(slide, "Flow x node b", 2.0, 3.2, 2.0, 0.7, "B")
     _box(slide, "Flow x node c", 5.0, 3.0, 2.0, 0.7, "C")
-    _box(slide, "Flow x edge 1 label", 5.5, 3.1, 0.6, 0.5, "sFTP")
+    label = _box(slide, "Flow x edge 1 label", 5.5, 3.1, 0.6, 0.5, "sFTP")
+    label.text_frame.paragraphs[0].runs[0].font.size = Pt(8)
     findings = check_presentation(prs)
     assert _codes(findings) == ["overlap", "overlap", "overlap"]
     messages = [f.message for f in findings]
     assert any("node a' overlaps 'Flow x node b'" in m for m in messages) and any("label 'sFTP' sits on" in m for m in messages) and "the drawing overlaps the title" in messages
+
+    # A node whose label does not fit is measured like any other box.
+    tight_deck = _deck()
+    crammed = _titled(tight_deck, "Nodes")
+    tight = _box(crammed, "Flow y node long", 1.0, 2.0, 0.8, 0.3, "Integration Support and Business")
+    for paragraph in tight.text_frame.paragraphs:
+        for run in paragraph.runs:
+            run.font.size = Pt(14)
+    assert [(f.code, f.shape) for f in check_presentation(tight_deck)] == [("overflow", "Flow y node long")]
 
 
 def test_flags_empty_placeholders_and_empty_slides():

@@ -110,8 +110,13 @@ def _check_slide(slide, number: int, width: int, height: int, theme, title_max: 
             if len(data) <= 1 and not VERSION_RE.search(header):
                 findings.append(Finding(level="info", slide=number, shape=shape.name, code="thin_table", message=f"table '{shape.name}' has {len(data)} data row(s)"))
             continue
-        if shape.shape_type == MSO_SHAPE_TYPE.PICTURE or _has_image(shape) or shape.name.startswith(FLOW_PREFIX):
+        if shape.shape_type == MSO_SHAPE_TYPE.PICTURE or _has_image(shape):
             content = True
+            continue
+        if shape.name.startswith(FLOW_PREFIX):
+            content = True
+            if has_text and effective_overflow_ratio(shape, theme) > OVERFLOW_TOLERANCE:
+                findings.append(Finding(slide=number, shape=shape.name, code="overflow", message=f"'{shape.name}' needs about {int(effective_overflow_ratio(shape, theme) * 100)} percent of its box height"))
             continue
         if shape.is_placeholder and not is_title and not has_text and getattr(shape, "has_text_frame", False):
             findings.append(Finding(slide=number, shape=shape.name, code="empty_box", message=f"placeholder '{shape.name}' is empty"))

@@ -20,6 +20,7 @@ from sdgen.llm import LLMClient
 from sdgen.material import material_text
 from sdgen.grounding import GROUNDING_RULE
 from sdgen.palette import EDGE, GREY_FILL, SAP_BLUE, SAP_DARK, SAP_FILL, SLATE, SUBTITLE, TEXT, WHITE, rgb
+from sdgen.textmetrics import FontSpec, line_height_pt, text_width_pt, wrapped_lines
 from sdgen.references import Pack, candidates, labels, lookup, matching
 from sdgen.references import pack as reference_pack
 
@@ -47,6 +48,10 @@ SUBTITLE_MIN_HEIGHT = Inches(0.55)
 MARK_WIDTH = Inches(0.4)
 LAYOUTS = ("bands", "columns", "sequence")
 SEQUENCE_MAX_NODES = 4
+EMU_PER_PT = 12700
+LABEL_SIZES = (11.0, 10.0, 9.0, 8.0, 7.0)
+MIN_LABEL_PT = 6.0
+WRAP_SLACK = 0.88  # PowerPoint wraps a rounded box earlier than its box width suggests
 SEQUENCE_MIN_BUNDLE = 3  # this many edges between one pair of nodes read better as a sequence
 
 FLOW_SCHEMA = {
@@ -548,8 +553,9 @@ def _lane_box(slide, x: int, y: int, width: int, height: int, title: str, sap: b
     paragraph = frame.paragraphs[0]
     paragraph.text = title
     paragraph.alignment = PP_ALIGN.LEFT
+    heading_pt, _ = fitting_size(title, "", width - frame.margin_left - PAD, HEADER)
     for run in paragraph.runs:
-        run.font.size = Pt(9) if len(title) > 24 else Pt(10)  # long system names still fit the header on a narrow lane
+        run.font.size = Pt(min(10.0, heading_pt))  # long system names still fit the header on a narrow lane
         run.font.bold = True
         run.font.color.rgb = rgb(SAP_DARK if sap else SLATE)
     created = [shape]
@@ -603,22 +609,39 @@ def _node(slide, node: FlowNode, x: int, y: int, width: int, height: int, prefix
         picture.name = f"{prefix} icon {node.id}"
         if created is not None:
             created.append(picture)
+    subtitle = node.subtitle if node.subtitle and height >= SUBTITLE_MIN_HEIGHT else ""
+    label_pt, subtitle_pt = fitting_size(node.label, subtitle, width - frame.margin_left - frame.margin_right, height - frame.margin_top - frame.margin_bottom)
     paragraph = frame.paragraphs[0]
     paragraph.text = node.label
     paragraph.alignment = PP_ALIGN.CENTER
-    size = Pt(11) if len(node.label) <= 24 else Pt(9)
     for run in paragraph.runs:
-        run.font.size = size
+        run.font.size = Pt(label_pt)
         run.font.bold = True
         run.font.color.rgb = rgb(TEXT)
-    if node.subtitle and height >= SUBTITLE_MIN_HEIGHT:
+    if subtitle:
         second = frame.add_paragraph()
-        second.text = node.subtitle
+        second.text = subtitle
         second.alignment = PP_ALIGN.CENTER
         for run in second.runs:
-            run.font.size = Pt(8)
+            run.font.size = Pt(subtitle_pt)
             run.font.color.rgb = rgb(SUBTITLE)
     return shape
+
+
+def fitting_size(label: str, subtitle: str, width: int, height: int) -> tuple[float, float]:
+    """Largest of the label sizes whose longest word fits the width and whose lines fit the height."""
+    width_pt, height_pt = max(width, 1) / EMU_PER_PT * WRAP_SLACK, max(height, 1) / EMU_PER_PT
+    for size in LABEL_SIZES:
+        small = max(MIN_LABEL_PT, size - 3)
+        spec = FontSpec(size_pt=size, bold=True)
+        longest = max((text_width_pt(word, spec) for word in label.split()), default=0.0)
+        needed = wrapped_lines(label, width_pt, spec) * line_height_pt(spec)
+        if subtitle:
+            sub = FontSpec(size_pt=small)
+            needed += wrapped_lines(subtitle, width_pt, sub) * line_height_pt(sub)
+        if longest <= width_pt and needed <= height_pt:
+            return size, small
+    return MIN_LABEL_PT, MIN_LABEL_PT
 
 
 def _connector(slide, shape_a, shape_b, sites: tuple[int, int], points: list[tuple[int, int]], edge: FlowEdge, name: str):
