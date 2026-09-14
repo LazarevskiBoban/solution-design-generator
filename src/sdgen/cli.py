@@ -209,6 +209,20 @@ def add(name: str, deck: Path, manifest_path: Path | None, keep_content: bool, t
 
 @main.command()
 @click.argument("document", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def check(document: Path) -> None:
+    """List what a generated deck gets wrong: shapes outside the slide, overlaps, empty slides, thin tables, long titles, overflowing text."""
+    from sdgen.check import check_deck
+
+    findings = check_deck(document)
+    for finding in findings:
+        click.echo(f"{finding.level} [slide {finding.slide}] {finding.code}: {finding.message}")
+    click.echo(f"{document}: {len(findings)} finding(s)")
+    if any(f.level == "error" for f in findings):
+        raise SystemExit(1)
+
+
+@main.command()
+@click.argument("document", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--pdf", type=click.Path(dir_okay=False, path_type=Path), help="Also export a PDF to this path.")
 def preview(document: Path, pdf: Path | None) -> None:
     """Open a generated deck in PowerPoint to check it, optionally exporting a PDF."""

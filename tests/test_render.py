@@ -129,6 +129,16 @@ def test_overflow_continues_on_cloned_slides(sample_deck, tmp_path):
     assert any("continued on" in str(i) for i in result.issues)
 
 
+def test_render_appends_check_findings(sample_deck, tmp_path):
+    manifest = _fixture_manifest(sample_deck)
+    manifest.field("first_point").bindings[0].max_chars = 40
+    content = Content(fields={"first_point": "\n".join(f"- point number {i} with some words" for i in range(1, 30))})
+    checked = render(sample_deck, manifest, content, tmp_path / "checked.pptx", continue_on=[])
+    assert any(i.message.startswith("check overflow") and i.slide == 1 and i.level == "warning" for i in checked.issues)
+    quiet = render(sample_deck, manifest, content, tmp_path / "quiet.pptx", continue_on=[], check=False)
+    assert not any(i.message.startswith("check ") for i in quiet.issues)
+
+
 def test_continuation_is_limited_to_listed_slides(sample_deck, tmp_path):
     manifest = _fixture_manifest(sample_deck)
     manifest.slides.exclude = []

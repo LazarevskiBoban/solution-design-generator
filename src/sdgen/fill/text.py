@@ -411,6 +411,18 @@ def overflow_ratio(shape, theme: tuple[str, str] | None = None) -> float:
     return measure.ratio if measure is not None else 0.0
 
 
+def effective_overflow_ratio(shape, theme: tuple[str, str] | None = None) -> float:
+    """The overflow ratio once the font scale of a stored shrink-to-fit is applied."""
+    measure = measure_shape(shape, theme=theme)
+    if measure is None:
+        return 0.0
+    autofit = shape.text_frame._txBody.bodyPr.find(qn("a:normAutofit"))
+    if autofit is None:
+        return measure.ratio
+    scale = int(autofit.get("fontScale", "100000")) / 100000 * (1 - int(autofit.get("lnSpcReduction", "0")) / 100000)
+    return measure.ratio * scale
+
+
 def capacity_chars_of(shape, theme: tuple[str, str] | None = None, prefix_len: int = 0, default_pt: float = DEFAULT_FONT_PT) -> int | None:
     """Characters that fit the box comfortably, judged by the font and spacing of its first paragraph."""
     if not getattr(shape, "has_text_frame", False) or shape.width is None or shape.height is None:

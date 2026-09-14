@@ -624,7 +624,7 @@ def design_page() -> None:
             generate = st.button("Generate document", type="primary", key=f"{state_key}:generate")
         if preview_clicked:
             output, response, keyed = _render_design(entry, store, design, subject, name, missing)
-            notes = [str(i) for i in response.issues if not str(i).startswith("info")]
+            notes = [str(i) for i in response.issues if not str(i).startswith("info") and not i.message.startswith("check ")]
             overflows: dict[int, list[str]] = {}
             pictures: dict[int, bytes] = {}
             try:
@@ -837,6 +837,8 @@ def _slide_viewer(state_key: str, entry) -> None:
         st.caption(f"Slide {index + 1} of {len(shown)}: {item['title']}" + (". Edited since the picture was taken, press Refresh slide." if item["section"] in stale else ""))
         if item.get("overflow"):
             st.error("PowerPoint lays out more text than fits the box: " + ", ".join(item["overflow"]) + ". Shorten the text or split it.")
+        if item.get("checks"):
+            st.warning("Check: " + "; ".join(item["checks"]) + ".")
         if section is None:
             return
         order = _section_order(design, blueprint)
@@ -941,6 +943,10 @@ def _board_entries(entry, design: Design, response, current: dict, pictures: dic
     by_slide = {s.slide: s for s in blueprint.sections if not s.key.startswith("extra_")}
     by_key = {s.key: s for s in blueprint.sections}
     keys = response.slide_keys or [""] * len(response.slide_map)
+    checks: dict[int, list[str]] = {}
+    for issue in response.issues:
+        if issue.slide and issue.level != "info" and issue.message.startswith("check "):
+            checks.setdefault(issue.slide, []).append(issue.message[len("check ") :])
     entries = []
     for position, (number, slide_key) in enumerate(zip(response.slide_map, keys), 1):
         detail = slide_key if slide_key and is_detail_key(slide_key) else ""
@@ -953,6 +959,7 @@ def _board_entries(entry, design: Design, response, current: dict, pictures: dic
             "png": pictures.get(position),
             "text": _slide_text(section, current) if section else "",
             "overflow": overflows.get(position, []),
+            "checks": checks.get(position, []),
         }
         if detail:
             spec = entry.manifest.field(stem_of(detail))
@@ -1031,9 +1038,14 @@ def _overflow_interest(entry, response, keyed: dict[str, str] | None = None) -> 
 
 
 def _with_overflow_note(entries: list[dict], notes: list[str]) -> list[str]:
-    kept = [n for n in notes if not n.startswith("Text overflows")]
+    kept = [n for n in notes if not n.startswith("Text overflows") and not n.startswith("Check pass")]
     count = sum(1 for e in entries if e.get("overflow"))
-    return kept + ([f"Text overflows its box on {count} slide(s); the viewer names the boxes in red under those slides."] if count else [])
+    checked = [e for e in entries if e.get("checks")]
+    if count:
+        kept.append(f"Text overflows its box on {count} slide(s); the viewer names the boxes in red under those slides.")
+    if checked:
+        kept.append(f"Check pass: {sum(len(e['checks']) for e in checked)} finding(s) on {len(checked)} slide(s); the viewer lists them under those slides.")
+    return kept
 
 
 def _section_order(design: Design, blueprint: Blueprint) -> list[str]:

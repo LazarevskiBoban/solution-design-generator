@@ -11,6 +11,7 @@ from pptx.util import Inches
 from pydantic import BaseModel, Field
 
 from sdgen.blueprint import cap_title, clean_title
+from sdgen.check import check_presentation
 from sdgen.content import Content, ImageValue, detail_key, images_of, parse_pipe_table
 from sdgen.diagrams import remove_shapes
 from sdgen.fill.image import replace_picture
@@ -41,6 +42,7 @@ def placeholder_text(label: str) -> str:
 class RenderIssue(BaseModel):
     level: Literal["info", "warning", "error"] = "warning"
     field: str | None = None
+    shape: str = ""
     slide: int | None = None
     message: str
 
@@ -90,6 +92,7 @@ def render(
     clear_shapes: list[tuple[int, int]] | None = None,
     subject_slides: set[int] | list[int] | None = None,
     details: dict[str, FieldSpec] | None = None,
+    check: bool = True,
 ) -> RenderResult:
     prs = Presentation(str(template))
     slides = list(prs.slides)
@@ -212,14 +215,20 @@ def render(
         else:
             issues.append(RenderIssue(slide=index, message="excluded slide does not exist"))
 
+    slide_map = _slide_map(prs, numbers)
+    slide_keys = [extra_ids.get(slide.slide_id, "") for slide in prs.slides]
+    if check:
+        drawn_on: dict[int, FlowSpec] = {}
+        for key in drawn:
+            spec = manifest.field(key)
+            template_number = spec.bindings[0].slide if spec is not None and spec.bindings else 0
+            for position, (number, slide_key) in enumerate(zip(slide_map, slide_keys), 1):
+                if number == template_number and not slide_key:
+                    drawn_on[position] = (flows or {})[key]
+        for finding in check_presentation(prs, flows=drawn_on):
+            issues.append(RenderIssue(level=finding.level, slide=finding.slide, shape=finding.shape, message=f"check {finding.code}: {finding.message}"))
     prs.save(str(output))
-    return RenderResult(
-        output=str(output),
-        slides=len(prs.slides),
-        issues=issues,
-        slide_map=_slide_map(prs, numbers),
-        slide_keys=[extra_ids.get(slide.slide_id, "") for slide in prs.slides],
-    )
+    return RenderResult(output=str(output), slides=len(prs.slides), issues=issues, slide_map=slide_map, slide_keys=slide_keys)
 
 
 def _strip_subject_from_titles(slides: list, replaces: str, keep: set[int]) -> int:

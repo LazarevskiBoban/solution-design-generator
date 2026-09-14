@@ -167,6 +167,14 @@ def test_design_page_drafts_and_generates(registry_with_demo, tmp_path):
     assert [e["title"] for e in ui._visible_entries(twice, fresh, blueprint)] == ["A", "A (cont.)"]
     with_detail = [entries[0], {**entries[0], "title": "Need", "detail": "need_details"}, dict(entries[0])]
     assert [e["title"] for e in ui._visible_entries(with_detail, fresh, blueprint)] == ["A", "Need", "A (cont.)"]
+    from types import SimpleNamespace
+
+    from sdgen.render import RenderIssue
+
+    response = SimpleNamespace(slide_map=[1, 2], slide_keys=["", ""], issues=[RenderIssue(level="warning", slide=2, message="check overflow: 'Box' needs about 130 percent of its box height"), RenderIssue(level="info", slide=1, message="check thin_table: x")])
+    board = ui._board_entries(Registry(registry_with_demo).load("demo"), fresh, response, {}, {}, {})
+    assert board[0]["checks"] == [] and board[1]["checks"] == ["overflow: 'Box' needs about 130 percent of its box height"]
+    assert ui._with_overflow_note(board, ["Slide pictures are not available: x."])[-1].startswith("Check pass: 1 finding(s) on 1 slide(s)")
     assert ui.SHORTCUTS == {"previous": "Left", "next": "Right", "up": "Up", "down": "Down", "hide": "Delete"}
     assert "max-height" in ui.VIEWER_CSS and "100vw" in ui.FULL_VIEW_CSS and "viewer_details" in ui.FULL_VIEW_CSS and ui._write_title(fresh) == "3. Write the slides"
     assert f"{state_key}:draw_after_write" not in app.session_state
