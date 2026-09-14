@@ -114,3 +114,37 @@ def test_marker_text_does_not_settle_the_template_row():
     template_h = frame.table.rows[1].height
     fill_table(frame, [["{{a_very_long_marker_that_would_wrap_in_a_narrow_column}}"]], settle=False)
     assert frame.table.rows[1].height == template_h and frame.height == sum(row.height for row in frame.table.rows)
+
+
+def test_fit_columns_share_the_width_by_text_and_keep_header_words_whole():
+    from sdgen.fill.table import column_weights, fit_columns
+
+    prs, frame = _table_frame(rows=2, cols=3, footer=None)
+    total = sum(c.width for c in frame.table.columns)
+    rows = [{"#": "1", "Step": "Provision the sFTP doors", "Note": "x"}, ["2", "Keys", "A note that goes on and on and on and on and on and on"]]
+    assert column_weights(["#", "Step", "Note"], rows) == [4.0, 24.0, 36.0]
+    fit_columns(frame, ["#", "Step", "Note"], rows)
+    widths = [c.width for c in frame.table.columns]
+    assert sum(widths) == total and widths[0] < widths[1] < widths[2]
+
+    prs, frame = _table_frame(rows=2, cols=3, footer=None)
+    path = "C:/AutoClient_NFS_PRD/reception, emission/Outbound and a few more words to weigh"
+    fit_columns(frame, ["Environment", "Port", "Network path"], [{"Environment": "DEV", "Port": "22", "Network path": path}])
+    widths = [c.width for c in frame.table.columns]
+    assert sum(widths) == total and widths[1] >= Inches(0.6) and widths[0] > widths[1] and widths[2] > widths[0]
+
+
+def test_new_rows_start_from_the_template_height_not_a_settled_one():
+    from sdgen.fill.table import append_rows, row_heights
+
+    prs, frame = _table_frame(rows=2, cols=3, footer=None)
+    frame.table.rows[1].height = base = Inches(0.6)
+    fill_table(frame, [["1", "words " * 60, "n"], ["2", "short", "n"]])
+    rows = list(frame.table.rows)
+    assert rows[1].height > base and rows[2].height == base
+    assert row_heights(frame, rows=[["3", "short", "n"]]) == [base]
+    fill_table(frame, [["3", "short", "n"]])
+    assert frame.table.rows[1].height == base
+    fill_table(frame, [["1", "words " * 60, "n"], ["2", "short", "n"]])
+    append_rows(frame, [["3", "short", "n"]])
+    assert list(frame.table.rows)[-1].height == base

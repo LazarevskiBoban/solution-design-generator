@@ -537,14 +537,79 @@ def test_extra_table_rows_continue_too(tmp_path):
 
     deck, spec = _table_deck(tmp_path)
     extra_spec = spec.model_copy(update={"key": "extra", "label": "Acceptance"})
-    rows = [{"Function": f"Case {i}", "Bank": "ok"} for i in range(1, 9)]
+    rows = [{"Function": f"Case {i}", "Bank": "ok"} for i in range(1, 25)]
     extra = ExtraSlide(key="extra", title="Acceptance", spec=extra_spec, value=rows, before=0)
     result = render(deck, Manifest(name="t", fields=[spec]), Content(fields={"scope": [{"Function": "One", "Bank": "B"}]}), tmp_path / "out.pptx", extras=[extra], spill=True)
     slides = list(Presentation(str(tmp_path / "out.pptx")).slides)
-    assert not result.errors and len(slides) == 3 and result.slide_keys == ["", "extra", "extra"]
-    assert slides[1].shapes.title.text == "Acceptance" and slides[2].shapes.title.text == "Acceptance (cont.)"
+    assert not result.errors and len(slides) >= 3 and result.slide_keys == [""] + ["extra"] * (len(slides) - 1)
+    assert slides[1].shapes.title.text == "Acceptance" and all(s.shapes.title.text == "Acceptance (cont.)" for s in slides[2:])
     tables = [next(s for s in sl.shapes if s.has_table) for sl in slides[1:]]
-    assert len(tables[0].table.rows) == 2 and len(tables[1].table.rows) == 8
+    assert sum(len(t.table.rows) - 1 for t in tables) == 24 and len(tables[0].table.rows) > 2
+    # The prototype's note and legend belong to its own section: no extra slide shows them and none is spent on them alone.
+    assert not any({"Below Box", "Side Box"} & {s.name for s in sl.shapes} for sl in slides[1:])
+
+
+def _chain_deck(tmp_path):
+    """A table prototype, a middle slide and a tail slide: an extra placed before the tail must travel past the middle."""
+    from pptx.util import Inches
+
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
+    proto = prs.slides.add_slide(prs.slide_layouts[5])
+    proto.shapes.title.text = "Scope"
+    frame = proto.shapes.add_table(2, 2, Inches(1), Inches(1.2), Inches(8), Inches(0.8))
+    frame.name = "Scope Table"
+    frame.table.cell(0, 0).text, frame.table.cell(0, 1).text = "Function", "Bank"
+    for title in ("Middle", "Tail"):
+        prs.slides.add_slide(prs.slide_layouts[5]).shapes.title.text = title
+    deck = tmp_path / "chain.pptx"
+    prs.save(deck)
+    spec = FieldSpec(key="scope", label="Scope", kind="table", columns=["Function", "Bank"], bindings=[Binding(slide=1, shape=ShapeRef(id=frame.shape_id))])
+    return deck, spec
+
+
+def test_extra_chains_stay_together_and_in_order(tmp_path):
+    from sdgen.render import ExtraSlide
+
+    deck, spec = _chain_deck(tmp_path)
+    extras = []
+    for key in ("first", "second"):
+        rows = [{"Function": f"{key} {i}", "Bank": "ok"} for i in range(1, 25)]
+        extras.append(ExtraSlide(key=key, title=key.title(), spec=spec.model_copy(update={"key": key, "label": key.title()}), value=rows, before=3))
+    result = render(deck, Manifest(name="t", fields=[spec]), Content(fields={"scope": [{"Function": "One", "Bank": "B"}]}), tmp_path / "out.pptx", extras=extras, spill=True)
+    assert not result.errors
+    keys = result.slide_keys
+    firsts, seconds = keys.count("first"), keys.count("second")
+    assert firsts >= 2 and seconds >= 2 and keys == ["", ""] + ["first"] * firsts + ["second"] * seconds + [""]
+    slides = list(Presentation(str(tmp_path / "out.pptx")).slides)
+    assert [s.shapes.title.text for s in slides][1::len(slides) - 2] == ["Middle", "Tail"]
+    tables = [next(s for s in sl.shapes if s.has_table) for sl in slides[2:-1]]
+    written = [r.cells[0].text for t in tables for r in list(t.table.rows)[1:]]
+    assert written == [f"first {i}" for i in range(1, 25)] + [f"second {i}" for i in range(1, 25)]
+
+
+def test_extra_table_columns_follow_their_text(tmp_path):
+    from sdgen.render import ExtraSlide
+
+    deck, spec = _table_deck(tmp_path)
+    steps = spec.model_copy(update={"key": "steps", "label": "Cutover", "columns": ["#", "Step"]})
+    rows = [{"#": "1", "Step": "Exchange SSH keys and pin the host keys on both doors"}]
+    same = spec.model_copy(update={"key": "same", "label": "Same"})
+    extras = [ExtraSlide(key="steps", title="Cutover", spec=steps, value=rows, before=0), ExtraSlide(key="same", title="Same", spec=same, value=[{"Function": "Lockbox", "Bank": "BoA"}], before=0)]
+    result = render(deck, Manifest(name="t", fields=[spec]), Content(), tmp_path / "out.pptx", extras=extras)
+    assert not result.errors and result.slide_keys == ["", "steps", "same"]
+    slides = list(Presentation(str(tmp_path / "out.pptx")).slides)
+    original = next(s for s in Presentation(str(deck)).slides[0].shapes if s.has_table).table
+    weighted = next(s for s in slides[1].shapes if s.has_table).table
+    kept = next(s for s in slides[2].shapes if s.has_table).table
+    assert weighted.columns[0].width < weighted.columns[1].width / 4 and sum(c.width for c in weighted.columns) == sum(c.width for c in original.columns)
+    assert [c.width for c in kept.columns] == [c.width for c in original.columns]
+
+
+def test_subject_stripped_from_titles_is_not_reported_missing(sample_deck, tmp_path):
+    manifest = _fixture_manifest(sample_deck)
+    result = render(sample_deck, manifest, Content(globals={"subject": "Carrier Invoices"}), tmp_path / "plain.pptx", subject_slides=[])
+    assert not any("not found in the template" in i.message for i in result.issues)
 
 
 def test_template_picture_under_written_text_is_removed(tmp_path):

@@ -11,13 +11,13 @@ from pptx.util import Inches
 from pydantic import BaseModel, Field
 
 from sdgen.blueprint import cap_title, clean_title
-from sdgen.check import check_presentation
+from sdgen.check import FOOTER_TYPES, check_presentation
 from sdgen.content import Content, ImageValue, detail_key, images_of, parse_pipe_table
 from sdgen.diagrams import remove_shapes
 from sdgen.fill.image import replace_picture
 from sdgen.flow import FlowSpec, draw_flow
 from sdgen.fill.slides import clone_slide, move_slide, remove_slide
-from sdgen.fill.table import append_rows, clear_table_body, fill_table, has_footer, resize_columns, row_heights
+from sdgen.fill.table import append_rows, clear_table_body, fill_table, fit_columns, has_footer, header_texts, resize_columns, row_heights
 from sdgen.fill.text import Block, Span, capacity_chars_of, capacity_lines_of, fit_text_shape, line_chars_of, overflow_ratio, parse_blocks, replace_literal_everywhere, replace_token, set_rich_text, strip_leading_label, theme_fonts
 from sdgen.inventory import find_shape, walk_shapes
 from sdgen.layout import BLOCK_GAP, CONTAIN_TOL, Box, SlideLayout, analyse_slide, pin_geometry, shift_shapes
@@ -108,13 +108,12 @@ def render(
     keep_subject = {1} if subject_slides is None else set(subject_slides)
     for spec in manifest.globals:
         value = content.globals.get(spec.key, "")
-        if spec.key == "subject":
-            _strip_subject_from_titles(slides, spec.replaces, keep_subject)
+        stripped = _strip_subject_from_titles(slides, spec.replaces, keep_subject) if spec.key == "subject" else 0
         if not value:
             issues.append(RenderIssue(field=spec.key, message=f"no value; '{spec.replaces}' left in place"))
             continue
         hits = replace_literal_everywhere(prs, spec.replaces, value)
-        if hits == 0:
+        if hits == 0 and not stripped:
             issues.append(RenderIssue(field=spec.key, message=f"'{spec.replaces}' not found in the template"))
 
     for number, title in (titles or {}).items():
@@ -350,7 +349,10 @@ def _add_extras(prs, slides: list, extras: list[ExtraSlide], issues: list[Render
                             resize_columns(shape, len(extra.spec.columns))
                         except ValueError as exc:
                             issues.append(RenderIssue(level="info", field=extra.key, message=f"table keeps the prototype's {len(shape.table.columns)} columns: {exc}"))
+                    if len(extra.spec.columns) == len(shape.table.columns) and [h.strip().lower() for h in header_texts(shape)] != [c.strip().lower() for c in extra.spec.columns]:
+                        fit_columns(shape, extra.spec.columns, _as_rows(value), theme)
                     _set_header(shape, extra.spec.columns)
+                _drop_leftovers(clone, shape, extra.key, prs.slide_height)
                 layout = analyse_slide(clone, {binding.shape.id: extra.key}, prs.slide_height)
                 room = _room(layout, shape) if extra.spec.kind == "table" else None
                 remaining = _apply(prs, clone, shape, extra.spec, binding, value, issues, False, spill=True, theme=theme, room=room)
@@ -372,9 +374,38 @@ def _add_extras(prs, slides: list, extras: list[ExtraSlide], issues: list[Render
         else:
             target = slides[extra.before - 1] if 1 <= extra.before <= len(slides) else None
             position = others.index(target.slide_id) if target is not None else len(others)
-        for offset, member in enumerate(chain):
-            move_slide(prs, member, position + offset)
+        follower = others[position] if position < len(others) else None
+        for member in chain:
+            _move_before(prs, member, follower)
     return ids
+
+
+def _move_before(prs, slide, follower: int | None) -> None:
+    """Puts the slide right before the follower (last without one), wherever it sits now."""
+    rest = [s.slide_id for s in prs.slides if s.slide_id != slide.slide_id]
+    move_slide(prs, slide, rest.index(follower) if follower is not None else len(rest))
+
+
+def _drop_leftovers(slide, shape, key: str, slide_height: int) -> None:
+    """The prototype's other text and tables belonged to its own section; an extra slide shows only its title and its field."""
+    layout = analyse_slide(slide, {shape.shape_id: key}, slide_height)
+    bands = set(layout.top_band) | set(layout.bottom_band)
+    doomed = []
+    for other in slide.shapes:
+        if other.shape_id == shape.shape_id or other.shape_id in bands or _placeholder_kind(other) in FOOTER_TYPES:
+            continue
+        has_text = getattr(other, "has_text_frame", False) and bool(other.text_frame.text.strip())
+        if has_text or getattr(other, "has_table", False) or other.is_placeholder:
+            doomed.append(other)
+    if doomed:
+        remove_shapes(slide, doomed)
+
+
+def _placeholder_kind(shape):
+    try:
+        return shape.placeholder_format.type
+    except (AttributeError, ValueError):
+        return None
 
 
 def _reorder(prs, slides: list, order: list[int] | None) -> None:

@@ -8,12 +8,14 @@ from pptx.table import _Cell
 
 from sdgen.fill.text import set_rich_text
 from sdgen.styles import resolve_font, resolve_spacing, theme_fonts
-from sdgen.textmetrics import line_height_pt, wrapped_lines
+from sdgen.textmetrics import line_height_pt, text_width_pt, wrapped_lines
 
 Row = Sequence[str] | dict[str, str]
 EMU_PER_PT = 12700
 CELL_INSETS = (91440, 45720, 91440, 45720)  # left, top, right, bottom
 TABLE_FONT_PT = 18.0
+NARROW_WEIGHT, WIDE_WEIGHT = 4, 36  # a column's share of the width follows its longest text, within these bounds
+COLUMN_SLACK = 137160  # 0.15 in beyond the header word, so it never breaks
 
 
 def fill_table(
@@ -35,6 +37,7 @@ def fill_table(
         body = body[:-1]
 
     template = body[0] if body else tr_list[-1]
+    base = _base_height(body, template)
     names = list(columns) if columns else [_cell_text(tc) for tc in header[0].tc_lst] if header else []
     width = len(template.tc_lst)
 
@@ -42,6 +45,7 @@ def fill_table(
     for row in rows or [[]]:
         values = _values(row, names, width)
         tr = copy.deepcopy(template)
+        tr.h = base
         for tc, value in zip(tr.tc_lst, values):
             set_rich_text(_Cell(tc, tbl), value)
         new_rows.append(tr)
@@ -75,9 +79,11 @@ def append_rows(
         footer = body[-1]
         body = body[:-1]
     template = body[-1] if body else tr_list[-1]
+    base = _base_height(body, template)
     names = list(columns) if columns else [_cell_text(tc) for tc in tr_list[0].tc_lst] if tr_list else []
     for row in rows:
         tr = copy.deepcopy(template)
+        tr.h = base
         for tc, value in zip(tr.tc_lst, _values(row, names, len(template.tc_lst))):
             set_rich_text(_Cell(tc, tbl), value)
         if footer is not None:
@@ -114,16 +120,22 @@ def row_heights(graphic_frame, theme: tuple[str, str] | None = None, rows: Seque
     tr_list = tbl.tr_lst
     body = tr_list[header_rows:]
     template = body[0] if body else tr_list[-1]
+    base = _base_height(body, template)
     names = list(columns) if columns else [_cell_text(tc) for tc in tr_list[0].tc_lst] if tr_list else []
-    return [_row_height(graphic_frame, template, _values(row, names, len(template.tc_lst)), widths, theme) for row in rows]
+    return [_row_height(graphic_frame, template, _values(row, names, len(template.tc_lst)), widths, theme, base) for row in rows]
 
 
-def _row_height(frame, tr, values: list[str], widths: list[int], theme: tuple[str, str]) -> int:
+def _base_height(body, template) -> int:
+    """The design's row height: rows only ever grow, so the shortest body row is the one nothing settled."""
+    return min((tr.h for tr in body), default=template.h)
+
+
+def _row_height(frame, tr, values: list[str], widths: list[int], theme: tuple[str, str], base: int | None = None) -> int:
     needed = 0
     for index, (tc, text) in enumerate(zip(tr.tc_lst, values)):
         width = widths[index] if index < len(widths) else (widths[-1] if widths else 0)
         needed = max(needed, _cell_height(frame, tc, text, width, theme))
-    return max(tr.h, needed)
+    return max(tr.h if base is None else base, needed)
 
 
 def _cell_height(frame, tc, text: str, width_emu: int, theme: tuple[str, str]) -> int:
@@ -175,6 +187,60 @@ def resize_columns(graphic_frame, count: int) -> None:
     width = total // count
     for index, gc in enumerate(grid.gridCol_lst):
         gc.w = width if index < count - 1 else total - width * (count - 1)
+
+
+def column_weights(columns: Sequence[str], rows: Sequence[Row]) -> list[float]:
+    """Relative widths from the longest line each column carries, so a numbering column stays narrow and a note column wide."""
+    names = list(columns)
+    weights = []
+    for index, name in enumerate(names):
+        longest = len(name)
+        for row in rows:
+            value = _values(row, names, len(names))[index]
+            longest = max(longest, max((len(line) for line in value.splitlines()), default=0))
+        weights.append(float(min(max(longest, NARROW_WEIGHT), WIDE_WEIGHT)))
+    return weights
+
+
+def fit_columns(graphic_frame, columns: Sequence[str], rows: Sequence[Row], theme: tuple[str, str] | None = None) -> None:
+    """Shares the table's width by the text each column carries, never narrower than its header's longest word."""
+    tbl = graphic_frame.table._tbl
+    grid = tbl.tblGrid.gridCol_lst
+    names = list(columns)
+    if len(names) != len(grid) or not tbl.tr_lst:
+        return
+    theme = theme or theme_fonts(graphic_frame.part)
+    total = sum(gc.w for gc in grid)
+    weights = column_weights(names, rows)
+    minimums = [_word_width(graphic_frame, tc, max(name.split(), key=len, default=""), theme) for name, tc in zip(names, tbl.tr_lst[0].tc_lst)]
+    if sum(minimums) >= total:
+        widths = [total * m / sum(minimums) for m in minimums]
+    else:
+        widths = [max(total * w / sum(weights), m) for w, m in zip(weights, minimums)]
+        excess = sum(widths) - total
+        room = [w - m for w, m in zip(widths, minimums)]
+        if excess > 0 and sum(room) > 0:
+            widths = [w - excess * r / sum(room) for w, r in zip(widths, room)]
+    assigned = 0
+    for index, gc in enumerate(grid):
+        gc.w = int(widths[index]) if index < len(grid) - 1 else total - assigned
+        assigned += gc.w
+
+
+def _word_width(frame, tc, word: str, theme: tuple[str, str]) -> int:
+    left, _, right, _ = CELL_INSETS
+    tcpr = tc.find(qn("a:tcPr"))
+    if tcpr is not None:
+        left, right = int(tcpr.get("marL", left)), int(tcpr.get("marR", right))
+    body = tc.find(qn("a:txBody"))
+    p = body.find(qn("a:p")) if body is not None else None
+    spec = resolve_font(frame, p, TABLE_FONT_PT, theme) if p is not None else None
+    width = text_width_pt(word, spec) * EMU_PER_PT if spec is not None else len(word) * TABLE_FONT_PT * 0.6 * EMU_PER_PT
+    return int(width) + left + right + COLUMN_SLACK
+
+
+def header_texts(graphic_frame) -> list[str]:
+    return [_cell_text(tc) for tc in graphic_frame.table._tbl.tr_lst[0].tc_lst]
 
 
 def _strip_ext(element) -> None:
