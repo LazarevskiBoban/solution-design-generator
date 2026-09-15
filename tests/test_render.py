@@ -800,3 +800,20 @@ def test_token_boxes_shrink_to_their_text(tmp_path):
     shape = next(s for s in Presentation(str(tmp_path / "out.pptx")).slides[0].shapes if s.name == "Insight")
     autofit = shape.text_frame._txBody.bodyPr.find(qn("a:normAutofit"))
     assert shape.text_frame.text == text and autofit is not None and int(autofit.get("fontScale")) < 100000
+
+
+def test_extra_slides_clone_the_prototype_before_it_was_filled(tmp_path):
+    from pptx.util import Inches
+    from sdgen.render import ExtraSlide
+
+    deck, spec = _table_deck(tmp_path)
+    tall = [{"Function": "words " * 120, "Bank": "B"}]
+    extra_spec = spec.model_copy(update={"key": "extra", "label": "Steps"})
+    extra = ExtraSlide(key="extra", title="Steps", spec=extra_spec, value=[{"Function": "Provision", "Bank": "ok"}, {"Function": "Exchange keys", "Bank": "ok"}], before=0)
+    result = render(deck, Manifest(name="t", fields=[spec]), Content(fields={"scope": tall}), tmp_path / "out.pptx", extras=[extra])
+    slides = list(Presentation(str(tmp_path / "out.pptx")).slides)
+    assert not result.errors and result.slide_keys == ["", "extra"]
+    filled = next(s for s in slides[0].shapes if s.has_table).table
+    cloned = next(s for s in slides[1].shapes if s.has_table).table
+    assert filled.rows[1].height > Inches(1.5)
+    assert [c.text for c in cloned.rows[1].cells] == ["Provision", "ok"] and all(r.height < Inches(0.6) for r in list(cloned.rows)[1:])

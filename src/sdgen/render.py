@@ -149,6 +149,7 @@ def render(
                 image_ids.setdefault(binding.slide, set()).add(binding.shape.id)
     pending: dict[int, dict] = {}
     wanted: dict[int, list[tuple]] = {}  # composite fields with more to say than their box holds
+    pristine = _pristine_prototypes(prs, slides, list(extras or []), details)
     for spec in manifest.fields:
         if spec.key in drawn:
             continue
@@ -208,7 +209,9 @@ def render(
         _continue_slide(prs, slides[number - 1], layouts.get(number), manifest, number, fields_pending, theme, issues, kept)
 
     all_extras = _detail_slides(slides, layouts, wanted) + list(extras or [])
-    extra_ids = _add_extras(prs, slides, all_extras, issues, theme, numbers)
+    extra_ids = _add_extras(prs, slides, all_extras, issues, theme, numbers, pristine)
+    for copy in pristine.values():
+        remove_slide(prs, copy)
 
     for index in sorted(set(manifest.slides.exclude) | hidden_slides, reverse=True):
         if 1 <= index <= len(slides):
@@ -324,14 +327,20 @@ def _detail_slides(slides: list, layouts: dict[int, SlideLayout], wanted: dict[i
     return result
 
 
-def _add_extras(prs, slides: list, extras: list[ExtraSlide], issues: list[RenderIssue], theme: tuple[str, str] | None = None, numbers: dict[int, int] | None = None) -> dict[int, str]:
+def _pristine_prototypes(prs, slides: list, extras: list[ExtraSlide], details: dict[str, FieldSpec] | None) -> dict[int, Any]:
+    """A copy of every prototype slide before any field is filled, so an extra never inherits this design's content or row heights."""
+    wanted = {e.spec.bindings[0].slide for e in extras if e.spec.bindings} | {d.bindings[0].slide for d in (details or {}).values() if d.bindings}
+    return {number: clone_slide(prs, slides[number - 1]) for number in sorted(wanted) if 1 <= number <= len(slides)}
+
+
+def _add_extras(prs, slides: list, extras: list[ExtraSlide], issues: list[RenderIssue], theme: tuple[str, str] | None = None, numbers: dict[int, int] | None = None, pristine: dict[int, Any] | None = None) -> dict[int, str]:
     ids: dict[int, str] = {}
     for extra in extras:
         binding = extra.spec.bindings[0] if extra.spec.bindings else None
         if binding is None or not 1 <= binding.slide <= len(slides):
             issues.append(RenderIssue(level="error", field=extra.key, message="extra slide has no prototype slide"))
             continue
-        clone = clone_slide(prs, slides[binding.slide - 1])
+        clone = clone_slide(prs, (pristine or {}).get(binding.slide) or slides[binding.slide - 1])
         ids[clone.slide_id] = extra.key
         title_shape = clone.shapes.title
         if title_shape is not None:
