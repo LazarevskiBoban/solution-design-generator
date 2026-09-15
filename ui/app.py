@@ -1404,13 +1404,14 @@ def _run_draft(state_key: str, entry, design: Design, store: DesignStore, subjec
     design.last_draft = result.markdown
     design.llm = result.llm
     store.save(design)
-    total = sum(len(s["fields"]) for s in writable_sections(blueprint, manifest))
+    wanted = {f["key"] for s in writable_sections(blueprint, manifest) for f in s["fields"]}
+    total = len(wanted)
     extra = f", {len(result.mechanical)} filled from facts and template" if result.mechanical else ""
     waiting = _pending_flow_sections(design, entry, store)
     if waiting:
         st.session_state[f"{state_key}:draw_after_write"] = True
         extra += f"; {len(waiting)} diagram(s) wait for your format choice"
-    drafted = sum(1 for k in result.content.fields if not is_detail_key(k))
+    drafted = len(wanted & {k for k in result.content.fields if not is_detail_key(k)})
     st.session_state[f"{state_key}:draft_done"] = f"Drafted {drafted} of {total} fields with {result.llm}{extra}. Review them in step 5, then generate."
     st.session_state[f"{state_key}:draft_warnings"] = result.warnings
     st.session_state[f"{state_key}:v"] = version + 1
