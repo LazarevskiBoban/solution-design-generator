@@ -11,6 +11,7 @@ LOG = logging.getLogger("sdgen.llm")
 CONTEXT_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 PROVIDERS = ("mock", "azure", "openai", "anthropic")
+MOCK_CELL_CHARS = 80  # a mock table cell stays a cell, not a paragraph
 MAX_OUTPUT_TOKENS = 16000
 REASONING_OUTPUT_TOKENS = 32000
 DEFAULT_AZURE_API_VERSION = "2025-04-01-preview"
@@ -259,7 +260,7 @@ def mock_draft(context: dict) -> str:
                 if _is_reference(columns):
                     rows = _reference_rows(brief.get("apis_references", ""), len(columns))
                 else:
-                    rows = [[f"[Draft] {_first_sentence(source)}"] + ["[TBC]"] * (len(columns) - 1)]
+                    rows = [[f"[Draft] {_fit(_first_sentence(source), MOCK_CELL_CHARS)}"] + ["[TBC]"] * (len(columns) - 1)]
                 lines.append("| " + " | ".join(columns) + " |")
                 lines.append("|" + "---|" * len(columns))
                 lines.extend("| " + " | ".join(row) + " |" for row in rows)
