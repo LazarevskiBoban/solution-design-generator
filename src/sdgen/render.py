@@ -487,6 +487,8 @@ def _apply(prs, slide, shape, spec: FieldSpec, binding: Binding, value: Any, iss
     if binding.mode == "token":
         if not binding.token or replace_token(shape, binding.token, " ".join(text.split())) == 0:
             issues.append(RenderIssue(field=spec.key, slide=binding.slide, message=f"placeholder {binding.token} not found"))
+        else:
+            _shrink(shape, spec, binding, issues, theme)  # a token sits in a small fixed box the template never sized for the text
         return
 
     if binding.keep_prefix:

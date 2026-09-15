@@ -777,3 +777,26 @@ def test_check_ignores_findings_the_template_already_had(sample_deck, tmp_path):
     manifest = _fixture_manifest(deck)
     result = render(deck, manifest, Content(fields={"first_point": "- one"}), tmp_path / "out.pptx", continue_on=[])
     assert not result.errors and not any("check outside" in i.message for i in result.issues)
+
+
+def test_token_boxes_shrink_to_their_text(tmp_path):
+    from pptx.util import Inches, Pt
+    from pptx.oxml.ns import qn
+
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    slide.shapes.title.text = "Contents"
+    box = slide.shapes.add_textbox(Inches(8.8), Inches(5.3), Inches(2.24), Inches(0.5))
+    box.name, box.text_frame.text = "Insight", "<insight>"
+    box.text_frame.word_wrap = True
+    box.text_frame.paragraphs[0].runs[0].font.size = Pt(8)
+    deck = tmp_path / "token.pptx"
+    prs.save(deck)
+    spec = FieldSpec(key="insight", label="Insight", bindings=[Binding(slide=1, shape=ShapeRef(id=box.shape_id), mode="token", token="<insight>")])
+    text = "The programme migrates the group's SAP ECC finance processes to S/4HANA on RISE with bank files over SWIFT."
+    result = render(deck, Manifest(name="t", fields=[spec]), Content(fields={"insight": text}), tmp_path / "out.pptx")
+    assert not result.errors and not any("check overflow" in i.message for i in result.issues)
+    shape = next(s for s in Presentation(str(tmp_path / "out.pptx")).slides[0].shapes if s.name == "Insight")
+    autofit = shape.text_frame._txBody.bodyPr.find(qn("a:normAutofit"))
+    assert shape.text_frame.text == text and autofit is not None and int(autofit.get("fontScale")) < 100000
