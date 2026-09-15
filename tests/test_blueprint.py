@@ -117,3 +117,16 @@ def test_carrier_fact_questions():
     assert questions["parties"].spec.label == "Carriers"
     assert "Document Version Control" in questions["author"].used_by
     assert any(t.startswith("Effort Estimation") for t in questions["effort"].used_by)
+
+
+def test_picture_slots_do_not_change_what_a_slide_is():
+    from sdgen.blueprint import _kind
+    from sdgen.manifest import FieldSpec
+
+    image = FieldSpec(key="pic", label="Picture", kind="image")
+    text = FieldSpec(key="sub", label="SubTitle")
+    table = FieldSpec(key="versions", label="Versions", kind="table")
+    assert _kind(1, "Solution Design Framework", [image, text], "text", 8) == "cover"
+    assert _kind(2, "Document Version Control", [table, image], "text", 5) == "table"
+    assert _kind(9, "Landscape", [image], "text", 5) == "diagram"
+    assert _kind(5, "Executive Overview", [text, table], "text", 20) == "composite"

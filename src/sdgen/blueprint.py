@@ -170,7 +170,8 @@ def format_outline(blueprint: Blueprint) -> str:
 
 
 def _kind(index: int, title: str, fields: list[FieldSpec], slide_class: str, shape_count: int) -> SectionKind:
-    if index == 1 and len(fields) <= COVER_MAX_FIELDS and all(f.kind in ("text", "bullets") for f in fields):
+    written = [f for f in fields if f.kind != "image"]  # a picture slot does not change what a slide is
+    if index == 1 and len(written) <= COVER_MAX_FIELDS and all(f.kind in ("text", "bullets") for f in written):
         return "cover"
     if STATIC_TITLE_RE.search(title):
         return "static"
@@ -182,8 +183,10 @@ def _kind(index: int, title: str, fields: list[FieldSpec], slide_class: str, sha
         return "mapping"
     if REFERENCE_RE.search(title):
         return "references"
-    if len(fields) == 1:
-        return "table" if fields[0].kind == "table" else "text"
+    if not written:
+        return "diagram"
+    if len(written) == 1:
+        return "table" if written[0].kind == "table" else "text"
     return "composite"
 
 
