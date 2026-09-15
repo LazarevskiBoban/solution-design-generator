@@ -5,7 +5,7 @@ from sdgen.design import Design, DesignStore
 from sdgen.inventory import inspect_deck
 from sdgen.llm import MockLLM
 from sdgen.manifest import GlobalSpec
-from sdgen.plan import SectionPlan, apply_plan, default_plan, plan_sections
+from sdgen.plan import DEVELOPER_KEYS, SectionPlan, apply_plan, default_plan, plan_sections
 from sdgen.registry import Registry
 
 BRIEF = Brief(subject="Lockbox", about="Banks send lockbox files.", approach="SWIFT to SFTP to BTP to S/4HANA.")
@@ -379,3 +379,21 @@ def test_planner_keeps_diagram_slots_for_the_briefs_flows():
     from sdgen.plan import SYSTEM_PROMPT
 
     assert "A diagram section is a reusable slot" in SYSTEM_PROMPT and "give it that flow's title" in SYSTEM_PROMPT
+
+
+def test_plan_keeps_one_flow_per_section_and_one_extra_per_key():
+    from sdgen.blueprint import Blueprint, Section
+    from sdgen.manifest import Binding, FieldSpec, Manifest, ShapeRef
+
+    manifest = Manifest(name="m", fields=[FieldSpec(key="img", label="Diagram", kind="image", bindings=[Binding(slide=4, shape=ShapeRef(id=9))])])
+    blueprint = Blueprint(name="m", sections=[Section(key="flow", title="Level 2 flows", kind="diagram", slide=4, fields=["img"])])
+    llm = _JsonLLM(
+        {
+            "decisions": [],
+            "flows": [{"section": "flow", "title": "Inbound", "purpose": "first"}, {"section": "flow", "title": "Outbound", "purpose": "second"}],
+            "extras": [{"key": "acceptance", "title": "Acceptance Criteria", "kind": "table"}, {"key": "acceptance", "title": "Acceptance Criteria again", "kind": "table"}],
+        }
+    )
+    plan = plan_sections(Brief(subject="L"), blueprint, manifest, llm)
+    assert [(f.section, f.title) for f in plan.flows] == [("flow", "Inbound")]
+    assert [e.key for e in plan.extras if not e.key in DEVELOPER_KEYS] == ["extra_acceptance"]

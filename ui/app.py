@@ -1824,7 +1824,11 @@ def _plan_editor(plan: SectionPlan, blueprint: Blueprint, key: str, pictures: di
     flows = []
     if plan.flows:
         st.markdown("**Diagrams to draw from the brief**")
+        seen: set[str] = set()
         for flow in plan.flows:
+            if flow.section in seen:
+                continue  # an older saved plan may still hold a duplicate
+            seen.add(flow.section)
             st.caption(f"{flow.title or flow.section}: {flow.purpose}" if flow.purpose else flow.title or flow.section)
             if pictures:
                 options = [""] + list(pictures)

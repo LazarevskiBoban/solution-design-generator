@@ -333,6 +333,8 @@ def merge_plan(
             kind, columns = "table", pasted[0]  # the brief holds the operations as a table: the slide keeps its columns
         if key in DEVELOPER_KEYS or slugify(title) in {slugify(t) for _, t, _, _ in DEVELOPER_EXTRAS}:
             continue  # the catalogue version of this slide comes along anyway
+        if any(e.key == key for e in extras):
+            continue
         before = str(item.get("before") or "").strip()
         extras.append(
             ExtraSection(
@@ -353,8 +355,8 @@ def merge_plan(
         decision = plan.decision(key)
         if section is None or section.kind != "diagram" or decision is None or not decision.use:
             continue
-        if any(k in images for k in section.fields):
-            continue
+        if any(k in images for k in section.fields) or any(f.section == key for f in flows):
+            continue  # a model answer may name the same diagram twice; the first entry wins
         material = str(item.get("material_id") or "").strip()
         title, purpose = str(item.get("title") or section.title).strip(), str(item.get("purpose") or "").strip()
         flows.append(FlowRequest(section=key, title=title, purpose=purpose, material_id=material if brief is not None and material in picture_ids(brief) else "", kind=flow_kind(section.title, section.ask, title, purpose)))
