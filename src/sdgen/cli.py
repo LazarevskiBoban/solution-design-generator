@@ -209,11 +209,12 @@ def add(name: str, deck: Path, manifest_path: Path | None, keep_content: bool, t
 
 @main.command()
 @click.argument("document", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-def check(document: Path) -> None:
+@click.option("--template", type=click.Path(exists=True, dir_okay=False, path_type=Path), help="The template the deck was made from; what it already showed is not reported.")
+def check(document: Path, template: Path | None) -> None:
     """List what a generated deck gets wrong: shapes outside the slide, overlaps, empty slides, thin tables, long titles, overflowing text."""
     from sdgen.check import check_deck
 
-    findings = check_deck(document)
+    findings = check_deck(document, template=template)
     for finding in findings:
         click.echo(f"{finding.level} [slide {finding.slide}] {finding.code}: {finding.message}")
     click.echo(f"{document}: {len(findings)} finding(s)")

@@ -143,3 +143,18 @@ def test_baseline_hides_what_the_template_already_shows():
     _box(slide, "New", 13.0, 2.0, 2.0, 1.0)
     assert [f.shape for f in check_presentation(prs, baseline=baseline, origins=[1])] == ["New"]
     assert [f.shape for f in check_presentation(prs, baseline=baseline, origins=[2])] == ["Off", "New"]
+
+
+def test_check_deck_takes_the_template_as_baseline(tmp_path):
+    from sdgen.check import check_deck
+
+    prs = _deck()
+    slide = _titled(prs, "Contents: {{subject}}")
+    _box(slide, "Off", -1.0, 2.0, 2.0, 1.0)
+    _box(slide, "Body", 1.0, 2.0, 2.0, 1.0)
+    prs.save(tmp_path / "template.pptx")
+    slide.shapes.title.text_frame.paragraphs[0].runs[0].text = "Contents"
+    _box(slide, "New", 13.0, 2.0, 2.0, 1.0)
+    prs.save(tmp_path / "out.pptx")
+    assert [(f.code, f.shape) for f in check_deck(tmp_path / "out.pptx", template=tmp_path / "template.pptx")] == [("outside", "New")]
+    assert {f.shape for f in check_deck(tmp_path / "out.pptx") if f.code == "outside"} == {"Off", "New"}

@@ -34,8 +34,27 @@ class Finding(BaseModel):
     message: str
 
 
-def check_deck(path: str | Path, flows: dict[int, FlowSpec] | None = None, title_max: int = TITLE_MAX) -> list[Finding]:
-    return check_presentation(Presentation(str(path)), flows=flows, title_max=title_max)
+CONT_RE = re.compile(r"\s*\(cont\.\)\s*$")
+
+
+def check_deck(path: str | Path, flows: dict[int, FlowSpec] | None = None, title_max: int = TITLE_MAX, template: str | Path | None = None) -> list[Finding]:
+    """Findings of a saved deck; with its template, what a slide of the same title already showed there is left out."""
+    prs = Presentation(str(path))
+    if template is None:
+        return check_presentation(prs, flows=flows, title_max=title_max)
+    source = Presentation(str(template))
+    by_title: dict[str, int] = {}
+    for number, slide in enumerate(source.slides, 1):
+        by_title.setdefault(_title_key(slide), number)
+    origins = [by_title.get(_title_key(slide), 0) for slide in prs.slides]
+    return check_presentation(prs, flows=flows, title_max=title_max, baseline=baseline_findings(source, title_max), origins=origins)
+
+
+def _title_key(slide) -> str:
+    """A slide title without its continuation mark and its subject part, so a filled slide finds its template slide."""
+    title = slide.shapes.title
+    text = title.text_frame.text if title is not None and getattr(title, "has_text_frame", False) else ""
+    return " ".join(CONT_RE.sub("", text).split(":")[0].split()).lower()
 
 
 Baseline = dict[int, set[tuple[str, str]]]
